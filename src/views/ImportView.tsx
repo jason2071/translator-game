@@ -2,6 +2,7 @@ import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type DetectResult } from "../ipc";
 import { useStore } from "../store";
+import { DEFAULT_SOURCE, DEFAULT_TARGET, SOURCE_LANGS, TARGET_LANGS } from "../langs";
 
 export default function ImportView() {
   const openProject = useStore((s) => s.openProject);
@@ -10,6 +11,8 @@ export default function ImportView() {
   const [detected, setDetected] = useState<DetectResult | null>(null);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sourceLang, setSourceLang] = useState<string>(DEFAULT_SOURCE);
+  const [targetLang, setTargetLang] = useState<string>(DEFAULT_TARGET);
 
   async function pickFolder() {
     setError(null);
@@ -58,10 +61,35 @@ export default function ImportView() {
             <span>Data dir</span>
             <code>{detected.dataDir}</code>
           </div>
+
+          <div className="lang-pick">
+            <label>
+              From
+              <select value={sourceLang} onChange={(e) => setSourceLang(e.target.value)}>
+                {SOURCE_LANGS.map((l) => (
+                  <option key={l} value={l}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="arrow">→</span>
+            <label>
+              To
+              <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)}>
+                {TARGET_LANGS.map((l) => (
+                  <option key={l} value={l}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
           <button
             className="primary"
             disabled={loading}
-            onClick={() => path && openProject(path)}
+            onClick={() => path && openProject(path, sourceLang, targetLang)}
           >
             {loading ? "Extracting…" : "Open project"}
           </button>

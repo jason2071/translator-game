@@ -4,11 +4,14 @@ import { api, type Progress, type TranslateScope, type TranslateSummary } from "
 import { useStore } from "../store";
 import { useSettings } from "../settings";
 import { PROVIDER_LABELS } from "../settings";
+import { SOURCE_LANGS, TARGET_LANGS } from "../langs";
 
 export default function TranslateBar({ openSettings }: { openSettings: () => void }) {
   const filter = useStore((s) => s.filter);
   const reloadUnits = useStore((s) => s.reloadUnits);
   const refreshMeta = useStore((s) => s.refreshMeta);
+  const project = useStore((s) => s.project);
+  const setLanguages = useStore((s) => s.setLanguages);
   const active = useSettings((s) => s.active);
   const activeConfig = useSettings((s) => s.activeConfig);
 
@@ -51,6 +54,34 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
   return (
     <div className="translate-bar">
       <span className="tb-label">AI translate</span>
+
+      <div className="lang-switch">
+        <select
+          value={project?.sourceLang ?? "Auto"}
+          onChange={(e) => setLanguages(e.target.value, project?.targetLang ?? "Thai")}
+          disabled={running}
+          title="Source language"
+        >
+          {SOURCE_LANGS.map((l) => (
+            <option key={l} value={l}>
+              {l}
+            </option>
+          ))}
+        </select>
+        <span className="arrow">→</span>
+        <select
+          value={project?.targetLang ?? "Thai"}
+          onChange={(e) => setLanguages(project?.sourceLang ?? "Auto", e.target.value)}
+          disabled={running}
+          title="Target language"
+        >
+          {TARGET_LANGS.map((l) => (
+            <option key={l} value={l}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </div>
 
       <select value={mode} onChange={(e) => setMode(e.target.value as "shown" | "all")} disabled={running}>
         <option value="shown">Shown (current filter)</option>

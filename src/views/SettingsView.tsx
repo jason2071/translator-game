@@ -14,13 +14,32 @@ export default function SettingsView() {
   const [hasKey, setHasKey] = useState(false);
   const [test, setTest] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
+  const [models, setModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [modelsErr, setModelsErr] = useState<string | null>(null);
 
   useEffect(() => {
     setKeyInput("");
     setTest(null);
+    setModels([]);
+    setModelsErr(null);
     if (needsKey) api.hasKey(active).then(setHasKey);
     else setHasKey(false);
   }, [active, needsKey]);
+
+  async function refreshModels() {
+    setLoadingModels(true);
+    setModelsErr(null);
+    try {
+      const list = await api.listModels(s.activeConfig());
+      setModels(list);
+      if (list.length === 0) setModelsErr("No models returned.");
+    } catch (e) {
+      setModelsErr(String(e));
+    } finally {
+      setLoadingModels(false);
+    }
+  }
 
   async function saveKey() {
     if (!keyInput.trim()) return;
@@ -61,10 +80,37 @@ export default function SettingsView() {
 
       <div className="field-grid">
         <label>Model</label>
-        <input
-          value={cfg.model}
-          onChange={(e) => s.updateProvider(active, { model: e.target.value })}
-        />
+        <div className="model-row">
+          <input
+            list={`models-${active}`}
+            value={cfg.model}
+            onChange={(e) => s.updateProvider(active, { model: e.target.value })}
+          />
+          {models.length > 0 && (
+            <datalist id={`models-${active}`}>
+              {models.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+          )}
+          <button className="ghost" onClick={refreshModels} disabled={loadingModels}>
+            {loadingModels ? "…" : "↻ Refresh"}
+          </button>
+        </div>
+        {models.length > 0 && (
+          <>
+            <span />
+            <span className="hint models-hint">
+              {models.length} model(s) — pick from the list or type.
+            </span>
+          </>
+        )}
+        {modelsErr && (
+          <>
+            <span />
+            <span className="error models-hint">{modelsErr}</span>
+          </>
+        )}
 
         <label>Base URL</label>
         <input

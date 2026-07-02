@@ -143,6 +143,9 @@ export const api = {
 
   closeProject: () => invoke<void>("close_project"),
 
+  setLanguages: (source: string, target: string) =>
+    invoke<void>("set_languages", { source, target }),
+
   listUnits: (filter: UnitFilter) =>
     invoke<TransUnit[]>("list_units", { filter }),
 
@@ -188,6 +191,8 @@ export const api = {
   cancelTranslation: () => invoke<void>("cancel_translation"),
   testProvider: (config: ProviderConfig) =>
     invoke<string>("test_provider", { config }),
+  listModels: (config: ProviderConfig) =>
+    invoke<string[]>("list_models", { config }),
 
   setKey: (provider: ProviderKind, key: string) =>
     invoke<void>("set_key", { provider, key }),

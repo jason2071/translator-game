@@ -102,6 +102,20 @@ fn close_project(state: tauri::State<AppState>) {
     *state.project.lock().unwrap() = None;
 }
 
+/// Change the source/target languages used for AI translation (persisted).
+#[tauri::command]
+fn set_languages(
+    source: String,
+    target: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    with_project(&state, |p| {
+        project::db::set_meta(&p.conn, "source_lang", &source)?;
+        project::db::set_meta(&p.conn, "target_lang", &target)?;
+        Ok(())
+    })
+}
+
 // --- grid browse & edit ---------------------------------------------------
 
 #[tauri::command]
@@ -475,6 +489,23 @@ async fn test_provider(
     Ok(out.into_iter().next().unwrap_or_default())
 }
 
+/// List the models a provider offers (e.g. Ollama's installed models).
+#[tauri::command]
+async fn list_models(
+    config: ProviderConfig,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    // Key is optional: local needs none; others use it if stored.
+    let key = if config.needs_key() {
+        keys::get_key(&config.kind).map_err(|e| e.to_string())?
+    } else {
+        None
+    };
+    ai::list_models(&state.http, key.as_deref(), &config)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // --- secure keys ----------------------------------------------------------
 
 #[tauri::command]
@@ -504,6 +535,7 @@ pub fn run() {
             detect_game,
             open_project,
             close_project,
+            set_languages,
             list_units,
             update_unit,
             get_stats,
@@ -518,6 +550,7 @@ pub fn run() {
             translate_units,
             cancel_translation,
             test_provider,
+            list_models,
             set_key,
             has_key,
             delete_key,

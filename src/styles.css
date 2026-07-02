@@ -98,6 +98,39 @@ code {
   margin-top: 1rem;
   width: 100%;
 }
+.lang-pick {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+.lang-pick label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.lang-pick select,
+.lang-switch select {
+  font: inherit;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
+.lang-pick .arrow,
+.lang-switch .arrow {
+  color: var(--muted);
+  padding-bottom: 0.35rem;
+}
+.lang-switch {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
 .error {
   color: var(--err);
 }
@@ -534,6 +567,27 @@ button.link {
 }
 .key-row input {
   flex: 1;
+}
+.model-row {
+  display: flex;
+  gap: 0.4rem;
+}
+.model-row input {
+  flex: 1;
+  font: inherit;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+}
+.model-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.models-hint {
+  font-size: 0.78rem;
+  margin: 0;
 }
 .settings hr {
   border: none;

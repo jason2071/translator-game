@@ -18,8 +18,9 @@ interface AppStore {
   loading: boolean;
   error: string | null;
 
-  openProject: (path: string) => Promise<void>;
+  openProject: (path: string, sourceLang?: string, targetLang?: string) => Promise<void>;
   closeProject: () => Promise<void>;
+  setLanguages: (source: string, target: string) => Promise<void>;
   setFilter: (patch: Partial<UnitFilter>) => Promise<void>;
   reloadUnits: () => Promise<void>;
   refreshMeta: () => Promise<void>;
@@ -38,10 +39,10 @@ export const useStore = create<AppStore>((set, get) => ({
   loading: false,
   error: null,
 
-  openProject: async (path) => {
+  openProject: async (path, sourceLang, targetLang) => {
     set({ loading: true, error: null });
     try {
-      const project = await api.openProject(path);
+      const project = await api.openProject(path, sourceLang, targetLang);
       set({ project, filter: { limit: PAGE, offset: 0 } });
       await get().refreshMeta();
       await get().reloadUnits();
@@ -55,6 +56,12 @@ export const useStore = create<AppStore>((set, get) => ({
   closeProject: async () => {
     await api.closeProject();
     set({ project: null, files: [], stats: null, units: [] });
+  },
+
+  setLanguages: async (source, target) => {
+    await api.setLanguages(source, target);
+    const p = get().project;
+    if (p) set({ project: { ...p, sourceLang: source, targetLang: target } });
   },
 
   setFilter: async (patch) => {

@@ -130,6 +130,91 @@ pub async fn translate_batch_or_split(
     }
 }
 
+/// Resolve the API base URL for a provider (config override or default).
+fn resolve_base(cfg: &ProviderConfig) -> String {
+    let default = match cfg.kind.as_str() {
+        "openai" => "https://api.openai.com/v1",
+        "openrouter" => "https://openrouter.ai/api/v1",
+        "local" => "http://localhost:11434/v1",
+        "anthropic" => "https://api.anthropic.com",
+        "gemini" => "https://generativelanguage.googleapis.com",
+        _ => "",
+    };
+    cfg.base_url
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| default.to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// List the models a provider currently offers. Used to populate the model
+/// picker (notably Ollama's installed models via its OpenAI-compatible API).
+pub async fn list_models(
+    client: &reqwest::Client,
+    key: Option<&str>,
+    cfg: &ProviderConfig,
+) -> Result<Vec<String>> {
+    let base = resolve_base(cfg);
+    let (url, mut req) = match cfg.kind.as_str() {
+        "openai" | "openrouter" | "local" => {
+            let url = format!("{base}/models");
+            let mut rb = client.get(&url);
+            if let Some(k) = key {
+                rb = rb.bearer_auth(k);
+            }
+            (url, rb)
+        }
+        "anthropic" => {
+            let url = format!("{base}/v1/models");
+            let rb = client
+                .get(&url)
+                .header("x-api-key", key.unwrap_or(""))
+                .header("anthropic-version", "2023-06-01");
+            (url, rb)
+        }
+        "gemini" => {
+            let url = format!("{base}/v1beta/models?key={}", key.unwrap_or(""));
+            (url.clone(), client.get(&url))
+        }
+        other => return Err(anyhow!("unknown provider kind: {other}")),
+    };
+    req = req.header("accept", "application/json");
+
+    let resp = req.send().await?;
+    let status = resp.status();
+    let text = resp.text().await?;
+    if !status.is_success() {
+        return Err(anyhow!("{status} from {url}: {text}"));
+    }
+    let v: serde_json::Value = serde_json::from_str(&text)?;
+
+    let mut models: Vec<String> = match cfg.kind.as_str() {
+        "gemini" => v["models"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m["name"].as_str())
+                    .map(|n| n.strip_prefix("models/").unwrap_or(n).to_string())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        // OpenAI-compatible + Anthropic both return { "data": [ { "id": ... } ] }.
+        _ => v["data"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m["id"].as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
 /// Build the concrete provider for a config.
 pub fn make_provider(cfg: &ProviderConfig) -> Result<Box<dyn TranslationProvider>> {
     match cfg.kind.as_str() {

@@ -12,10 +12,17 @@ use serde_json::{json, Value};
 /// Build the (system, user) message pair for a batch.
 pub fn build_messages(req: &BatchReq) -> (String, String) {
     let mut sys = String::new();
+    let src = if req.source_lang.trim().eq_ignore_ascii_case("auto")
+        || req.source_lang.trim().is_empty()
+    {
+        "the source language (auto-detect it, commonly Japanese or English)".to_string()
+    } else {
+        format!("{} text", req.source_lang)
+    };
     sys.push_str(&format!(
         "You are a professional video-game translator. Translate each item from \
          {src} into {tgt}. Register/tone: {tone}.\n",
-        src = req.source_lang,
+        src = src,
         tgt = req.target_lang,
         tone = req.tone,
     ));
