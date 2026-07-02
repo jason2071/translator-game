@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useStore } from "./store";
+import { useTheme } from "./theme";
 import { api, type ExportResult } from "./ipc";
 import ImportView from "./views/ImportView";
 import GridView from "./views/GridView";
@@ -49,9 +50,12 @@ function TopBar({ openPanel }: { openPanel: (p: Panel) => void }) {
   const [result, setResult] = useState<ExportResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [tmMsg, setTmMsg] = useState<string | null>(null);
+  const [applyingTm, setApplyingTm] = useState(false);
 
   async function doApplyTm() {
     setTmMsg(null);
+    setErr(null);
+    setApplyingTm(true);
     try {
       const n = await api.applyTm();
       setTmMsg(`Filled ${n} from memory`);
@@ -59,6 +63,8 @@ function TopBar({ openPanel }: { openPanel: (p: Panel) => void }) {
       await reloadUnits();
     } catch (e) {
       setErr(String(e));
+    } finally {
+      setApplyingTm(false);
     }
   }
 
@@ -112,8 +118,13 @@ function TopBar({ openPanel }: { openPanel: (p: Panel) => void }) {
         )}
         {tmMsg && <span className="export-ok">{tmMsg}</span>}
         {err && <span className="error">{err}</span>}
-        <button className="ghost" onClick={doApplyTm} title="Fill from translation memory + duplicates">
-          Apply TM
+        <button
+          className="ghost"
+          onClick={doApplyTm}
+          disabled={applyingTm}
+          title="Fill from translation memory + duplicates"
+        >
+          {applyingTm ? "Applying…" : "Apply TM"}
         </button>
         <button className="ghost" onClick={() => openPanel("glossary")}>
           Glossary
@@ -124,11 +135,22 @@ function TopBar({ openPanel }: { openPanel: (p: Panel) => void }) {
         <button className="primary" onClick={doExport} disabled={exporting}>
           {exporting ? "Exporting…" : "Export → game"}
         </button>
+        <ThemeToggle />
         <button className="ghost" onClick={closeProject}>
           Close
         </button>
       </div>
     </header>
+  );
+}
+
+function ThemeToggle() {
+  const theme = useTheme((s) => s.theme);
+  const toggle = useTheme((s) => s.toggle);
+  return (
+    <button className="ghost" onClick={toggle} title="Toggle light/dark theme">
+      {theme === "dark" ? "☀" : "🌙"}
+    </button>
   );
 }
 

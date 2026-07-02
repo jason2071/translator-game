@@ -47,6 +47,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_unit_status ON unit(status);
         CREATE INDEX IF NOT EXISTS idx_unit_file   ON unit(file);
+        -- apply_tm() joins units by source; without this it is O(n^2).
+        CREATE INDEX IF NOT EXISTS idx_unit_source ON unit(source);
         "#,
     )?;
     Ok(())

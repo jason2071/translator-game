@@ -83,8 +83,21 @@ pub fn build_messages(req: &BatchReq) -> (String, String) {
 /// back to single-item requests).
 pub fn parse_batch_response(text: &str, n: usize) -> Result<Vec<String>> {
     let cleaned = strip_fences(&strip_reasoning(text));
-    let arr = extract_array(&cleaned)
-        .ok_or_else(|| anyhow!("no JSON array found in model response"))?;
+    let arr = match extract_array(&cleaned) {
+        Some(a) => a,
+        None => {
+            // Translation-tuned / small models often ignore the JSON format and
+            // just return the translated text. Accept that only for a single
+            // item (the split fallback reduces every batch to size 1 on failure).
+            if n == 1 {
+                let t = cleaned.trim().trim_matches('"').trim();
+                if !t.is_empty() {
+                    return Ok(vec![t.to_string()]);
+                }
+            }
+            return Err(anyhow!("no JSON array found in model response"));
+        }
+    };
 
     let mut out = vec![None; n];
     for entry in arr {
@@ -240,5 +253,24 @@ mod tests {
         let text = "[{\"i\":0,\"t\":\"A\"}] trailing <think> partial reasoning...";
         let r = parse_batch_response(text, 1).unwrap();
         assert_eq!(r, vec!["A"]);
+    }
+
+    #[test]
+    fn single_item_accepts_raw_text() {
+        // Translation-only models reply with just the text, no JSON.
+        assert_eq!(parse_batch_response("สวัสดีชาวโลก!", 1).unwrap(), vec!["สวัสดีชาวโลก!"]);
+        // Quoted raw text is unwrapped.
+        assert_eq!(parse_batch_response("\"Bonjour\"", 1).unwrap(), vec!["Bonjour"]);
+        // Reasoning is still stripped before the raw fallback.
+        assert_eq!(
+            parse_batch_response("<think>hmm</think>\nสวัสดี", 1).unwrap(),
+            vec!["สวัสดี"]
+        );
+    }
+
+    #[test]
+    fn multi_item_raw_text_still_errors() {
+        // Raw text can't be re-aligned to >1 item, so it must fail (→ split path).
+        assert!(parse_batch_response("just some text", 3).is_err());
     }
 }

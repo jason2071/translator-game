@@ -10,9 +10,26 @@
   --err: #f7768e;
   --lock: #bb9af7;
   --border: #2f334d;
+  --on-accent: #16161e;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   color-scheme: dark;
   font-size: 14px;
+}
+
+:root[data-theme="light"] {
+  --bg: #f5f6fa;
+  --panel: #ffffff;
+  --panel2: #eef1f7;
+  --fg: #2a2e3a;
+  --muted: #7a819a;
+  --accent: #3b5bdb;
+  --ok: #2f9e44;
+  --warn: #e8940c;
+  --err: #e03131;
+  --lock: #7048e8;
+  --border: #dfe3ec;
+  --on-accent: #ffffff;
+  color-scheme: light;
 }
 
 * {
@@ -43,7 +60,7 @@ button:disabled {
 }
 button.primary {
   background: var(--accent);
-  color: #16161e;
+  color: var(--on-accent);
   border-color: var(--accent);
   font-weight: 600;
 }
@@ -62,6 +79,12 @@ code {
   margin: 5rem auto;
   padding: 2rem;
   text-align: center;
+  position: relative;
+}
+.theme-fab {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
 }
 .import-view .subtitle {
   color: var(--muted);

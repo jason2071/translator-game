@@ -24,11 +24,14 @@ interface AppStore {
   setFilter: (patch: Partial<UnitFilter>) => Promise<void>;
   reloadUnits: () => Promise<void>;
   refreshMeta: () => Promise<void>;
+  refreshStats: () => Promise<void>;
   editUnit: (id: number, translation: string, status?: Status) => Promise<void>;
   setStatus: (id: number, status: Status) => Promise<void>;
 }
 
-const PAGE = 2000;
+// Load the whole matching set; the grid is virtualized so only the visible
+// rows mount, and browsing a 13k-unit game stays smooth.
+const PAGE = 100000;
 
 export const useStore = create<AppStore>((set, get) => ({
   project: null,
@@ -81,9 +84,15 @@ export const useStore = create<AppStore>((set, get) => ({
     }
   },
 
+  // Full refresh (files + stats) — only after import / translate / apply-TM.
   refreshMeta: async () => {
     const [files, stats] = await Promise.all([api.listFiles(), api.getStats()]);
     set({ files, stats });
+  },
+
+  // Stats only — the file list can't change from an edit, so skip that query.
+  refreshStats: async () => {
+    set({ stats: await api.getStats() });
   },
 
   editUnit: async (id, translation, status) => {
@@ -99,7 +108,7 @@ export const useStore = create<AppStore>((set, get) => ({
         u.id === id ? { ...u, translation, status: nextStatus } : u
       ),
     });
-    await get().refreshMeta();
+    await get().refreshStats();
   },
 
   setStatus: async (id, status) => {
@@ -108,6 +117,6 @@ export const useStore = create<AppStore>((set, get) => ({
     set({
       units: get().units.map((u) => (u.id === id ? { ...u, status } : u)),
     });
-    await get().refreshMeta();
+    await get().refreshStats();
   },
 }));

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type DetectResult } from "../ipc";
 import { useStore } from "../store";
+import { useTheme } from "../theme";
 import { DEFAULT_SOURCE, DEFAULT_TARGET, SOURCE_LANGS, TARGET_LANGS } from "../langs";
 
 export default function ImportView() {
@@ -35,8 +36,14 @@ export default function ImportView() {
     }
   }
 
+  const theme = useTheme((s) => s.theme);
+  const toggleTheme = useTheme((s) => s.toggle);
+
   return (
     <div className="import-view">
+      <button className="theme-fab ghost" onClick={toggleTheme} title="Toggle theme">
+        {theme === "dark" ? "☀" : "🌙"}
+      </button>
       <h1>RPGMaker Translator</h1>
       <p className="subtitle">Import a game folder to begin</p>
 
