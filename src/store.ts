@@ -47,7 +47,7 @@ export const useStore = create<AppStore>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const project = await api.openProject(path, sourceLang, targetLang);
-      useGlossarySuggest.getState().reset(); // stale suggestions belong to the old game
+      useGlossarySuggest.getState().load(project.root); // restore this game's saved panel
       set({ project, filter: { limit: PAGE, offset: 0 } });
       await get().refreshMeta();
       await get().reloadUnits();

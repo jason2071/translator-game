@@ -4,9 +4,12 @@ import { useTranslation } from "./translation";
 
 // Glossary auto-suggest state lives in a store (not the modal component) so
 // closing the modal never loses candidates, filled translations, or an
-// in-flight AI translate — the backend keeps running and results land here.
-// The AI fill goes through the shared `useTranslation.run` so it shares the
-// one progress bar with the main Run and the two never overlap.
+// in-flight AI translate. It is ALSO persisted to localStorage per game, so
+// closing and reopening the whole app restores the panel exactly as left —
+// every translation (AI or hand-typed) survives. The AI fill goes through the
+// shared `useTranslation.run` so it shares the one progress bar with the main
+// Run and the two never overlap. AI results are additionally written to TM
+// (remember_texts) so they dedup against unit translation too.
 
 interface Row {
   on: boolean;
@@ -14,100 +17,177 @@ interface Row {
 }
 
 interface SuggestState {
+  root: string | null; // current game, used as the localStorage key
   cands: GlossCandidate[] | null;
   rows: Record<string, Row>;
   loading: boolean; // scanning for candidates
   msg: string | null;
 
+  load: (root: string) => void; // restore this game's saved panel (on open)
   suggest: () => Promise<void>;
   translateEmpty: (cfg: ProviderConfig) => Promise<void>;
+  translateOne: (term: string, cfg: ProviderConfig) => Promise<void>; // retry one
   setRow: (term: string, patch: Partial<Row>) => void;
   addSelected: (onAdded: () => void) => Promise<void>;
-  clear: () => void; // back to the suggest button, keep nothing
-  reset: () => void; // full reset (on project change)
+  clear: () => void; // discard the working set (also on disk)
+  reset: () => void; // drop in-memory state only, keep disk (on project close)
 }
 
-export const useGlossarySuggest = create<SuggestState>((set, get) => ({
-  cands: null,
-  rows: {},
-  loading: false,
-  msg: null,
+const keyFor = (root: string) => `rpgtl.gsuggest.${root}`;
 
-  suggest: async () => {
-    set({ loading: true, msg: null });
+export const useGlossarySuggest = create<SuggestState>((set, get) => {
+  // Write the working set to disk (or clear it when there are no candidates).
+  const persist = () => {
+    const { root, cands, rows } = get();
+    if (!root) return;
     try {
-      const c = await api.suggestGlossary();
-      const rows: Record<string, Row> = {};
-      for (const x of c) rows[x.term] = { on: true, tr: x.translation ?? "" };
-      set({ cands: c, rows });
-    } catch (e) {
-      set({ msg: String(e) });
-    } finally {
-      set({ loading: false });
+      if (cands) localStorage.setItem(keyFor(root), JSON.stringify({ cands, rows }));
+      else localStorage.removeItem(keyFor(root));
+    } catch {
+      /* quota / disabled storage — non-fatal */
     }
-  },
+  };
 
-  translateEmpty: async (cfg) => {
-    const { cands, rows } = get();
-    if (!cands) return;
-    const todo = cands.filter((c) => !(rows[c.term]?.tr ?? "").trim());
-    if (todo.length === 0) return;
-    if (useTranslation.getState().busy) {
-      set({ msg: "Another translation is running" });
-      return;
-    }
-    set({ msg: null });
-    // Fill each row live as its term returns, so the user watches which are
-    // done instead of the whole batch appearing at the end. The listener lives
-    // here (not the component), so results keep landing even if the modal closes.
-    const unlisten = await api.onTextItem((it) => {
-      const term = todo[it.index]?.term;
-      if (term && it.text) {
-        set((s) => ({ rows: { ...s.rows, [term]: { ...s.rows[term], tr: it.text! } } }));
+  return {
+    root: null,
+    cands: null,
+    rows: {},
+    loading: false,
+    msg: null,
+
+    load: (root) => {
+      let cands: GlossCandidate[] | null = null;
+      let rows: Record<string, Row> = {};
+      try {
+        const raw = localStorage.getItem(keyFor(root));
+        if (raw) {
+          const d = JSON.parse(raw);
+          cands = d.cands ?? null;
+          rows = d.rows ?? {};
+        }
+      } catch {
+        /* corrupt entry — start fresh */
       }
-    });
-    try {
-      const res = await useTranslation
-        .getState()
-        .run("glossary", () => api.translateTexts(todo.map((c) => c.term), cfg));
-      // Rows already filled live; here just tally for the summary. A null result
-      // = that term failed (or the run was cancelled).
-      let filled = 0;
-      let failed = 0;
-      const pairs: [string, string][] = [];
-      todo.forEach((c, i) => {
-        const t = res[i];
-        if (t) {
-          filled++;
-          pairs.push([c.term, t]);
-        } else {
-          failed++;
+      set({ root, cands, rows, loading: false, msg: null });
+    },
+
+    suggest: async () => {
+      set({ loading: true, msg: null });
+      try {
+        const c = await api.suggestGlossary();
+        // Merge: keep every existing (possibly hand-edited) translation, fill
+        // empties from the DB/TM prefill, and add any new candidates.
+        set((s) => {
+          const rows = { ...s.rows };
+          for (const x of c) {
+            if (!rows[x.term]) rows[x.term] = { on: true, tr: x.translation ?? "" };
+            else if (!(rows[x.term].tr ?? "").trim() && x.translation)
+              rows[x.term] = { ...rows[x.term], tr: x.translation };
+          }
+          return { cands: c, rows };
+        });
+        persist();
+      } catch (e) {
+        set({ msg: String(e) });
+      } finally {
+        set({ loading: false });
+      }
+    },
+
+    translateEmpty: async (cfg) => {
+      const { cands, rows } = get();
+      if (!cands) return;
+      const todo = cands.filter((c) => !(rows[c.term]?.tr ?? "").trim());
+      if (todo.length === 0) return;
+      if (useTranslation.getState().busy) {
+        set({ msg: "Another translation is running" });
+        return;
+      }
+      set({ msg: null });
+      // Fill each row live as its term returns, so the user watches which are
+      // done instead of the whole batch appearing at the end. The listener lives
+      // here (not the component), so results keep landing even if the modal closes.
+      const unlisten = await api.onTextItem((it) => {
+        const term = todo[it.index]?.term;
+        if (term && it.text) {
+          set((s) => ({ rows: { ...s.rows, [term]: { ...s.rows[term], tr: it.text! } } }));
+          persist();
         }
       });
-      // Persist to TM so re-suggesting prefills these instead of re-translating.
-      if (pairs.length) await api.rememberTexts(pairs);
-      set({ msg: failed > 0 ? `Filled ${filled} · ${failed} failed` : `Filled ${filled}` });
-    } catch (e) {
-      set({ msg: String(e) });
-    } finally {
-      unlisten();
-    }
-  },
+      try {
+        const res = await useTranslation
+          .getState()
+          .run("glossary", () => api.translateTexts(todo.map((c) => c.term), cfg));
+        // Rows already filled live; here just tally and remember. A null result
+        // = that term failed (or the run was cancelled).
+        let filled = 0;
+        let failed = 0;
+        const pairs: [string, string][] = [];
+        todo.forEach((c, i) => {
+          const t = res[i];
+          if (t) {
+            filled++;
+            pairs.push([c.term, t]);
+          } else {
+            failed++;
+          }
+        });
+        // Persist to TM (dedup vs unit translation) and to disk (panel survives).
+        if (pairs.length) await api.rememberTexts(pairs);
+        persist();
+        set({ msg: failed > 0 ? `Filled ${filled} · ${failed} failed` : `Filled ${filled}` });
+      } catch (e) {
+        set({ msg: String(e) });
+      } finally {
+        unlisten();
+      }
+    },
 
-  setRow: (term, patch) =>
-    set((s) => ({ rows: { ...s.rows, [term]: { ...s.rows[term], ...patch } } })),
+    translateOne: async (term, cfg) => {
+      if (useTranslation.getState().busy) {
+        set({ msg: "Another translation is running" });
+        return;
+      }
+      set({ msg: null });
+      try {
+        const res = await useTranslation
+          .getState()
+          .run("glossary", () => api.translateTexts([term], cfg));
+        const t = res[0];
+        if (t) {
+          set((s) => ({ rows: { ...s.rows, [term]: { ...s.rows[term], tr: t } } }));
+          await api.rememberTexts([[term, t]]);
+          persist();
+          set({ msg: `Filled ${term}` });
+        } else {
+          set({ msg: `${term} failed` });
+        }
+      } catch (e) {
+        set({ msg: String(e) });
+      }
+    },
 
-  addSelected: async (onAdded) => {
-    const { cands, rows } = get();
-    if (!cands) return;
-    const items: [string, string][] = cands
-      .filter((c) => rows[c.term]?.on && rows[c.term]?.tr.trim())
-      .map((c) => [c.term, rows[c.term].tr.trim()]);
-    const n = await api.glossaryAddBulk(items);
-    set({ cands: null, rows: {}, msg: `Added ${n}` });
-    onAdded();
-  },
+    setRow: (term, patch) => {
+      set((s) => ({ rows: { ...s.rows, [term]: { ...s.rows[term], ...patch } } }));
+      persist();
+    },
 
-  clear: () => set({ cands: null, rows: {} }),
-  reset: () => set({ cands: null, rows: {}, loading: false, msg: null }),
-}));
+    addSelected: async (onAdded) => {
+      const { cands, rows } = get();
+      if (!cands) return;
+      const items: [string, string][] = cands
+        .filter((c) => rows[c.term]?.on && rows[c.term]?.tr.trim())
+        .map((c) => [c.term, rows[c.term].tr.trim()]);
+      const n = await api.glossaryAddBulk(items);
+      set({ cands: null, rows: {}, msg: `Added ${n}` });
+      persist(); // cands null -> removes the saved working set
+      onAdded();
+    },
+
+    clear: () => {
+      set({ cands: null, rows: {} });
+      persist();
+    },
+    reset: () => set({ root: null, cands: null, rows: {}, loading: false, msg: null }),
+  };
+});

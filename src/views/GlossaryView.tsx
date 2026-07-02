@@ -95,6 +95,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
     msg,
     suggest,
     translateEmpty,
+    translateOne,
     setRow,
     addSelected,
     clear,
@@ -110,6 +111,8 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
   const filled = cands
     ? cands.filter((c) => (rows[c.term]?.tr ?? "").trim()).length
     : 0;
+  // Remaining = failed + never-translated + skipped; the AI button retries these.
+  const remaining = cands ? cands.length - filled : 0;
 
   if (!cands) {
     return (
@@ -143,10 +146,18 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
           <button
             className="ghost"
             onClick={() => translateEmpty(activeConfig())}
-            disabled={otherBusy}
-            title={otherBusy ? "A translation is already running" : undefined}
+            disabled={otherBusy || remaining === 0}
+            title={
+              otherBusy
+                ? "A translation is already running"
+                : remaining === 0
+                  ? "All candidates have a translation"
+                  : "Translate every empty/failed/skipped term"
+            }
           >
-            🌐 Translate empty (AI)
+            {filled > 0
+              ? `↻ Re-translate remaining (${remaining})`
+              : `🌐 Translate empty (${remaining})`}
           </button>
         )}
         <button className="primary" onClick={() => addSelected(onAdded)} disabled={translating}>
@@ -181,7 +192,18 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
                 value={rows[c.term]?.tr ?? ""}
                 onChange={(e) => setRow(c.term, { tr: e.target.value })}
               />
-              <span className="cand-mark">{done ? "✓" : ""}</span>
+              {done ? (
+                <span className="cand-mark">✓</span>
+              ) : (
+                <button
+                  className="cand-retry"
+                  onClick={() => translateOne(c.term, activeConfig())}
+                  disabled={busy}
+                  title="Translate this term with AI"
+                >
+                  ↻
+                </button>
+              )}
             </div>
           );
         })}

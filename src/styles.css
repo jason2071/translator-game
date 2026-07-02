@@ -537,6 +537,22 @@ code {
   width: 1ch;
   text-align: center;
 }
+.cand-retry {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 0 0.35rem;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.cand-retry:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.cand-retry:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 
 /* ---- Lint ---- */
 .lint-list {
