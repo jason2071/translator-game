@@ -2,7 +2,7 @@
 //! All functions take a borrowed [`Connection`]; the project module owns it.
 
 use crate::model::{Status, TransUnit, UnitKind};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -146,14 +146,21 @@ pub fn list_units(conn: &Connection, filter: &UnitFilter) -> Result<Vec<TransUni
     }
     if let Some(q) = &filter.search {
         if !q.is_empty() {
-            sql.push_str(" AND (source LIKE ? OR translation LIKE ?)");
-            let like = format!("%{q}%");
+            // Escape LIKE metacharacters so a literal % or _ isn't a wildcard.
+            let esc = q
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            sql.push_str(" AND (source LIKE ? ESCAPE '\\' OR translation LIKE ? ESCAPE '\\')");
+            let like = format!("%{esc}%");
             args.push(Box::new(like.clone()));
             args.push(Box::new(like));
         }
     }
     sql.push_str(" ORDER BY id");
-    let limit = filter.limit.unwrap_or(500).clamp(1, 5000);
+    // Grid pages are small; the ceiling is high so a whole-project translate
+    // (which passes an explicit large limit) is never silently truncated.
+    let limit = filter.limit.unwrap_or(500).clamp(1, 200_000);
     let offset = filter.offset.unwrap_or(0).max(0);
     sql.push_str(" LIMIT ? OFFSET ?");
     args.push(Box::new(limit));
@@ -192,6 +199,8 @@ pub fn all_units(conn: &Connection) -> Result<Vec<TransUnit>> {
 }
 
 pub fn update_unit(conn: &Connection, id: i64, translation: Option<&str>, status: &str) -> Result<()> {
+    // Normalize the status so an unknown string can never poison stats()/export.
+    let status = Status::from_str(status).as_str();
     conn.execute(
         "UPDATE unit SET translation = ?1, status = ?2 WHERE id = ?3",
         params![translation, status, id],
@@ -354,6 +363,9 @@ pub fn glossary_add(
     note: Option<&str>,
     case_sensitive: bool,
 ) -> Result<i64> {
+    if term.trim().is_empty() || translation.trim().is_empty() {
+        return Err(anyhow!("glossary term and translation must not be empty"));
+    }
     conn.execute(
         "INSERT INTO glossary(term, translation, note, case_sensitive) VALUES(?1, ?2, ?3, ?4)",
         params![term, translation, note, case_sensitive as i64],

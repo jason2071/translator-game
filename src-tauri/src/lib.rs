@@ -313,7 +313,7 @@ async fn translate_units(
             project::db::units_by_ids(&proj.conn, ids).map_err(|e| e.to_string())?
         } else {
             let mut f = scope.filter.unwrap_or_default();
-            f.limit = Some(5000);
+            f.limit = Some(200_000); // translate the whole matching set, not a page
             project::db::list_units(&proj.conn, &f).map_err(|e| e.to_string())?
         };
 
