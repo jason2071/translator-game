@@ -465,6 +465,63 @@ code {
   padding: 1rem;
 }
 
+/* ---- Glossary auto-suggest ---- */
+.suggest-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.8rem;
+}
+.suggest-panel {
+  margin-bottom: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.suggest-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.suggest-head .hint {
+  flex: 1;
+  margin: 0;
+}
+.suggest-list {
+  max-height: 340px;
+  overflow: auto;
+}
+.suggest-row {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.3rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+.cand-term {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cand-tr {
+  font: inherit;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.4rem;
+}
+.cand-tr:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* ---- Lint ---- */
 .lint-list {
   list-style: none;

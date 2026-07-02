@@ -122,8 +122,16 @@ export interface TranslateScope {
 export interface TranslateSummary {
   requested: number;
   translated: number;
+  reused: number;
   failed: number;
   cancelled: boolean;
+}
+
+export interface GlossCandidate {
+  term: string;
+  translation: string | null;
+  kind: string;
+  count: number;
 }
 
 export interface Progress {
@@ -186,9 +194,14 @@ export const api = {
     }),
   glossaryDelete: (id: number) => invoke<void>("glossary_delete", { id }),
   glossaryLint: () => invoke<LintWarning[]>("glossary_lint"),
+  suggestGlossary: () => invoke<GlossCandidate[]>("suggest_glossary"),
+  glossaryAddBulk: (items: [string, string][]) =>
+    invoke<number>("glossary_add_bulk", { items }),
 
   translateUnits: (scope: TranslateScope, config: ProviderConfig) =>
     invoke<TranslateSummary>("translate_units", { scope, config }),
+  translateTexts: (texts: string[], config: ProviderConfig) =>
+    invoke<(string | null)[]>("translate_texts", { texts, config }),
   cancelTranslation: () => invoke<void>("cancel_translation"),
   testProvider: (config: ProviderConfig) =>
     invoke<string>("test_provider", { config }),

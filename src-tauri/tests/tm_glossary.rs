@@ -94,3 +94,49 @@ fn glossary_crud_and_lint() {
     let warns2 = project::db::glossary_lint(&proj.conn).unwrap();
     assert!(!warns2.iter().any(|w| w.unit_id == potion.id));
 }
+
+#[test]
+fn glossary_bulk_add_skips_empties() {
+    let (_tmp, root) = temp_game();
+    let (mut proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+    let n = project::db::glossary_add_bulk(
+        &mut proj.conn,
+        &[
+            ("A".into(), "ก".into()),
+            ("".into(), "x".into()),      // empty term — skipped
+            ("B".into(), "  ".into()),    // blank translation — skipped
+            ("C".into(), "ค".into()),
+        ],
+    )
+    .unwrap();
+    assert_eq!(n, 2);
+    assert_eq!(project::db::glossary_list(&proj.conn).unwrap().len(), 2);
+}
+
+#[test]
+fn suggest_glossary_mines_names_and_terms() {
+    let (_tmp, root) = temp_game();
+    let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+
+    // Actor name/nickname + System terms are candidates.
+    let cands = project::db::suggest_glossary(&proj.conn).unwrap();
+    assert!(cands.iter().any(|c| c.term == "Hero"));
+    assert!(cands.iter().any(|c| c.term == "The Brave"));
+    assert!(cands.iter().any(|c| c.term == "Dagger")); // weaponType term
+
+    // Pre-fill: translating a name unit surfaces its translation in the candidate.
+    let brave = all(&proj.conn)
+        .into_iter()
+        .find(|u| u.file == "Actors.json" && u.pointer == "/1/nickname")
+        .unwrap();
+    project::db::update_unit(&proj.conn, brave.id, Some("ผู้กล้า"), Status::Translated.as_str())
+        .unwrap();
+    let cands2 = project::db::suggest_glossary(&proj.conn).unwrap();
+    let c = cands2.iter().find(|c| c.term == "The Brave").unwrap();
+    assert_eq!(c.translation.as_deref(), Some("ผู้กล้า"));
+
+    // Adding a term to the glossary removes it from future suggestions.
+    project::db::glossary_add(&proj.conn, "Hero", "ฮีโร่", None, false).unwrap();
+    let cands3 = project::db::suggest_glossary(&proj.conn).unwrap();
+    assert!(!cands3.iter().any(|c| c.term == "Hero"));
+}

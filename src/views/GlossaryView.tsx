@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type GlossaryEntry } from "../ipc";
+import { api, type GlossaryEntry, type GlossCandidate } from "../ipc";
+import { useSettings } from "../settings";
 
 export default function GlossaryView() {
   const [entries, setEntries] = useState<GlossaryEntry[]>([]);
@@ -31,6 +32,9 @@ export default function GlossaryView() {
         Terms are fed to the AI and used to lint translations for consistency
         (proper nouns, stats, item names).
       </p>
+
+      <SuggestPanel onAdded={reload} />
+
 
       <div className="gloss-add">
         <input placeholder="Source term" value={term} onChange={(e) => setTerm(e.target.value)} />
@@ -75,6 +79,120 @@ export default function GlossaryView() {
           )}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function SuggestPanel({ onAdded }: { onAdded: () => void }) {
+  const activeConfig = useSettings((s) => s.activeConfig);
+  const [cands, setCands] = useState<GlossCandidate[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  const [rows, setRows] = useState<Record<string, { on: boolean; tr: string }>>({});
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function suggest() {
+    setLoading(true);
+    setMsg(null);
+    try {
+      const c = await api.suggestGlossary();
+      setCands(c);
+      const init: Record<string, { on: boolean; tr: string }> = {};
+      for (const x of c) init[x.term] = { on: true, tr: x.translation ?? "" };
+      setRows(init);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // AI-translate the candidates that still have no translation.
+  async function translateEmpty() {
+    if (!cands) return;
+    const todo = cands.filter((c) => !(rows[c.term]?.tr ?? "").trim());
+    if (todo.length === 0) return;
+    setTranslating(true);
+    setMsg(null);
+    try {
+      const res = await api.translateTexts(todo.map((c) => c.term), activeConfig());
+      setRows((r) => {
+        const next = { ...r };
+        todo.forEach((c, i) => {
+          const t = res[i];
+          if (t) next[c.term] = { ...next[c.term], tr: t };
+        });
+        return next;
+      });
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setTranslating(false);
+    }
+  }
+
+  async function addSelected() {
+    if (!cands) return;
+    const items: [string, string][] = cands
+      .filter((c) => rows[c.term]?.on && rows[c.term]?.tr.trim())
+      .map((c) => [c.term, rows[c.term].tr.trim()]);
+    const n = await api.glossaryAddBulk(items);
+    setCands(null);
+    setMsg(`Added ${n}`);
+    onAdded();
+  }
+
+  if (!cands) {
+    return (
+      <div className="suggest-bar">
+        <button className="ghost" onClick={suggest} disabled={loading}>
+          {loading ? "Scanning…" : "✨ Auto-suggest from game"}
+        </button>
+        {msg && <span className="ok-msg">{msg}</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="suggest-panel">
+      <div className="suggest-head">
+        <strong>{cands.length} candidates</strong>
+        <span className="hint">
+          character/enemy names + terms.
+        </span>
+        {msg && <span className="error">{msg}</span>}
+        <button className="ghost" onClick={translateEmpty} disabled={translating}>
+          {translating ? "Translating…" : "🌐 Translate empty (AI)"}
+        </button>
+        <button className="primary" onClick={addSelected}>
+          Add selected
+        </button>
+        <button className="ghost" onClick={() => setCands(null)}>
+          Cancel
+        </button>
+      </div>
+      <div className="suggest-list">
+        {cands.map((c) => (
+          <div key={c.term} className="suggest-row">
+            <input
+              type="checkbox"
+              checked={rows[c.term]?.on ?? true}
+              onChange={(e) =>
+                setRows((r) => ({ ...r, [c.term]: { ...r[c.term], on: e.target.checked } }))
+              }
+            />
+            <span className="cand-term" title={`${c.kind} ×${c.count}`}>
+              {c.term}
+            </span>
+            <input
+              className="cand-tr"
+              placeholder="translation…"
+              value={rows[c.term]?.tr ?? ""}
+              onChange={(e) =>
+                setRows((r) => ({ ...r, [c.term]: { ...r[c.term], tr: e.target.value } }))
+              }
+            />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

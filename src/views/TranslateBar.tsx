@@ -123,6 +123,7 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
         <span className="export-ok">
           {summary.cancelled ? "Cancelled — " : "Done — "}
           {summary.translated} translated
+          {summary.reused > 0 ? `, ${summary.reused} reused` : ""}
           {summary.failed > 0 ? `, ${summary.failed} failed` : ""}
         </span>
       )}

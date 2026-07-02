@@ -395,6 +395,64 @@ pub fn glossary_delete(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Insert several glossary entries in one transaction (skips empties).
+pub fn glossary_add_bulk(conn: &mut Connection, items: &[(String, String)]) -> Result<usize> {
+    let tx = conn.transaction()?;
+    let mut added = 0usize;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO glossary(term, translation, note, case_sensitive) VALUES(?1, ?2, NULL, 0)",
+        )?;
+        for (term, translation) in items {
+            if term.trim().is_empty() || translation.trim().is_empty() {
+                continue;
+            }
+            added += stmt.execute(params![term, translation])?;
+        }
+    }
+    tx.commit()?;
+    Ok(added)
+}
+
+/// A proposed glossary entry mined from the game: a proper noun (character /
+/// enemy name) or a System term, with any translation the game already has.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlossCandidate {
+    pub term: String,
+    pub translation: Option<String>,
+    pub kind: String,
+    pub count: i64,
+}
+
+/// Mine glossary candidates from the extracted units: actor names/nicknames,
+/// enemy names, and System terms. Excludes anything already in the glossary and
+/// pre-fills the translation from an already-translated instance when present.
+pub fn suggest_glossary(conn: &Connection) -> Result<Vec<GlossCandidate>> {
+    let mut stmt = conn.prepare(
+        "SELECT source, MAX(translation) AS tr, MIN(kind) AS k, COUNT(*) AS c
+           FROM unit
+          WHERE source <> ''
+            AND ( (file = 'Actors.json'  AND kind IN ('Name','Nickname'))
+               OR (file = 'Enemies.json' AND kind = 'Name')
+               OR (file = 'Classes.json' AND kind = 'Name')
+               OR kind = 'Term' )
+            AND source NOT IN (SELECT term FROM glossary)
+          GROUP BY source
+          ORDER BY c DESC, source
+          LIMIT 500",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(GlossCandidate {
+            term: r.get(0)?,
+            translation: r.get::<_, Option<String>>(1)?,
+            kind: r.get(2)?,
+            count: r.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// A glossary violation: a translated unit whose source uses a glossary term
 /// but whose translation lacks the mapped wording.
 #[derive(Debug, Serialize)]

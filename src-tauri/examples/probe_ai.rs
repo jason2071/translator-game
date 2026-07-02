@@ -40,7 +40,7 @@ async fn main() {
         base_url: None,
         model: model.clone(),
         temperature: Some(0.0),
-        max_tokens: Some(512),
+        max_tokens: Some(4096),
         batch_size: Some(n),
         rpm: None,
         tone: Some("casual".into()),
@@ -57,7 +57,7 @@ async fn main() {
         extra_system: None,
         model,
         temperature: 0.0,
-        max_tokens: 512,
+        max_tokens: 4096,
         thinking: Some(false),
     };
 

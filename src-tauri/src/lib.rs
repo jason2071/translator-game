@@ -14,7 +14,7 @@ use ai::{BatchItem, BatchReq, GlossPair, ProviderConfig};
 use engine::protect;
 use engine::DetectResult;
 use model::Status;
-use project::db::{FileCount, GlossaryEntry, LintWarning, Stats, UnitFilter};
+use project::db::{FileCount, GlossCandidate, GlossaryEntry, LintWarning, Stats, UnitFilter};
 use project::{ExportResult, Project, ProjectInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -218,6 +218,21 @@ fn glossary_lint(state: tauri::State<AppState>) -> Result<Vec<LintWarning>, Stri
     with_project(&state, |p| project::db::glossary_lint(&p.conn))
 }
 
+/// Mine proper-noun / term candidates from the game for the glossary.
+#[tauri::command]
+fn suggest_glossary(state: tauri::State<AppState>) -> Result<Vec<GlossCandidate>, String> {
+    with_project(&state, |p| project::db::suggest_glossary(&p.conn))
+}
+
+/// Add several glossary entries at once; returns how many were inserted.
+#[tauri::command]
+fn glossary_add_bulk(
+    items: Vec<(String, String)>,
+    state: tauri::State<AppState>,
+) -> Result<usize, String> {
+    with_project_mut(&state, |p| project::db::glossary_add_bulk(&mut p.conn, &items))
+}
+
 #[tauri::command]
 fn get_stats(state: tauri::State<AppState>) -> Result<Stats, String> {
     with_project(&state, |p| project::db::stats(&p.conn))
@@ -255,6 +270,8 @@ struct TranslateScope {
 struct TranslateSummary {
     requested: usize,
     translated: usize,
+    /// Units filled from translation memory / de-duplication (no AI call).
+    reused: usize,
     failed: usize,
     cancelled: bool,
 }
@@ -268,11 +285,12 @@ struct Progress {
     failed: usize,
 }
 
-/// One unit selected for translation (source pulled out under the DB lock).
-struct Work {
-    id: i64,
+/// A distinct source string plus every unit id that shares it. Translating the
+/// group once and applying to all ids avoids re-translating duplicate lines.
+struct Group {
     source: String,
     context: Option<String>,
+    ids: Vec<i64>,
 }
 
 /// Cancel an in-flight translation run.
@@ -303,8 +321,11 @@ async fn translate_units(
         None
     };
 
-    // Gather work + glossary + langs under the lock, then release it before any await.
-    let (work, glossary, source_lang, target_lang) = {
+    // Under the lock: collect the units that need work, group them by identical
+    // source (dedup), and pre-fill any group whose source is already in TM. Only
+    // genuinely-new distinct sources reach the AI, so repeated lines and
+    // previously-translated strings are never re-billed.
+    let (to_ai, total, reused, glossary, source_lang, target_lang) = {
         let guard = state.project.lock().unwrap();
         let proj = guard.as_ref().ok_or("no project is open")?;
         let overwrite = scope.overwrite.unwrap_or(false);
@@ -317,16 +338,46 @@ async fn translate_units(
             project::db::list_units(&proj.conn, &f).map_err(|e| e.to_string())?
         };
 
-        let work: Vec<Work> = candidates
-            .into_iter()
-            .filter(|u| !u.source.is_empty())
-            .filter(|u| overwrite || u.status == Status::Untranslated)
-            .map(|u| Work {
-                id: u.id,
-                source: u.source,
-                context: u.context,
-            })
-            .collect();
+        // Group by source; keep the first context seen for each.
+        let mut order: Vec<Group> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
+        let mut total_units = 0usize;
+        for u in candidates {
+            if u.source.is_empty() || !(overwrite || u.status == Status::Untranslated) {
+                continue;
+            }
+            total_units += 1;
+            match index.get(&u.source) {
+                Some(&i) => order[i].ids.push(u.id),
+                None => {
+                    index.insert(u.source.clone(), order.len());
+                    order.push(Group {
+                        source: u.source,
+                        context: u.context,
+                        ids: vec![u.id],
+                    });
+                }
+            }
+        }
+
+        // Pre-fill from persisted TM; everything else goes to the AI.
+        let mut to_ai: Vec<Group> = Vec::new();
+        let mut reused = 0usize;
+        for g in order {
+            if let Some(tm) = project::db::tm_lookup(&proj.conn, &g.source).ok().flatten() {
+                for id in &g.ids {
+                    let _ = project::db::update_unit(
+                        &proj.conn,
+                        *id,
+                        Some(&tm),
+                        Status::Translated.as_str(),
+                    );
+                }
+                reused += g.ids.len();
+            } else {
+                to_ai.push(g);
+            }
+        }
 
         let glossary = project::db::glossary_list(&proj.conn)
             .map_err(|e| e.to_string())?
@@ -336,31 +387,29 @@ async fn translate_units(
                 translation: g.translation,
             })
             .collect::<Vec<_>>();
+        let source_lang = project::db::get_meta(&proj.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
+        let target_lang = project::db::get_meta(&proj.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into());
 
-        let source_lang =
-            project::db::get_meta(&proj.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
-        let target_lang =
-            project::db::get_meta(&proj.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into());
-
-        (work, glossary, source_lang, target_lang)
+        (to_ai, total_units, reused, glossary, source_lang, target_lang)
     };
 
-    let total = work.len();
     let mut summary = TranslateSummary {
         requested: total,
+        reused,
         ..Default::default()
     };
-    if total == 0 {
+    let mut done = reused;
+    // Instant jump for the TM-reused units.
+    let _ = app.emit(
+        "translate://progress",
+        Progress { done, total, translated: reused, failed: 0 },
+    );
+    if to_ai.is_empty() {
         return Ok(summary);
     }
 
-    // Mask control codes once; remember tokens + source per unit id.
-    let mut masked: HashMap<i64, protect::Masked> = HashMap::new();
-    let mut source_of: HashMap<i64, String> = HashMap::new();
-    for w in &work {
-        masked.insert(w.id, protect::mask(&w.source));
-        source_of.insert(w.id, w.source.clone());
-    }
+    // Mask each distinct source once (aligned to to_ai).
+    let masks: Vec<protect::Masked> = to_ai.iter().map(|g| protect::mask(&g.source)).collect();
 
     let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
     let client = state.http.clone();
@@ -369,9 +418,9 @@ async fn translate_units(
     let batch_size = config.batch_size();
     let interval = config.min_interval_ms();
 
-    let mut done = 0usize;
     let mut first = true;
-    for chunk in work.chunks(batch_size) {
+    let mut base = 0usize; // index of the chunk's first group within to_ai
+    for chunk in to_ai.chunks(batch_size) {
         if state.cancel.load(Ordering::SeqCst) {
             summary.cancelled = true;
             break;
@@ -383,12 +432,15 @@ async fn translate_units(
 
         let items: Vec<BatchItem> = chunk
             .iter()
-            .map(|w| BatchItem {
-                id: w.id,
-                text: masked[&w.id].text.clone(),
-                context: w.context.clone(),
+            .enumerate()
+            .map(|(j, g)| BatchItem {
+                id: (base + j) as i64,
+                text: masks[base + j].text.clone(),
+                context: g.context.clone(),
             })
             .collect();
+        let batch_units: usize = chunk.iter().map(|g| g.ids.len()).sum();
+
         let req = BatchReq {
             items,
             glossary: glossary.clone(),
@@ -402,53 +454,160 @@ async fn translate_units(
             thinking: config.thinking,
         };
 
-        let results =
-            ai::translate_batch_or_split(provider.as_ref(), &client, key.as_deref(), &req).await;
+        // Batch in one call; on misalignment fall back to per-item — cancellable,
+        // with progress after every item so the UI never looks frozen.
+        let results: Vec<Option<String>> =
+            match provider.translate_batch(&client, key.as_deref(), &req).await {
+                Ok(v) => {
+                    done += batch_units;
+                    v.into_iter().map(Some).collect()
+                }
+                Err(_) => {
+                    let mut out: Vec<Option<String>> = Vec::with_capacity(chunk.len());
+                    for (j, g) in chunk.iter().enumerate() {
+                        if state.cancel.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let single = BatchReq {
+                            items: vec![req.items[j].clone()],
+                            ..req.clone()
+                        };
+                        let r = provider
+                            .translate_batch(&client, key.as_deref(), &single)
+                            .await
+                            .ok()
+                            .and_then(|mut v| v.pop());
+                        out.push(r);
+                        done += g.ids.len();
+                        let _ = app.emit(
+                            "translate://progress",
+                            Progress {
+                                done,
+                                total,
+                                translated: summary.translated + reused,
+                                failed: summary.failed,
+                            },
+                        );
+                    }
+                    while out.len() < chunk.len() {
+                        out.push(None);
+                    }
+                    out
+                }
+            };
 
-        // Restore control codes and collect the ones that validate.
-        let mut writes: Vec<(i64, String)> = Vec::new();
-        for (w, res) in chunk.iter().zip(results.into_iter()) {
+        // Restore, then apply each translation to ALL units sharing that source.
+        let mut writes: Vec<(Vec<i64>, String, String)> = Vec::new();
+        for (j, (g, res)) in chunk.iter().zip(results.into_iter()).enumerate() {
             match res {
-                Some(translated) => match protect::restore(&translated, &masked[&w.id].tokens) {
-                    Ok(final_text) => writes.push((w.id, final_text)),
-                    Err(_) => summary.failed += 1, // placeholder mangled — leave for human
+                Some(m) => match protect::restore(&m, &masks[base + j].tokens) {
+                    Ok(t) => writes.push((g.ids.clone(), g.source.clone(), t)),
+                    Err(_) => summary.failed += g.ids.len(), // placeholder mangled
                 },
-                None => summary.failed += 1,
+                None => summary.failed += g.ids.len(),
             }
         }
 
-        // Persist this batch under the lock.
         if !writes.is_empty() {
             let guard = state.project.lock().unwrap();
             if let Some(proj) = guard.as_ref() {
-                for (id, text) in &writes {
-                    let _ = project::db::update_unit(
-                        &proj.conn,
-                        *id,
-                        Some(text),
-                        Status::Translated.as_str(),
-                    );
-                    if let Some(src) = source_of.get(id) {
-                        let _ = project::db::tm_upsert(&proj.conn, src, text);
+                for (ids, source, text) in &writes {
+                    for id in ids {
+                        let _ = project::db::update_unit(
+                            &proj.conn,
+                            *id,
+                            Some(text),
+                            Status::Translated.as_str(),
+                        );
                     }
+                    let _ = project::db::tm_upsert(&proj.conn, source, text);
+                    summary.translated += ids.len();
                 }
-                summary.translated += writes.len();
             }
         }
 
-        done += chunk.len();
         let _ = app.emit(
             "translate://progress",
             Progress {
                 done,
                 total,
-                translated: summary.translated,
+                translated: summary.translated + reused,
                 failed: summary.failed,
             },
         );
+        base += chunk.len();
     }
 
     Ok(summary)
+}
+
+/// Translate arbitrary strings (e.g. glossary candidates) and return the
+/// results aligned to the input, without touching the project DB.
+#[tauri::command]
+async fn translate_texts(
+    texts: Vec<String>,
+    config: ProviderConfig,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<Option<String>>, String> {
+    if texts.is_empty() {
+        return Ok(vec![]);
+    }
+    let key: Option<String> = if config.needs_key() {
+        Some(
+            keys::get_key(&config.kind)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("no API key stored for provider '{}'", config.kind))?,
+        )
+    } else {
+        None
+    };
+
+    // Use the open project's languages if there is one; else default JA->TH.
+    let (source_lang, target_lang) = {
+        let guard = state.project.lock().unwrap();
+        match guard.as_ref() {
+            Some(p) => (
+                project::db::get_meta(&p.conn, "source_lang").ok().flatten().unwrap_or_else(|| "Japanese".into()),
+                project::db::get_meta(&p.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into()),
+            ),
+            None => ("Japanese".into(), "Thai".into()),
+        }
+    };
+
+    let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
+    let client = state.http.clone();
+    let masks: Vec<protect::Masked> = texts.iter().map(|t| protect::mask(t)).collect();
+
+    let mut out: Vec<Option<String>> = Vec::with_capacity(texts.len());
+    for chunk_start in (0..texts.len()).step_by(config.batch_size()) {
+        let end = (chunk_start + config.batch_size()).min(texts.len());
+        let items: Vec<BatchItem> = (chunk_start..end)
+            .map(|i| BatchItem {
+                id: i as i64,
+                text: masks[i].text.clone(),
+                context: None,
+            })
+            .collect();
+        let req = BatchReq {
+            items,
+            glossary: vec![], // don't feed the glossary while building it
+            source_lang: source_lang.clone(),
+            target_lang: target_lang.clone(),
+            tone: config.tone.clone().unwrap_or_else(|| "casual".into()),
+            extra_system: None,
+            model: config.model.clone(),
+            temperature: config.temperature(),
+            max_tokens: config.max_tokens(),
+            thinking: config.thinking,
+        };
+        let res =
+            ai::translate_batch_or_split(provider.as_ref(), &client, key.as_deref(), &req).await;
+        for (offset, r) in res.into_iter().enumerate() {
+            let restored = r.and_then(|m| protect::restore(&m, &masks[chunk_start + offset].tokens).ok());
+            out.push(restored);
+        }
+    }
+    Ok(out)
 }
 
 /// Translate a fixed sample string to verify a provider + key + model work.
@@ -549,7 +708,10 @@ pub fn run() {
             glossary_update,
             glossary_delete,
             glossary_lint,
+            suggest_glossary,
+            glossary_add_bulk,
             translate_units,
+            translate_texts,
             cancel_translation,
             test_provider,
             list_models,
