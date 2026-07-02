@@ -55,6 +55,7 @@ fn req(texts: &[&str]) -> BatchReq {
         model: "mock".into(),
         temperature: 0.0,
         max_tokens: 100,
+        thinking: None,
     }
 }
 

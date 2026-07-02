@@ -399,6 +399,7 @@ async fn translate_units(
             model: config.model.clone(),
             temperature: config.temperature(),
             max_tokens: config.max_tokens(),
+            thinking: config.thinking,
         };
 
         let results =
@@ -481,6 +482,7 @@ async fn test_provider(
         model: config.model.clone(),
         temperature: config.temperature(),
         max_tokens: 256,
+        thinking: config.thinking,
     };
     let out = provider
         .translate_batch(&state.http, key.as_deref(), &req)

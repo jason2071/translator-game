@@ -52,6 +52,9 @@ pub fn build_messages(req: &BatchReq) -> (String, String) {
         "\nRespond with ONLY a JSON array, no prose, of objects \
          {\"i\": <index>, \"t\": \"<translation>\"} — one per input item, same indices.",
     );
+    if req.thinking == Some(false) {
+        sys.push_str(" Do not emit any reasoning or <think> blocks.");
+    }
 
     // User content: the numbered items, with optional speaker/context hints.
     let items: Vec<Value> = req
@@ -79,7 +82,7 @@ pub fn build_messages(req: &BatchReq) -> (String, String) {
 /// Returns an error if fewer than `n` indices are present (caller can then fall
 /// back to single-item requests).
 pub fn parse_batch_response(text: &str, n: usize) -> Result<Vec<String>> {
-    let cleaned = strip_fences(text);
+    let cleaned = strip_fences(&strip_reasoning(text));
     let arr = extract_array(&cleaned)
         .ok_or_else(|| anyhow!("no JSON array found in model response"))?;
 
@@ -102,6 +105,29 @@ pub fn parse_batch_response(text: &str, n: usize) -> Result<Vec<String>> {
         return Err(anyhow!("response missing {missing} of {n} items"));
     }
     Ok(out.into_iter().map(|o| o.unwrap()).collect())
+}
+
+/// Remove `<think>…</think>` / `<thinking>…</thinking>` reasoning blocks that
+/// reasoning models (e.g. via Ollama) emit before the actual answer.
+fn strip_reasoning(text: &str) -> String {
+    let mut s = text.to_string();
+    for (open, close) in [("<think>", "</think>"), ("<thinking>", "</thinking>")] {
+        loop {
+            let Some(start) = s.find(open) else { break };
+            match s[start..].find(close) {
+                Some(rel) => {
+                    let end = start + rel + close.len();
+                    s.replace_range(start..end, "");
+                }
+                // Unclosed block (streamed/truncated) — drop everything after it.
+                None => {
+                    s.truncate(start);
+                    break;
+                }
+            }
+        }
+    }
+    s
 }
 
 fn strip_fences(text: &str) -> String {
@@ -169,6 +195,7 @@ mod tests {
             model: "m".into(),
             temperature: 0.3,
             max_tokens: 1000,
+            thinking: None,
         }
     }
 
@@ -197,5 +224,21 @@ mod tests {
     fn missing_item_errors() {
         let e = parse_batch_response(r#"[{"i":0,"t":"only"}]"#, 2);
         assert!(e.is_err());
+    }
+
+    #[test]
+    fn strips_reasoning_before_parsing() {
+        // Reasoning models emit a <think> block before the JSON.
+        let text = "<think>Let me translate carefully...</think>\n[{\"i\":0,\"t\":\"สวัสดี\"}]";
+        let r = parse_batch_response(text, 1).unwrap();
+        assert_eq!(r, vec!["สวัสดี"]);
+    }
+
+    #[test]
+    fn strips_unclosed_reasoning() {
+        // Truncated/streamed think block with no closing tag: drop from the tag on.
+        let text = "[{\"i\":0,\"t\":\"A\"}] trailing <think> partial reasoning...";
+        let r = parse_batch_response(text, 1).unwrap();
+        assert_eq!(r, vec!["A"]);
     }
 }

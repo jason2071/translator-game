@@ -11,6 +11,7 @@ use serde_json::json;
 pub struct OpenAiCompat {
     base: String,
     is_openrouter: bool,
+    is_local: bool,
 }
 
 impl OpenAiCompat {
@@ -18,12 +19,14 @@ impl OpenAiCompat {
         OpenAiCompat {
             base: base_or(cfg, "https://api.openai.com/v1"),
             is_openrouter: false,
+            is_local: false,
         }
     }
     pub fn openrouter(cfg: &ProviderConfig) -> Self {
         OpenAiCompat {
             base: base_or(cfg, "https://openrouter.ai/api/v1"),
             is_openrouter: true,
+            is_local: false,
         }
     }
     pub fn local(cfg: &ProviderConfig) -> Self {
@@ -31,6 +34,7 @@ impl OpenAiCompat {
         OpenAiCompat {
             base: base_or(cfg, "http://localhost:11434/v1"),
             is_openrouter: false,
+            is_local: true,
         }
     }
 }
@@ -54,7 +58,7 @@ impl TranslationProvider for OpenAiCompat {
     ) -> Result<Vec<String>> {
         let (sys, user) = build_messages(req);
         let url = format!("{}/chat/completions", self.base);
-        let body = json!({
+        let mut body = json!({
             "model": req.model,
             "messages": [
                 { "role": "system", "content": sys },
@@ -63,6 +67,13 @@ impl TranslationProvider for OpenAiCompat {
             "temperature": req.temperature,
             "max_tokens": req.max_tokens,
         });
+        // `think` is an Ollama extension; only send it to Local so strict cloud
+        // APIs (OpenAI) don't 400 on an unknown field.
+        if self.is_local {
+            if let Some(think) = req.thinking {
+                body["think"] = json!(think);
+            }
+        }
 
         let content = with_retry(4, 800, || async {
             let mut rb = client.post(&url).json(&body);

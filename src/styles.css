@@ -589,6 +589,19 @@ button.link {
   font-size: 0.78rem;
   margin: 0;
 }
+.model-select {
+  width: 100%;
+  font: inherit;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+}
+.model-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 .settings hr {
   border: none;
   border-top: 1px solid var(--border);

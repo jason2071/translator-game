@@ -82,27 +82,32 @@ export default function SettingsView() {
         <label>Model</label>
         <div className="model-row">
           <input
-            list={`models-${active}`}
+            placeholder="model id"
             value={cfg.model}
             onChange={(e) => s.updateProvider(active, { model: e.target.value })}
           />
-          {models.length > 0 && (
-            <datalist id={`models-${active}`}>
-              {models.map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
-          )}
           <button className="ghost" onClick={refreshModels} disabled={loadingModels}>
             {loadingModels ? "…" : "↻ Refresh"}
           </button>
         </div>
+
         {models.length > 0 && (
           <>
             <span />
-            <span className="hint models-hint">
-              {models.length} model(s) — pick from the list or type.
-            </span>
+            <select
+              className="model-select"
+              value={models.includes(cfg.model) ? cfg.model : ""}
+              onChange={(e) =>
+                e.target.value && s.updateProvider(active, { model: e.target.value })
+              }
+            >
+              <option value="">— pick one of {models.length} installed —</option>
+              {models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
           </>
         )}
         {modelsErr && (
@@ -174,6 +179,16 @@ export default function SettingsView() {
           value={s.rpm}
           onChange={(e) => s.setShared({ rpm: Number(e.target.value) })}
         />
+
+        <label>Thinking / reasoning</label>
+        <label className="chk">
+          <input
+            type="checkbox"
+            checked={s.thinking}
+            onChange={(e) => s.setShared({ thinking: e.target.checked })}
+          />
+          {s.thinking ? "On — slower, may improve quality" : "Off — faster, recommended for translation"}
+        </label>
 
         <label>Extra prompt</label>
         <textarea

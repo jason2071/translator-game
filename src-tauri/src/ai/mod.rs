@@ -46,6 +46,9 @@ pub struct BatchReq {
     pub model: String,
     pub temperature: f32,
     pub max_tokens: u32,
+    /// Some(true/false) sends an explicit thinking flag to providers that
+    /// support it (Ollama). None leaves the model default.
+    pub thinking: Option<bool>,
 }
 
 /// Provider configuration sent from the frontend. The API key is *not* here —
@@ -64,6 +67,8 @@ pub struct ProviderConfig {
     pub rpm: Option<u32>,
     pub tone: Option<String>,
     pub system_prompt: Option<String>,
+    /// Enable/disable model "thinking"/reasoning (mainly Ollama). None = default.
+    pub thinking: Option<bool>,
 }
 
 impl ProviderConfig {
@@ -148,22 +153,72 @@ fn resolve_base(cfg: &ProviderConfig) -> String {
         .to_string()
 }
 
+/// GET a URL as JSON, returning the parsed body or a descriptive error.
+async fn get_json(req: reqwest::RequestBuilder, url: &str) -> Result<serde_json::Value> {
+    let resp = req
+        .header("accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| anyhow!("request to {url} failed: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(anyhow!("{status} from {url}: {text}"));
+    }
+    serde_json::from_str(&text).map_err(|e| anyhow!("bad JSON from {url}: {e}"))
+}
+
+/// Pull `data[].id` out of an OpenAI-style `/models` response.
+fn ids_from_data(v: &serde_json::Value) -> Vec<String> {
+    v["data"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["id"].as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// List the models a provider currently offers. Used to populate the model
-/// picker (notably Ollama's installed models via its OpenAI-compatible API).
+/// picker. For Local it tries the OpenAI-compatible `/models` first (works for
+/// Ollama and LM Studio) and falls back to Ollama's native `/api/tags`.
 pub async fn list_models(
     client: &reqwest::Client,
     key: Option<&str>,
     cfg: &ProviderConfig,
 ) -> Result<Vec<String>> {
     let base = resolve_base(cfg);
-    let (url, mut req) = match cfg.kind.as_str() {
-        "openai" | "openrouter" | "local" => {
+
+    let mut models: Vec<String> = match cfg.kind.as_str() {
+        "openai" | "openrouter" => {
             let url = format!("{base}/models");
             let mut rb = client.get(&url);
             if let Some(k) = key {
                 rb = rb.bearer_auth(k);
             }
-            (url, rb)
+            ids_from_data(&get_json(rb, &url).await?)
+        }
+        "local" => {
+            // 1) OpenAI-compatible endpoint (Ollama recent / LM Studio).
+            let url = format!("{base}/models");
+            let mut rb = client.get(&url);
+            if let Some(k) = key {
+                rb = rb.bearer_auth(k);
+            }
+            match get_json(rb, &url).await {
+                Ok(v) => {
+                    let ids = ids_from_data(&v);
+                    if !ids.is_empty() {
+                        ids
+                    } else {
+                        ollama_tags(client, &base).await?
+                    }
+                }
+                // 2) Fall back to Ollama's native tags API.
+                Err(_) => ollama_tags(client, &base).await?,
+            }
         }
         "anthropic" => {
             let url = format!("{base}/v1/models");
@@ -171,48 +226,44 @@ pub async fn list_models(
                 .get(&url)
                 .header("x-api-key", key.unwrap_or(""))
                 .header("anthropic-version", "2023-06-01");
-            (url, rb)
+            ids_from_data(&get_json(rb, &url).await?)
         }
         "gemini" => {
             let url = format!("{base}/v1beta/models?key={}", key.unwrap_or(""));
-            (url.clone(), client.get(&url))
+            let v = get_json(client.get(&url), &url).await?;
+            v["models"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|m| m["name"].as_str())
+                        .map(|n| n.strip_prefix("models/").unwrap_or(n).to_string())
+                        .collect()
+                })
+                .unwrap_or_default()
         }
         other => return Err(anyhow!("unknown provider kind: {other}")),
     };
-    req = req.header("accept", "application/json");
 
-    let resp = req.send().await?;
-    let status = resp.status();
-    let text = resp.text().await?;
-    if !status.is_success() {
-        return Err(anyhow!("{status} from {url}: {text}"));
-    }
-    let v: serde_json::Value = serde_json::from_str(&text)?;
-
-    let mut models: Vec<String> = match cfg.kind.as_str() {
-        "gemini" => v["models"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|m| m["name"].as_str())
-                    .map(|n| n.strip_prefix("models/").unwrap_or(n).to_string())
-                    .collect()
-            })
-            .unwrap_or_default(),
-        // OpenAI-compatible + Anthropic both return { "data": [ { "id": ... } ] }.
-        _ => v["data"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|m| m["id"].as_str())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default(),
-    };
     models.sort();
     models.dedup();
     Ok(models)
+}
+
+/// Ollama's native model list: `GET {host}/api/tags` → `models[].name`.
+async fn ollama_tags(client: &reqwest::Client, base: &str) -> Result<Vec<String>> {
+    // base is typically http://localhost:11434/v1 — the tags API lives at the host.
+    let host = base.strip_suffix("/v1").unwrap_or(base).trim_end_matches('/');
+    let url = format!("{host}/api/tags");
+    let v = get_json(client.get(&url), &url).await?;
+    Ok(v["models"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["name"].as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 /// Build the concrete provider for a config.

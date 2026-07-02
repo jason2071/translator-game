@@ -110,6 +110,7 @@ export interface ProviderConfig {
   rpm?: number;
   tone?: string;
   systemPrompt?: string;
+  thinking?: boolean;
 }
 
 export interface TranslateScope {
