@@ -90,8 +90,19 @@ pub fn parse_batch_response(text: &str, n: usize) -> Result<Vec<String>> {
             // just return the translated text. Accept that only for a single
             // item (the split fallback reduces every batch to size 1 on failure).
             if n == 1 {
+                // A lone object like {"i":0,"t":"…"} or {"translation":"…"} has no
+                // array to extract — pull the string out so we never store the raw
+                // JSON as the translation.
+                if let Some(t) = single_string_value(&cleaned) {
+                    let t = t.trim();
+                    if !t.is_empty() {
+                        return Ok(vec![t.to_string()]);
+                    }
+                }
                 let t = cleaned.trim().trim_matches('"').trim();
-                if !t.is_empty() {
+                // Don't accept raw JSON as a translation — that is the bug this
+                // guards against; only genuine plain text falls through here.
+                if !t.is_empty() && !t.starts_with('{') && !t.starts_with('[') {
                     return Ok(vec![t.to_string()]);
                 }
             }
@@ -168,6 +179,32 @@ fn extract_array(s: &str) -> Option<Vec<Value>> {
         }
     }
     None
+}
+
+/// Pull a single translation string out of a JSON scalar/object/array response
+/// (used only for single-item requests). Handles a bare string, an entry object
+/// `{"i":0,"t":"…"}`, alternate keys (`translation`/`text`/`output`/`result`),
+/// a lone string field, or a one-element array of any of those.
+fn single_string_value(s: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(s.trim()).ok()?;
+    value_translation(&v)
+}
+
+fn value_translation(v: &Value) -> Option<String> {
+    match v {
+        Value::String(t) => Some(t.clone()),
+        Value::Object(o) => {
+            for k in ["t", "translation", "text", "output", "result"] {
+                if let Some(t) = o.get(k).and_then(|x| x.as_str()) {
+                    return Some(t.to_string());
+                }
+            }
+            // Otherwise the only/first string value in the object.
+            o.values().find_map(|x| x.as_str()).map(str::to_string)
+        }
+        Value::Array(a) => a.first().and_then(value_translation),
+        _ => None,
+    }
 }
 
 fn array_from_value(v: Value) -> Option<Vec<Value>> {
@@ -272,5 +309,32 @@ mod tests {
     fn multi_item_raw_text_still_errors() {
         // Raw text can't be re-aligned to >1 item, so it must fail (→ split path).
         assert!(parse_batch_response("just some text", 3).is_err());
+    }
+
+    #[test]
+    fn single_item_bare_object_not_stored_as_json() {
+        // Models sometimes reply with a lone object instead of an array; extract
+        // the translation, never store the raw JSON. (Regression: glossary term
+        // "%1の%2が %3 増えた！" came back as the whole {"i":0,"t":...} string.)
+        assert_eq!(
+            parse_batch_response(r#"{"i":0,"t":"%2 ของ %1 เพิ่มขึ้น %3!"}"#, 1).unwrap(),
+            vec!["%2 ของ %1 เพิ่มขึ้น %3!"]
+        );
+        // Alternate key.
+        assert_eq!(
+            parse_batch_response(r#"{"translation":"สวัสดี"}"#, 1).unwrap(),
+            vec!["สวัสดี"]
+        );
+        // Fenced lone object.
+        assert_eq!(
+            parse_batch_response("```json\n{\"i\":0,\"t\":\"A\"}\n```", 1).unwrap(),
+            vec!["A"]
+        );
+    }
+
+    #[test]
+    fn single_item_rejects_unparseable_json_object() {
+        // A JSON object with no usable string must NOT leak as raw text.
+        assert!(parse_batch_response(r#"{"error":{"code":500}}"#, 1).is_err());
     }
 }
