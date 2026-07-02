@@ -491,13 +491,19 @@ code {
   flex: 1;
   margin: 0;
 }
+.suggest-note {
+  margin: 0;
+  padding: 0.3rem 0.7rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
 .suggest-list {
   max-height: 340px;
   overflow: auto;
 }
 .suggest-row {
   display: grid;
-  grid-template-columns: auto 1fr 1fr;
+  grid-template-columns: auto 1fr 1fr auto;
   align-items: center;
   gap: 0.6rem;
   padding: 0.3rem 0.7rem;
@@ -520,6 +526,16 @@ code {
 .cand-tr:focus {
   outline: none;
   border-color: var(--accent);
+}
+/* A term that has a translation — highlight so it's obvious which are done. */
+.suggest-row.filled {
+  background: color-mix(in srgb, var(--ok, #2e7d32) 10%, transparent);
+}
+.cand-mark {
+  color: var(--ok, #2e7d32);
+  font-weight: 700;
+  width: 1ch;
+  text-align: center;
 }
 
 /* ---- Lint ---- */

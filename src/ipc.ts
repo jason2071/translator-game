@@ -141,6 +141,11 @@ export interface Progress {
   failed: number;
 }
 
+export interface TextItem {
+  index: number;
+  text: string | null;
+}
+
 export const api = {
   ping: (name: string) => invoke<string>("ping", { name }),
 
@@ -202,6 +207,8 @@ export const api = {
     invoke<TranslateSummary>("translate_units", { scope, config }),
   translateTexts: (texts: string[], config: ProviderConfig) =>
     invoke<(string | null)[]>("translate_texts", { texts, config }),
+  rememberTexts: (items: [string, string][]) =>
+    invoke<number>("remember_texts", { items }),
   cancelTranslation: () => invoke<void>("cancel_translation"),
   testProvider: (config: ProviderConfig) =>
     invoke<string>("test_provider", { config }),
@@ -216,4 +223,7 @@ export const api = {
 
   onProgress: (cb: (p: Progress) => void): Promise<UnlistenFn> =>
     listen<Progress>("translate://progress", (e) => cb(e.payload)),
+
+  onTextItem: (cb: (it: TextItem) => void): Promise<UnlistenFn> =>
+    listen<TextItem>("translate://item", (e) => cb(e.payload)),
 };

@@ -285,6 +285,16 @@ struct Progress {
     failed: usize,
 }
 
+/// A single finished item from `translate_texts`, emitted as it completes so the
+/// caller (glossary panel) can fill that exact row live instead of waiting for
+/// the whole batch. `index` is the position in the input `texts`.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TextItem {
+    index: usize,
+    text: Option<String>,
+}
+
 /// A distinct source string plus every unit id that shares it. Translating the
 /// group once and applying to all ids avoids re-translating duplicate lines.
 struct Group {
@@ -543,15 +553,22 @@ async fn translate_units(
 
 /// Translate arbitrary strings (e.g. glossary candidates) and return the
 /// results aligned to the input, without touching the project DB.
+///
+/// Shares the Run pipeline's progress + cancel: it resets the same cancel flag,
+/// emits `translate://progress` after every item (one at a time), and honours
+/// `cancel_translation`. This is what lets the glossary translate and the main
+/// Run share one status bar and never overlap.
 #[tauri::command]
 async fn translate_texts(
     texts: Vec<String>,
     config: ProviderConfig,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Option<String>>, String> {
     if texts.is_empty() {
         return Ok(vec![]);
     }
+    state.cancel.store(false, Ordering::SeqCst);
     let key: Option<String> = if config.needs_key() {
         Some(
             keys::get_key(&config.kind)
@@ -577,19 +594,34 @@ async fn translate_texts(
     let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
     let client = state.http.clone();
     let masks: Vec<protect::Masked> = texts.iter().map(|t| protect::mask(t)).collect();
+    let total = texts.len();
+    let interval = config.min_interval_ms();
 
-    let mut out: Vec<Option<String>> = Vec::with_capacity(texts.len());
-    for chunk_start in (0..texts.len()).step_by(config.batch_size()) {
-        let end = (chunk_start + config.batch_size()).min(texts.len());
-        let items: Vec<BatchItem> = (chunk_start..end)
-            .map(|i| BatchItem {
+    let mut out: Vec<Option<String>> = Vec::with_capacity(total);
+    let mut translated = 0usize;
+    let mut failed = 0usize;
+    let _ = app.emit(
+        "translate://progress",
+        Progress { done: 0, total, translated: 0, failed: 0 },
+    );
+
+    // One item per request so progress is granular and cancellation is prompt.
+    for i in 0..total {
+        if state.cancel.load(Ordering::SeqCst) {
+            while out.len() < total {
+                out.push(None);
+            }
+            break;
+        }
+        if interval > 0 && i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
+        }
+        let req = BatchReq {
+            items: vec![BatchItem {
                 id: i as i64,
                 text: masks[i].text.clone(),
                 context: None,
-            })
-            .collect();
-        let req = BatchReq {
-            items,
+            }],
             glossary: vec![], // don't feed the glossary while building it
             source_lang: source_lang.clone(),
             target_lang: target_lang.clone(),
@@ -600,14 +632,52 @@ async fn translate_texts(
             max_tokens: config.max_tokens(),
             thinking: config.thinking,
         };
-        let res =
-            ai::translate_batch_or_split(provider.as_ref(), &client, key.as_deref(), &req).await;
-        for (offset, r) in res.into_iter().enumerate() {
-            let restored = r.and_then(|m| protect::restore(&m, &masks[chunk_start + offset].tokens).ok());
-            out.push(restored);
+        let restored = provider
+            .translate_batch(&client, key.as_deref(), &req)
+            .await
+            .ok()
+            .and_then(|mut v| v.pop())
+            .and_then(|m| protect::restore(&m, &masks[i].tokens).ok());
+        if restored.is_some() {
+            translated += 1;
+        } else {
+            failed += 1;
         }
+        // Emit the finished item first (fills its row live), then the counter.
+        let _ = app.emit(
+            "translate://item",
+            TextItem { index: i, text: restored.clone() },
+        );
+        out.push(restored);
+        let _ = app.emit(
+            "translate://progress",
+            Progress { done: i + 1, total, translated, failed },
+        );
     }
     Ok(out)
+}
+
+/// Persist `source -> translation` pairs into the project's TM so glossary
+/// auto-translate is remembered per game: the next `suggest_glossary` prefills
+/// these terms from TM and `translate_texts` is never re-billed for them.
+/// No-op on empty strings or when no project is open.
+#[tauri::command]
+fn remember_texts(
+    items: Vec<(String, String)>,
+    state: tauri::State<AppState>,
+) -> Result<usize, String> {
+    let guard = state.project.lock().unwrap();
+    let proj = guard.as_ref().ok_or("no project is open")?;
+    let mut n = 0;
+    for (source, translation) in &items {
+        if source.is_empty() || translation.is_empty() {
+            continue;
+        }
+        if project::db::tm_upsert(&proj.conn, source, translation).is_ok() {
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// Translate a fixed sample string to verify a provider + key + model work.
@@ -712,6 +782,7 @@ pub fn run() {
             glossary_add_bulk,
             translate_units,
             translate_texts,
+            remember_texts,
             cancel_translation,
             test_provider,
             list_models,

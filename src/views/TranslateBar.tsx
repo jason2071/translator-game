@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import type { UnlistenFn } from "@tauri-apps/api/event";
-import { api, type Progress, type TranslateScope, type TranslateSummary } from "../ipc";
+import { useState } from "react";
+import { api, type TranslateScope, type TranslateSummary } from "../ipc";
 import { useStore } from "../store";
 import { useSettings } from "../settings";
 import { PROVIDER_LABELS } from "../settings";
 import { SOURCE_LANGS, TARGET_LANGS } from "../langs";
+import { useTranslation } from "../translation";
+import TransProgress from "../components/TransProgress";
 
 export default function TranslateBar({ openSettings }: { openSettings: () => void }) {
   const filter = useStore((s) => s.filter);
@@ -15,41 +16,33 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
   const active = useSettings((s) => s.active);
   const activeConfig = useSettings((s) => s.activeConfig);
 
+  // Shared status: `running` is true whenever ANY translation (units or
+  // glossary) is in flight, so the two never overlap and use one progress bar.
+  const running = useTranslation((s) => s.busy);
+  const runTranslation = useTranslation((s) => s.run);
+  const cancel = useTranslation((s) => s.cancel);
+
   const [mode, setMode] = useState<"shown" | "all">("shown");
   const [overwrite, setOverwrite] = useState(false);
-  const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState<Progress | null>(null);
   const [summary, setSummary] = useState<TranslateSummary | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const unlistenRef = useRef<UnlistenFn | null>(null);
-
-  useEffect(() => () => void unlistenRef.current?.(), []);
 
   async function run() {
-    setRunning(true);
     setErr(null);
     setSummary(null);
-    setProgress(null);
-    unlistenRef.current = await api.onProgress(setProgress);
     const scope: TranslateScope =
       mode === "all"
         ? { filter: { untranslatedOnly: true }, overwrite }
         : { filter, overwrite };
     try {
-      const res = await api.translateUnits(scope, activeConfig());
+      const res = await runTranslation("units", () => api.translateUnits(scope, activeConfig()));
       setSummary(res);
       await refreshMeta();
       await reloadUnits();
     } catch (e) {
       setErr(String(e));
-    } finally {
-      unlistenRef.current?.();
-      unlistenRef.current = null;
-      setRunning(false);
     }
   }
-
-  const pct = progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
 
   return (
     <div className="translate-bar">
@@ -102,22 +95,12 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
           Run
         </button>
       ) : (
-        <button className="ghost" onClick={() => api.cancelTranslation()}>
+        <button className="ghost" onClick={cancel}>
           Cancel
         </button>
       )}
 
-      {(running || progress) && (
-        <div className="tb-progress">
-          <div className="bar">
-            <div className="bar-fill" style={{ width: `${pct}%` }} />
-          </div>
-          <span className="tb-count">
-            {progress ? `${progress.done}/${progress.total}` : "…"}
-            {progress && progress.failed > 0 ? ` · ${progress.failed} failed` : ""}
-          </span>
-        </div>
-      )}
+      <TransProgress />
 
       {summary && (
         <span className="export-ok">

@@ -8,6 +8,7 @@ import {
   type TransUnit,
   type UnitFilter,
 } from "./ipc";
+import { useGlossarySuggest } from "./glossarySuggest";
 
 interface AppStore {
   project: ProjectInfo | null;
@@ -46,6 +47,7 @@ export const useStore = create<AppStore>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const project = await api.openProject(path, sourceLang, targetLang);
+      useGlossarySuggest.getState().reset(); // stale suggestions belong to the old game
       set({ project, filter: { limit: PAGE, offset: 0 } });
       await get().refreshMeta();
       await get().reloadUnits();
@@ -58,6 +60,7 @@ export const useStore = create<AppStore>((set, get) => ({
 
   closeProject: async () => {
     await api.closeProject();
+    useGlossarySuggest.getState().reset();
     set({ project: null, files: [], stats: null, units: [] });
   },
 

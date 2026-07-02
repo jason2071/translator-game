@@ -140,3 +140,21 @@ fn suggest_glossary_mines_names_and_terms() {
     let cands3 = project::db::suggest_glossary(&proj.conn).unwrap();
     assert!(!cands3.iter().any(|c| c.term == "Hero"));
 }
+
+#[test]
+fn suggest_glossary_prefills_from_tm() {
+    let (_tmp, root) = temp_game();
+    let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+
+    // "Dagger" is a weaponType Term with no translated unit — starts empty.
+    let before = project::db::suggest_glossary(&proj.conn).unwrap();
+    let d = before.iter().find(|c| c.term == "Dagger").unwrap();
+    assert_eq!(d.translation, None);
+
+    // Glossary auto-translate persists results to TM (via remember_texts); the
+    // next suggest must prefill from it so the term is never re-translated.
+    project::db::tm_upsert(&proj.conn, "Dagger", "กริช").unwrap();
+    let after = project::db::suggest_glossary(&proj.conn).unwrap();
+    let d2 = after.iter().find(|c| c.term == "Dagger").unwrap();
+    assert_eq!(d2.translation.as_deref(), Some("กริช"));
+}

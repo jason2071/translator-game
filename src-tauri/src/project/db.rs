@@ -429,17 +429,25 @@ pub struct GlossCandidate {
 /// enemy names, and System terms. Excludes anything already in the glossary and
 /// pre-fills the translation from an already-translated instance when present.
 pub fn suggest_glossary(conn: &Connection) -> Result<Vec<GlossCandidate>> {
+    // Prefill each candidate's translation from a translated unit if one exists,
+    // else from TM — that is where glossary auto-translate persists its results
+    // (via remember_texts), so previously-translated terms come back filled and
+    // are never re-billed.
     let mut stmt = conn.prepare(
-        "SELECT source, MAX(translation) AS tr, MIN(kind) AS k, COUNT(*) AS c
-           FROM unit
-          WHERE source <> ''
-            AND ( (file = 'Actors.json'  AND kind IN ('Name','Nickname'))
-               OR (file = 'Enemies.json' AND kind = 'Name')
-               OR (file = 'Classes.json' AND kind = 'Name')
-               OR kind = 'Term' )
-            AND source NOT IN (SELECT term FROM glossary)
-          GROUP BY source
-          ORDER BY c DESC, source
+        "SELECT u.source,
+                COALESCE(MAX(u.translation), t.translation) AS tr,
+                MIN(u.kind) AS k,
+                COUNT(*) AS c
+           FROM unit u
+           LEFT JOIN tm t ON t.source = u.source
+          WHERE u.source <> ''
+            AND ( (u.file = 'Actors.json'  AND u.kind IN ('Name','Nickname'))
+               OR (u.file = 'Enemies.json' AND u.kind = 'Name')
+               OR (u.file = 'Classes.json' AND u.kind = 'Name')
+               OR u.kind = 'Term' )
+            AND u.source NOT IN (SELECT term FROM glossary)
+          GROUP BY u.source
+          ORDER BY c DESC, u.source
           LIMIT 500",
     )?;
     let rows = stmt.query_map([], |r| {
