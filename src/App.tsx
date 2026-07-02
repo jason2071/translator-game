@@ -1,0 +1,150 @@
+import { useState } from "react";
+import { useStore } from "./store";
+import { api, type ExportResult } from "./ipc";
+import ImportView from "./views/ImportView";
+import GridView from "./views/GridView";
+import GlossaryView from "./views/GlossaryView";
+import LintPanel from "./views/LintPanel";
+import SettingsView from "./views/SettingsView";
+import TranslateBar from "./views/TranslateBar";
+import { Modal } from "./components/Modal";
+
+type Panel = "none" | "glossary" | "lint" | "settings";
+
+export default function App() {
+  const project = useStore((s) => s.project);
+  const [panel, setPanel] = useState<Panel>("none");
+  if (!project) return <ImportView />;
+  return (
+    <div className="app">
+      <TopBar openPanel={setPanel} />
+      <TranslateBar openSettings={() => setPanel("settings")} />
+      <GridView />
+      {panel === "glossary" && (
+        <Modal title="Glossary" onClose={() => setPanel("none")}>
+          <GlossaryView />
+        </Modal>
+      )}
+      {panel === "lint" && (
+        <Modal title="Glossary lint" onClose={() => setPanel("none")}>
+          <LintPanel onClose={() => setPanel("none")} />
+        </Modal>
+      )}
+      {panel === "settings" && (
+        <Modal title="AI providers & settings" onClose={() => setPanel("none")}>
+          <SettingsView />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function TopBar({ openPanel }: { openPanel: (p: Panel) => void }) {
+  const project = useStore((s) => s.project)!;
+  const stats = useStore((s) => s.stats);
+  const closeProject = useStore((s) => s.closeProject);
+  const refreshMeta = useStore((s) => s.refreshMeta);
+  const reloadUnits = useStore((s) => s.reloadUnits);
+  const [exporting, setExporting] = useState(false);
+  const [result, setResult] = useState<ExportResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [tmMsg, setTmMsg] = useState<string | null>(null);
+
+  async function doApplyTm() {
+    setTmMsg(null);
+    try {
+      const n = await api.applyTm();
+      setTmMsg(`Filled ${n} from memory`);
+      await refreshMeta();
+      await reloadUnits();
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  async function doExport() {
+    setExporting(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const r = await api.exportProject(true);
+      setResult(r);
+      await refreshMeta();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  const pct =
+    stats && stats.total > 0
+      ? Math.round(((stats.total - stats.untranslated) / stats.total) * 100)
+      : 0;
+
+  return (
+    <header className="topbar">
+      <div className="tb-left">
+        <strong>{project.engineName}</strong>
+        <span className="tb-path">{project.root}</span>
+      </div>
+
+      <div className="tb-stats">
+        {stats && (
+          <>
+            <Chip label="total" value={stats.total} />
+            <Chip label="todo" value={stats.untranslated} tone="muted" />
+            <Chip label="draft" value={stats.draft} tone="warn" />
+            <Chip label="done" value={stats.translated + stats.reviewed} tone="ok" />
+            <span className="progress" title={`${pct}% covered`}>
+              <span className="progress-fill" style={{ width: `${pct}%` }} />
+            </span>
+          </>
+        )}
+      </div>
+
+      <div className="tb-actions">
+        {result && (
+          <span className="export-ok">
+            Exported {result.unitsApplied} units → {result.filesWritten} files
+            {result.backupDir ? " (backup saved)" : ""}
+          </span>
+        )}
+        {tmMsg && <span className="export-ok">{tmMsg}</span>}
+        {err && <span className="error">{err}</span>}
+        <button className="ghost" onClick={doApplyTm} title="Fill from translation memory + duplicates">
+          Apply TM
+        </button>
+        <button className="ghost" onClick={() => openPanel("glossary")}>
+          Glossary
+        </button>
+        <button className="ghost" onClick={() => openPanel("lint")}>
+          Lint
+        </button>
+        <button className="primary" onClick={doExport} disabled={exporting}>
+          {exporting ? "Exporting…" : "Export → game"}
+        </button>
+        <button className="ghost" onClick={closeProject}>
+          Close
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function Chip({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone?: "muted" | "warn" | "ok";
+}) {
+  return (
+    <span className={`chip ${tone ?? ""}`}>
+      <span className="chip-val">{value}</span>
+      <span className="chip-lbl">{label}</span>
+    </span>
+  );
+}

@@ -1,0 +1,97 @@
+import { create } from "zustand";
+import type { ProviderConfig, ProviderKind } from "./ipc";
+
+// Provider configs are non-secret and live in localStorage. API keys never do —
+// they go to the OS keychain via the set_key/has_key/delete_key commands.
+
+const KEY = "rpgtl.settings.v1";
+
+export const PROVIDER_LABELS: Record<ProviderKind, string> = {
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  local: "Local (Ollama / LM Studio)",
+  anthropic: "Claude (Anthropic)",
+  gemini: "Gemini (Google)",
+};
+
+const DEFAULTS: Record<ProviderKind, ProviderConfig> = {
+  openai: { kind: "openai", model: "gpt-4o-mini", temperature: 0.3 },
+  openrouter: {
+    kind: "openrouter",
+    model: "openai/gpt-4o-mini",
+    temperature: 0.3,
+  },
+  local: {
+    kind: "local",
+    baseUrl: "http://localhost:11434/v1",
+    model: "llama3.1",
+    temperature: 0.3,
+  },
+  anthropic: { kind: "anthropic", model: "claude-sonnet-5", temperature: 0.3 },
+  gemini: { kind: "gemini", model: "gemini-1.5-flash", temperature: 0.3 },
+};
+
+interface SettingsState {
+  active: ProviderKind;
+  providers: Record<ProviderKind, ProviderConfig>;
+  tone: string;
+  systemPrompt: string;
+  batchSize: number;
+  rpm: number;
+
+  setActive: (k: ProviderKind) => void;
+  updateProvider: (k: ProviderKind, patch: Partial<ProviderConfig>) => void;
+  setShared: (patch: Partial<Pick<SettingsState, "tone" | "systemPrompt" | "batchSize" | "rpm">>) => void;
+  /** The full ProviderConfig for the active provider, merged with shared opts. */
+  activeConfig: () => ProviderConfig;
+}
+
+function load(): Partial<SettingsState> {
+  try {
+    return JSON.parse(localStorage.getItem(KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function persist(s: SettingsState) {
+  const { active, providers, tone, systemPrompt, batchSize, rpm } = s;
+  localStorage.setItem(
+    KEY,
+    JSON.stringify({ active, providers, tone, systemPrompt, batchSize, rpm })
+  );
+}
+
+const saved = load();
+
+export const useSettings = create<SettingsState>((set, get) => ({
+  active: saved.active ?? "openai",
+  providers: { ...DEFAULTS, ...(saved.providers ?? {}) },
+  tone: saved.tone ?? "casual",
+  systemPrompt: saved.systemPrompt ?? "",
+  batchSize: saved.batchSize ?? 40,
+  rpm: saved.rpm ?? 0,
+
+  setActive: (k) => {
+    set({ active: k });
+    persist(get());
+  },
+  updateProvider: (k, patch) => {
+    set({ providers: { ...get().providers, [k]: { ...get().providers[k], ...patch } } });
+    persist(get());
+  },
+  setShared: (patch) => {
+    set(patch as Partial<SettingsState>);
+    persist(get());
+  },
+  activeConfig: () => {
+    const s = get();
+    return {
+      ...s.providers[s.active],
+      tone: s.tone,
+      systemPrompt: s.systemPrompt || undefined,
+      batchSize: s.batchSize,
+      rpm: s.rpm || undefined,
+    };
+  },
+}));

@@ -1,0 +1,35 @@
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Secrets / env — never commit API keys
+.env
+.env.*
+*.pem
+*.key
+
+# App project data (sidecar created next to a game, and any local test games)
+.rpgtl/
+/games/
+/test-games/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*

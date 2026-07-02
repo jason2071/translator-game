@@ -1,0 +1,1 @@
+{"displayName":"Town Square","events":[null,{"id":1,"name":"NPC","x":5,"y":5,"pages":[{"conditions":{},"list":[{"code":101,"indent":0,"parameters":["Actor1",0,0,2,"Old Man"]},{"code":401,"indent":0,"parameters":["Hello there, traveler!"]},{"code":355,"indent":0,"parameters":["$gameSwitches.setValue(1, true);"]},{"code":0,"indent":0,"parameters":[]}]}]}]}
