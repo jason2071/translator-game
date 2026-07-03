@@ -49,6 +49,11 @@ fn extract_finds_dialogue_not_code() {
     assert!(!texts.contains(&"python code string"));
     assert!(!texts.iter().any(|t| t.contains("Eileen")));
 
+    // The game/tl/<lang>/ translation tree is another language, not source —
+    // never extracted, so the project stays single-language.
+    assert!(!texts.iter().any(|t| t.contains("Bonjour")));
+    assert!(!texts.contains(&"Commencer le jeu"));
+
     // Speaker context + kind classification.
     let hi = units
         .iter()
@@ -66,6 +71,14 @@ fn extract_finds_dialogue_not_code() {
     let forest = units.iter().find(|u| u.source == "The forest").unwrap();
     assert_eq!(forest.kind, UnitKind::Choice);
     assert_eq!(forest.context, None);
+}
+
+#[test]
+fn tl_dir_is_excluded_from_file_count() {
+    let eng = engine::detect(&fixture()).unwrap();
+    let d = eng.describe(&fixture()).unwrap();
+    // Only the base script.rpy counts; game/tl/french/script.rpy is skipped.
+    assert_eq!(d.file_count, 1, "tl/ files must not be counted");
 }
 
 #[test]

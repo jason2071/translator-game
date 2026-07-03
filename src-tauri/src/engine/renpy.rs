@@ -134,7 +134,9 @@ fn has_rpy(dir: &Path) -> bool {
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
-                stack.push(p);
+                if !is_tl_dir(&p) {
+                    stack.push(p);
+                }
             } else if is_rpy(&p) {
                 return true;
             }
@@ -147,7 +149,16 @@ fn is_rpy(p: &Path) -> bool {
     p.is_file() && p.extension().map(|e| e == "rpy").unwrap_or(false)
 }
 
-/// Every `.rpy` under `dir`, sorted for deterministic unit order.
+/// Ren'Py's `game/tl/<language>/` tree holds *translations* of the source
+/// script (one dir per shipped language), not source text — skip it so other
+/// languages don't get imported as strings to translate. The source strings all
+/// live in the base `.rpy` files outside `tl/`.
+fn is_tl_dir(p: &Path) -> bool {
+    p.file_name().and_then(|n| n.to_str()) == Some("tl")
+}
+
+/// Every source `.rpy` under `dir` (excluding the `tl/` translations tree),
+/// sorted for deterministic unit order.
 fn collect_rpy(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -156,8 +167,9 @@ fn collect_rpy(dir: &Path) -> Vec<PathBuf> {
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
-                // Ren'Py's own generated caches/translations aren't source text.
-                stack.push(p);
+                if !is_tl_dir(&p) {
+                    stack.push(p);
+                }
             } else if is_rpy(&p) {
                 out.push(p);
             }
