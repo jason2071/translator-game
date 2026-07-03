@@ -300,6 +300,10 @@ struct TextItem {
 struct Group {
     source: String,
     context: Option<String>,
+    /// The whole message box this line belongs to (all its lines joined), when
+    /// the box has more than one line — sent to the model as context so a line
+    /// split mid-sentence is translated coherently. Raw (unmasked) source.
+    neighbors: Option<String>,
     ids: Vec<i64>,
 }
 
@@ -348,6 +352,17 @@ async fn translate_units(
             project::db::list_units(&proj.conn, &f).map_err(|e| e.to_string())?
         };
 
+        // Reconstruct each message box from its lines (in extraction order) so a
+        // line split mid-sentence can be translated with the whole box as
+        // context. Built from the candidate set — a full Run sees whole boxes; a
+        // targeted retry may see only part, which is still better than nothing.
+        let mut box_lines: HashMap<String, Vec<String>> = HashMap::new();
+        for u in &candidates {
+            if let Some(g) = &u.group {
+                box_lines.entry(g.clone()).or_default().push(u.source.clone());
+            }
+        }
+
         // Group by source; keep the first context seen for each.
         let mut order: Vec<Group> = Vec::new();
         let mut index: HashMap<String, usize> = HashMap::new();
@@ -366,10 +381,18 @@ async fn translate_units(
             match index.get(&u.source) {
                 Some(&i) => order[i].ids.push(u.id),
                 None => {
+                    // The full box, only when it holds more than this one line.
+                    let neighbors = u.group.as_ref().and_then(|g| {
+                        box_lines
+                            .get(g)
+                            .filter(|lines| lines.len() > 1)
+                            .map(|lines| lines.join("\n"))
+                    });
                     index.insert(u.source.clone(), order.len());
                     order.push(Group {
                         source: u.source,
                         context: u.context,
+                        neighbors,
                         ids: vec![u.id],
                     });
                 }
@@ -453,6 +476,7 @@ async fn translate_units(
                 id: (base + j) as i64,
                 text: masks[base + j].text.clone(),
                 context: g.context.clone(),
+                neighbors: g.neighbors.clone(),
             })
             .collect();
         let batch_units: usize = chunk.iter().map(|g| g.ids.len()).sum();
@@ -639,6 +663,7 @@ async fn translate_texts(
                 id: i as i64,
                 text: masks[i].text.clone(),
                 context: None,
+                neighbors: None,
             }],
             glossary: vec![], // don't feed the glossary while building it
             source_lang: source_lang.clone(),
@@ -720,6 +745,7 @@ async fn test_provider(
             id: 0,
             text: "Hello, world!".into(),
             context: None,
+            neighbors: None,
         }],
         glossary: vec![],
         source_lang: "English".into(),

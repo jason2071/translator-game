@@ -45,6 +45,7 @@ fn req(texts: &[&str]) -> BatchReq {
                 id: i as i64,
                 text: (*t).to_string(),
                 context: None,
+                neighbors: None,
             })
             .collect(),
         glossary: vec![],

@@ -24,6 +24,10 @@ pub struct BatchItem {
     /// Masked source text (control codes replaced by ⟦n⟧ sentinels).
     pub text: String,
     pub context: Option<String>,
+    /// The full message box this line belongs to (all its lines joined), so the
+    /// model can translate one line coherently in the context of the whole
+    /// sentence. `None` for standalone units. Masked like `text`.
+    pub neighbors: Option<String>,
 }
 
 /// Glossary pair passed to the model for consistency.

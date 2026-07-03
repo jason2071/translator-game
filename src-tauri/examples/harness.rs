@@ -85,7 +85,7 @@ async fn ai_translate(model: &str, texts: &[String], src: &str, tgt: &str) -> Ve
         let end = (start + batch).min(texts.len());
         let req = BatchReq {
             items: (start..end)
-                .map(|i| BatchItem { id: i as i64, text: masks[i].text.clone(), context: None })
+                .map(|i| BatchItem { id: i as i64, text: masks[i].text.clone(), context: None, neighbors: None })
                 .collect(),
             glossary: vec![],
             source_lang: src.into(),

@@ -31,7 +31,10 @@ pub fn build_messages(req: &BatchReq) -> (String, String) {
          - Preserve every ⟦n⟧ placeholder EXACTLY as written; do not translate, \
          renumber, add, or remove them. Keep them in natural positions.\n\
          - Preserve line breaks. Do not add commentary or quotes around text.\n\
-         - Translate only the `t` field; echo back each item's original `i`.\n",
+         - Translate only the `t` field; echo back each item's original `i`.\n\
+         - `ctx` (speaker/where it appears) and `box` (the full message this line \
+         is part of) are context ONLY — read them for accuracy, never translate \
+         or return them; still translate `t` as just that one line.\n",
     );
 
     if !req.glossary.is_empty() {
@@ -66,6 +69,13 @@ pub fn build_messages(req: &BatchReq) -> (String, String) {
             if let Some(ctx) = &it.context {
                 if !ctx.is_empty() {
                     o["ctx"] = json!(ctx);
+                }
+            }
+            // The whole message box, so a line split mid-sentence is translated
+            // in context. Only useful when it differs from the line itself.
+            if let Some(box_text) = &it.neighbors {
+                if !box_text.is_empty() && box_text != &it.text {
+                    o["box"] = json!(box_text);
                 }
             }
             o
@@ -232,6 +242,7 @@ mod tests {
                     id: i as i64,
                     text: t.to_string(),
                     context: None,
+                    neighbors: None,
                 })
                 .collect(),
             glossary: vec![GlossPair {
@@ -255,6 +266,23 @@ mod tests {
         assert!(sys.contains("⟦n⟧"));
         assert!(sys.contains("HP => พลังชีวิต"));
         assert!(user.contains("Hello ⟦0⟧"));
+    }
+
+    #[test]
+    fn box_context_sent_when_it_differs_from_the_line() {
+        let mut r = req(vec!["the ancient dragon"]);
+        r.items[0].neighbors = Some("Beware\nthe ancient dragon\nthat sleeps below".into());
+        let (sys, user) = build_messages(&r);
+        // The box is offered as context, and the model is told not to translate it.
+        assert!(user.contains("\"box\""));
+        assert!(user.contains("that sleeps below"));
+        assert!(sys.contains("context ONLY"));
+
+        // When the box equals the line (standalone), no redundant `box` field.
+        let mut r2 = req(vec!["Just one line"]);
+        r2.items[0].neighbors = Some("Just one line".into());
+        let (_, user2) = build_messages(&r2);
+        assert!(!user2.contains("\"box\""));
     }
 
     #[test]
