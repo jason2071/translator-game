@@ -193,8 +193,10 @@ code {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  flex: 1 1 auto;
-  min-width: 0; /* allow the progress bar to shrink instead of forcing a wrap */
+  flex: 0 0 auto; /* chips keep their size — never shrink/overflow into actions */
+}
+.tb-stats > .chip {
+  flex-shrink: 0;
 }
 .tb-actions {
   display: flex;
@@ -202,7 +204,7 @@ code {
   gap: 0.6rem;
   margin-left: auto;
   min-width: 0;
-  flex-shrink: 0; /* buttons keep their size... */
+  flex-shrink: 1; /* status messages truncate first; buttons stay put */
 }
 .tb-actions > button {
   flex-shrink: 0;
@@ -366,7 +368,8 @@ code {
 .cell.translation textarea {
   width: 100%;
   min-height: 3.6rem;
-  resize: vertical;
+  resize: none; /* height is driven by content (auto-grow in UnitRow) */
+  overflow: hidden;
   font: inherit;
   background: var(--panel);
   color: var(--fg);
