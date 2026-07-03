@@ -8,6 +8,7 @@ import SettingsView from "./views/SettingsView";
 import TranslateBar from "./views/TranslateBar";
 import { Sidebar } from "./components/Sidebar";
 import { Modal } from "./components/Modal";
+import { UpdateBanner } from "./components/UpdateBanner";
 
 type Panel = "none" | "glossary" | "lint" | "settings";
 
@@ -24,6 +25,7 @@ export default function App() {
         onToggleCollapse={() => setCollapsed((c) => !c)}
       />
       <div className="main">
+        <UpdateBanner />
         <TranslateBar openSettings={() => setPanel("settings")} />
         <GridView />
       </div>

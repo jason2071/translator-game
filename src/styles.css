@@ -464,6 +464,21 @@ code {
   min-height: 0;
 }
 
+/* update banner */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent);
+  font-size: var(--fs-sm);
+  color: var(--fg);
+}
+.update-banner .msg {
+  flex: 1;
+}
+
 /* ============================================================
    Toolbar (AI translate)
    ============================================================ */
