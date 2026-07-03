@@ -70,11 +70,18 @@ fn local_cfg(model: &str, batch: usize) -> ProviderConfig {
 
 /// Translate strings via Local/Ollama, mirroring the `translate_texts` command
 /// (mask -> batch-or-split -> restore). Returns results aligned to `texts`.
-async fn ai_translate(model: &str, texts: &[String], src: &str, tgt: &str) -> Vec<Option<String>> {
+/// `engine` selects the code grammar so Ren'Py tags survive like RPGMaker codes.
+async fn ai_translate(
+    engine: &str,
+    model: &str,
+    texts: &[String],
+    src: &str,
+    tgt: &str,
+) -> Vec<Option<String>> {
     if texts.is_empty() {
         return vec![];
     }
-    let masks: Vec<protect::Masked> = texts.iter().map(|t| protect::mask(t)).collect();
+    let masks: Vec<protect::Masked> = texts.iter().map(|t| protect::mask_for(engine, t)).collect();
     let cfg = local_cfg(model, texts.len().min(40).max(1));
     let provider = ai::make_provider(&cfg).unwrap();
     let client = reqwest::Client::new();
@@ -165,11 +172,18 @@ fn cmd_extract(rest: &[String]) {
     let files: BTreeSet<String> = rt.iter().map(|u| u.file.clone()).collect();
     let mut mismatches = 0usize;
     for f in &files {
-        let a: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(data.join(f)).unwrap()).unwrap();
-        let b: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(out.join(f)).unwrap()).unwrap();
-        if a != b {
+        let a = std::fs::read(data.join(f)).unwrap();
+        let b = std::fs::read(out.join(f)).unwrap();
+        // JSON engines re-serialize (bytes may differ but must be semantically
+        // equal); text engines splice in place (bytes must be identical).
+        let equal = match (
+            serde_json::from_slice::<serde_json::Value>(&a),
+            serde_json::from_slice::<serde_json::Value>(&b),
+        ) {
+            (Ok(av), Ok(bv)) => av == bv,
+            _ => a == b,
+        };
+        if !equal {
             mismatches += 1;
             println!("  MISMATCH: {f}");
         }
@@ -213,19 +227,21 @@ async fn cmd_ai(rest: &[String]) {
     let n: usize = arg(rest, 2).and_then(|s| s.parse().ok()).unwrap_or(6);
 
     let root = PathBuf::from(game);
-    let eng = engine::detect(&root).expect("not an RPGMaker game");
+    let eng = engine::detect(&root).expect("game not detected by any engine");
     let units = eng.extract(&root, &ExtractOpts::default()).unwrap();
     let picks: Vec<_> = units
         .into_iter()
-        .filter(|u| u.kind == UnitKind::Dialogue && !u.source.trim().is_empty())
+        .filter(|u| {
+            matches!(u.kind, UnitKind::Dialogue | UnitKind::Choice) && !u.source.trim().is_empty()
+        })
         .take(n)
         .collect();
 
     let texts: Vec<String> = picks.iter().map(|u| u.source.clone()).collect();
-    println!("Translating {} lines via {model}…\n", texts.len());
-    let out = ai_translate(model, &texts, "Japanese", "Thai").await;
+    println!("[{}] translating {} lines via {model}…\n", eng.id(), texts.len());
+    let out = ai_translate(eng.id(), model, &texts, "auto", "Thai").await;
     for (i, u) in picks.iter().enumerate() {
-        println!("JA: {}\nTH: {}\n", u.source, out[i].clone().unwrap_or_else(|| "[FAILED]".into()));
+        println!("SRC: {}\nTH:  {}\n", u.source, out[i].clone().unwrap_or_else(|| "[FAILED]".into()));
     }
 }
 
@@ -238,12 +254,13 @@ async fn cmd_glossary(rest: &[String]) {
 
     let conn = open_db(dbp);
     let (src, tgt) = langs(&conn);
+    let engine = db::get_meta(&conn, "engine_id").ok().flatten().unwrap_or_default();
     let cands = db::suggest_glossary(&conn).unwrap();
     println!("suggest_glossary: {} candidates. Translating first {n} ({src}->{tgt})…\n", cands.len());
     let pick: Vec<_> = cands.into_iter().take(n).collect();
 
     let texts: Vec<String> = pick.iter().map(|c| c.term.clone()).collect();
-    let out = ai_translate(model, &texts, &src, &tgt).await;
+    let out = ai_translate(&engine, model, &texts, &src, &tgt).await;
     for (i, c) in pick.iter().enumerate() {
         let prefill = c.translation.clone().unwrap_or_else(|| "-".into());
         let ai = out[i].clone().unwrap_or_else(|| "[FAILED]".into());
@@ -258,6 +275,7 @@ async fn cmd_one(rest: &[String]) {
     let model = arg(rest, 1).unwrap_or("gemma4:12b");
     let conn = open_db(dbp);
     let (src, tgt) = langs(&conn);
+    let engine = db::get_meta(&conn, "engine_id").ok().flatten().unwrap_or_default();
 
     let candidates = db::list_units(
         &conn,
@@ -272,7 +290,7 @@ async fn cmd_one(rest: &[String]) {
     };
 
     println!("Unit #{} [{}]\nJA: {}", unit.id, unit.file, unit.source);
-    let out = ai_translate(model, &[unit.source.clone()], &src, &tgt).await;
+    let out = ai_translate(&engine, model, &[unit.source.clone()], &src, &tgt).await;
     match out.into_iter().next().flatten() {
         Some(tr) => {
             db::update_unit(&conn, unit.id, Some(&tr), Status::Translated.as_str()).unwrap();
