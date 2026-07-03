@@ -662,6 +662,65 @@ code {
   opacity: 0.85;
   white-space: pre-line;
 }
+.preview-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.3rem;
+  padding: 0.1rem 0.4rem;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.preview-toggle:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.preview-toggle[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+/* RPGMaker-ish message-box preview. */
+.msg-preview {
+  margin-top: 0.4rem;
+}
+.mp-name {
+  display: inline-block;
+  margin-bottom: -1px;
+  padding: 0.1rem 0.5rem;
+  font-size: var(--fs-xs);
+  color: #fff;
+  background: #0b1a3a;
+  border: 2px solid #6a86c8;
+  border-bottom: none;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+}
+.mp-box {
+  padding: 0.5rem 0.6rem;
+  font-family: "Consolas", "Menlo", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #fff;
+  background: linear-gradient(#12162e, #0b0f22);
+  border: 2px solid #6a86c8;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  white-space: pre;
+}
+.mp-line {
+  min-height: 1.2em;
+}
+.mp-line.over {
+  box-shadow: inset -3px 0 0 var(--warn);
+}
+.mp-token {
+  color: #9fb4e0;
+  font-style: italic;
+  opacity: 0.9;
+}
 .cell.status {
   display: flex;
   align-items: center;

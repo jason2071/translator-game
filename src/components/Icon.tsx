@@ -18,7 +18,8 @@ export type IconName =
   | "memory"
   | "chevron-left"
   | "chevron-right"
-  | "check";
+  | "check"
+  | "eye";
 
 const PATHS: Record<IconName, JSX.Element> = {
   export: (
@@ -90,6 +91,12 @@ const PATHS: Record<IconName, JSX.Element> = {
   "chevron-left": <path d="M15 6l-6 6 6 6" />,
   "chevron-right": <path d="M9 6l6 6-6 6" />,
   check: <path d="M5 12l4 4 10-10" />,
+  eye: (
+    <>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
 };
 
 export function Icon({
