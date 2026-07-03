@@ -17,5 +17,7 @@ export const TARGET_LANGS = [
   "Korean",
 ] as const;
 
-export const DEFAULT_SOURCE = "Japanese";
+// Default to auto-detect: source games vary (Japanese, English, …) and the
+// model detects it, so the user rarely needs to change this.
+export const DEFAULT_SOURCE = "Auto";
 export const DEFAULT_TARGET = "Thai";
