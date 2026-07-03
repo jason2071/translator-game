@@ -347,6 +347,26 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
         if inner_len == 0 {
             continue;
         }
+
+        // Two-argument say: `"Speaker" "dialogue"`. The first string is the
+        // speaker name (not translatable), the real line is the second string.
+        let rest = raw[after_close..].trim_start();
+        if rest.starts_with('"') || rest.starts_with('\'') {
+            if let Some((rel2, len2, _)) = first_string(&raw[after_close..]) {
+                let abs2 = line_start + after_close + rel2;
+                if len2 > 0 && seen.insert(abs2) {
+                    let speaker = raw[inner_rel..inner_rel + inner_len].to_string();
+                    let start = after_close + rel2;
+                    let source = &raw[start..start + len2];
+                    out.push(
+                        TransUnit::new(file, format!("{abs2}:{len2}"), UnitKind::Dialogue, source)
+                            .with_context(Some(speaker)),
+                    );
+                }
+            }
+            continue;
+        }
+
         let abs = line_start + inner_rel;
         // Already harvested as a `_()` string on this line — don't double-count.
         if !seen.insert(abs) {
@@ -472,6 +492,20 @@ label x:
             units.iter().find(|u| u.source == "Start Game").unwrap().kind,
             UnitKind::Term
         );
+    }
+
+    #[test]
+    fn two_argument_say_extracts_dialogue_not_speaker() {
+        // `"Speaker" "dialogue"` — extract the line, keep the name as context.
+        let units = extract("    \"Sylvie\" \"Hi there!\"\n    \"Me\" \"Let's go.\"\n");
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[0].source, "Hi there!");
+        assert_eq!(units[0].context.as_deref(), Some("Sylvie"));
+        assert_eq!(units[0].kind, UnitKind::Dialogue);
+        assert_eq!(units[1].source, "Let's go.");
+        assert_eq!(units[1].context.as_deref(), Some("Me"));
+        // The speaker names must not be extracted as their own units.
+        assert!(!units.iter().any(|u| u.source == "Sylvie" || u.source == "Me"));
     }
 
     #[test]
