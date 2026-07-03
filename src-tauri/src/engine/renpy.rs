@@ -1,0 +1,392 @@
+//! Ren'Py engine (text `.rpy` scripts).
+//!
+//! Ren'Py dialogue lives in `game/**/*.rpy` as line-based statements:
+//!   - say:   `e "Hello."`  /  `"Narration."`  /  `e happy "Hi" with vpunch`
+//!   - menu:  a `menu:` block whose choices are `"Choice text":`
+//!
+//! Unlike the JSON engines we do not re-serialize the file. Each translatable
+//! string is located by the byte span of its *inner* content (between the
+//! quotes), and [`inject`] splices the translation into exactly that span. So if
+//! the translation equals the source, the file comes back byte-identical —
+//! round-trip identity holds for free. The `source` we store is the raw literal
+//! (escapes, `[interpolation]` and `{text tags}` preserved), so a translator/AI
+//! must keep those intact just like control codes.
+//!
+//! Python/screen/style/transform blocks are skipped so their code strings are
+//! not mistaken for dialogue.
+
+use super::codes::ExtractOpts;
+use super::{DetectResult, GameEngine};
+use crate::model::{TransUnit, UnitKind};
+use anyhow::{anyhow, Context, Result};
+use std::cmp::Reverse;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+pub struct RenpyEngine;
+
+impl GameEngine for RenpyEngine {
+    fn id(&self) -> &'static str {
+        "renpy"
+    }
+
+    fn name(&self) -> &'static str {
+        "Ren'Py"
+    }
+
+    fn detect(&self, root: &Path) -> bool {
+        game_dir(root).is_some()
+    }
+
+    fn describe(&self, root: &Path) -> Result<DetectResult> {
+        let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
+        let count = collect_rpy(&dir).len();
+        Ok(DetectResult {
+            engine_id: self.id().to_string(),
+            engine_name: self.name().to_string(),
+            data_dir: dir.to_string_lossy().to_string(),
+            file_count: count,
+        })
+    }
+
+    fn extract(&self, root: &Path, _opts: &ExtractOpts) -> Result<Vec<TransUnit>> {
+        let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
+        let mut units = Vec::new();
+        for path in collect_rpy(&dir) {
+            let rel = rel_path(&dir, &path);
+            let content =
+                std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
+            extract_rpy(&rel, &content, &mut units);
+        }
+        Ok(units)
+    }
+
+    fn inject(&self, root: &Path, units: &[TransUnit], out_dir: &Path) -> Result<()> {
+        let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
+
+        // Group applied units by file.
+        let mut by_file: BTreeMap<&str, Vec<&TransUnit>> = BTreeMap::new();
+        for u in units {
+            if u.status.is_applied() {
+                if u.translation.is_some() {
+                    by_file.entry(u.file.as_str()).or_default().push(u);
+                }
+            }
+        }
+
+        for (file, mut file_units) in by_file {
+            let src = dir.join(file);
+            let mut bytes = std::fs::read(&src).with_context(|| format!("reading {file}"))?;
+
+            // Apply from the end of the file backwards so earlier byte offsets
+            // stay valid as we splice.
+            file_units.sort_by_key(|u| Reverse(parse_pointer(&u.pointer).map(|(s, _)| s).unwrap_or(0)));
+            for u in file_units {
+                let (start, len) = parse_pointer(&u.pointer)
+                    .ok_or_else(|| anyhow!("bad Ren'Py pointer {} in {}", u.pointer, file))?;
+                if start + len > bytes.len() {
+                    return Err(anyhow!(
+                        "stale pointer {} in {} — re-extract needed",
+                        u.pointer,
+                        file
+                    ));
+                }
+                let translation = u.translation.clone().unwrap_or_default();
+                bytes.splice(start..start + len, translation.into_bytes());
+            }
+
+            let out = out_dir.join(file);
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&out, bytes).with_context(|| format!("writing {file}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// A Ren'Py project root holds a `game/` dir with `.rpy` scripts; some archives
+/// extract straight to the game dir, so accept a root that itself has `.rpy`.
+pub fn game_dir(root: &Path) -> Option<PathBuf> {
+    let game = root.join("game");
+    if game.is_dir() && has_rpy(&game) {
+        return Some(game);
+    }
+    if has_rpy(root) {
+        return Some(root.to_path_buf());
+    }
+    None
+}
+
+fn has_rpy(dir: &Path) -> bool {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if is_rpy(&p) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_rpy(p: &Path) -> bool {
+    p.is_file() && p.extension().map(|e| e == "rpy").unwrap_or(false)
+}
+
+/// Every `.rpy` under `dir`, sorted for deterministic unit order.
+fn collect_rpy(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                // Ren'Py's own generated caches/translations aren't source text.
+                stack.push(p);
+            } else if is_rpy(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Forward-slashed path relative to the game dir (stable across platforms).
+fn rel_path(base: &Path, path: &Path) -> String {
+    path.strip_prefix(base)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn parse_pointer(p: &str) -> Option<(usize, usize)> {
+    let (a, b) = p.split_once(':')?;
+    Some((a.parse().ok()?, b.parse().ok()?))
+}
+
+// ---------------------------------------------------------------------------
+// Line-based extraction
+// ---------------------------------------------------------------------------
+
+/// Blocks whose bodies are code/UI, not dialogue — skip everything indented
+/// under them.
+fn is_block_skip(trimmed: &str) -> bool {
+    const HEADS: &[&str] = &[
+        "python",
+        "init python",
+        "screen ",
+        "screen:",
+        "style ",
+        "style:",
+        "transform ",
+        "transform:",
+        "layeredimage ",
+        "testcase ",
+    ];
+    HEADS.iter().any(|h| trimmed.starts_with(h))
+}
+
+/// Statements whose leading keyword means any string on the line is not
+/// dialogue (asset names, definitions, control flow, inline python).
+fn is_line_skip(first: &str) -> bool {
+    const KW: &[&str] = &[
+        "$", "define", "default", "image", "scene", "show", "hide", "play", "stop", "queue",
+        "voice", "jump", "call", "return", "label", "pass", "window", "nvl", "camera", "pause",
+        "with", "init", "python", "screen", "style", "transform", "layeredimage", "testcase",
+    ];
+    KW.contains(&first)
+}
+
+fn first_token(s: &str) -> &str {
+    s.split_whitespace().next().unwrap_or("")
+}
+
+/// Find the first single/double-quoted string on a line. Returns
+/// `(inner_start, inner_len, after_close)` as byte indices into `line`.
+/// Honors `\"` escapes; a `#` reached before any quote means the rest is a
+/// comment (no dialogue string).
+fn first_string(line: &str) -> Option<(usize, usize, usize)> {
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'#' => return None,
+            q @ (b'"' | b'\'') => {
+                let inner_start = i + 1;
+                let mut j = inner_start;
+                while j < b.len() {
+                    if b[j] == b'\\' {
+                        j += 2;
+                        continue;
+                    }
+                    if b[j] == q {
+                        return Some((inner_start, j - inner_start, j + 1));
+                    }
+                    j += 1;
+                }
+                return None; // unterminated
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
+    let mut skip_indent: Option<usize> = None;
+    let mut offset = 0usize; // byte offset of the current line within the file
+
+    for line in content.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
+
+        let raw = line.strip_suffix('\n').unwrap_or(line);
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        let trimmed = raw.trim_start();
+        let indent = raw.len() - trimmed.len();
+
+        // Leaving a skipped block? A non-blank line at or below its indent ends
+        // it, and is then processed normally.
+        if let Some(si) = skip_indent {
+            if trimmed.is_empty() || indent > si {
+                continue;
+            }
+            skip_indent = None;
+        }
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if is_block_skip(trimmed) {
+            skip_indent = Some(indent);
+            continue;
+        }
+
+        let first = first_token(trimmed);
+        if is_line_skip(first) {
+            continue;
+        }
+
+        let Some((inner_rel, inner_len, after_close)) = first_string(raw) else {
+            continue;
+        };
+        if inner_len == 0 {
+            continue;
+        }
+        let source = &raw[inner_rel..inner_rel + inner_len];
+
+        // A trailing `:` (possibly after an `if <cond>`) marks a menu choice.
+        let after = raw[after_close..].trim();
+        let is_choice = after.trim_end().ends_with(':');
+
+        // The text before the opening quote is the speaker, when present.
+        let prefix = raw[indent..inner_rel - 1].trim();
+        let speaker = if is_choice || prefix.is_empty() {
+            None
+        } else {
+            let tok = first_token(prefix);
+            if tok == "extend" || tok.is_empty() {
+                None
+            } else {
+                Some(tok.to_string())
+            }
+        };
+
+        let kind = if is_choice {
+            UnitKind::Choice
+        } else {
+            UnitKind::Dialogue
+        };
+        let pointer = format!("{}:{}", line_start + inner_rel, inner_len);
+        out.push(TransUnit::new(file, pointer, kind, source).with_context(speaker));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn extract(src: &str) -> Vec<TransUnit> {
+        let mut out = Vec::new();
+        extract_rpy("script.rpy", src, &mut out);
+        out
+    }
+
+    #[test]
+    fn extracts_say_menu_and_skips_code() {
+        let src = r#"
+define e = Character("Eileen")
+
+label start:
+    "Narration line."
+    e "Hello there."
+    e happy "With attributes." with vpunch
+    voice "audio/v1.ogg"
+    menu:
+        "Pick one?"
+        "First choice":
+            e "You picked first."
+        "Second choice" if points > 3:
+            pass
+
+screen hud():
+    text "This is UI, not dialogue."
+
+init python:
+    x = "code string"
+"#;
+        let units = extract(src);
+        let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+
+        assert!(texts.contains(&"Narration line."));
+        assert!(texts.contains(&"Hello there."));
+        assert!(texts.contains(&"With attributes."));
+        assert!(texts.contains(&"Pick one?"));
+        assert!(texts.contains(&"First choice"));
+        assert!(texts.contains(&"Second choice"));
+        assert!(texts.contains(&"You picked first."));
+
+        // Code / UI / asset strings must NOT be extracted.
+        assert!(!texts.contains(&"audio/v1.ogg"));
+        assert!(!texts.contains(&"This is UI, not dialogue."));
+        assert!(!texts.contains(&"code string"));
+        assert!(!texts.iter().any(|t| t.contains("Eileen")));
+    }
+
+    #[test]
+    fn speaker_and_kind_are_classified() {
+        let units = extract("    e \"Hi.\"\n    \"Narr.\"\n    \"Choice\":\n");
+        assert_eq!(units[0].kind, UnitKind::Dialogue);
+        assert_eq!(units[0].context.as_deref(), Some("e"));
+        assert_eq!(units[1].kind, UnitKind::Dialogue);
+        assert_eq!(units[1].context, None); // narrator
+        assert_eq!(units[2].kind, UnitKind::Choice);
+        assert_eq!(units[2].context, None);
+    }
+
+    #[test]
+    fn pointer_spans_the_inner_content() {
+        let src = "    e \"Hello.\"\n";
+        let units = extract(src);
+        let (start, len) = parse_pointer(&units[0].pointer).unwrap();
+        assert_eq!(&src[start..start + len], "Hello.");
+    }
+
+    #[test]
+    fn escaped_quotes_are_handled() {
+        let src = "    e \"She said \\\"hi\\\" softly.\"\n";
+        let units = extract(src);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].source, "She said \\\"hi\\\" softly.");
+        let (start, len) = parse_pointer(&units[0].pointer).unwrap();
+        assert_eq!(&src[start..start + len], "She said \\\"hi\\\" softly.");
+    }
+}

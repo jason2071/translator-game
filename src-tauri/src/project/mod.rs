@@ -136,8 +136,13 @@ pub fn export(project: &Project, make_backup: bool) -> Result<ExportResult> {
         for file in &touched {
             let src = project.data_dir.join(file);
             if src.exists() {
-                std::fs::copy(&src, dir.join(file))
-                    .with_context(|| format!("backing up {file}"))?;
+                // A file path may be nested (e.g. Ren'Py `scripts/ch1.rpy`), so
+                // mirror its parent dirs under the backup folder before copying.
+                let dst = dir.join(file);
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&src, &dst).with_context(|| format!("backing up {file}"))?;
             }
         }
         Some(dir.to_string_lossy().to_string())

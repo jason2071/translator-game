@@ -1,13 +1,16 @@
 //! Engine plugin seam. Each supported game type implements [`GameEngine`];
 //! [`detect`] fingerprints a folder and returns the matching engine.
 //!
-//! V1 ships only [`mvmz::MvMzEngine`] (RPGMaker MV/MZ). Adding VX Ace,
-//! RPGMaker 2000/2003, Ren'Py, etc. later means dropping in a new impl and
-//! listing it in [`engines`] — nothing else in the app changes.
+//! Ships [`mvmz::MvMzEngine`] (RPGMaker MV/MZ, JSON) and [`renpy::RenpyEngine`]
+//! (Ren'Py `.rpy` scripts). Adding VX Ace, RPGMaker 2000/2003, etc. later means
+//! dropping in a new impl and listing it in [`engines`] — nothing else in the
+//! app changes. The `pointer` on a `TransUnit` is engine-defined (a JSON Pointer
+//! for MV/MZ, a byte span for Ren'Py); only the owning engine interprets it.
 
 pub mod codes;
 pub mod mvmz;
 pub mod protect;
+pub mod renpy;
 
 use crate::model::TransUnit;
 use std::path::Path;
@@ -44,7 +47,7 @@ pub trait GameEngine: Send + Sync {
 
 /// All engines known to this build, in detection priority order.
 pub fn engines() -> Vec<Box<dyn GameEngine>> {
-    vec![Box::new(mvmz::MvMzEngine)]
+    vec![Box::new(mvmz::MvMzEngine), Box::new(renpy::RenpyEngine)]
 }
 
 /// Return the first engine that recognizes `root`, if any.
