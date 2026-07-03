@@ -40,3 +40,14 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 [features]
 # Default off; enable to keep the console window on Windows release builds.
 custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+# Size + speed tuning for the shipped binary. LTO + a single codegen unit let
+# the optimizer inline across crates; `opt-level = "s"` favors small code
+# without gutting the serde_json hot paths; `panic = "abort"` drops unwinding
+# tables and `strip` removes symbols. Trade-off: slower release compiles.
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
