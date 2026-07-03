@@ -46,7 +46,7 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
   }
 
   return (
-    <div className="translate-bar">
+    <div className="toolbar">
       <span className="tb-label">AI translate</span>
 
       <div className="lang-switch">

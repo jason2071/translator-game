@@ -4,6 +4,7 @@ import { useSettings } from "../settings";
 import { useGlossarySuggest } from "../glossarySuggest";
 import { useTranslation } from "../translation";
 import TransProgress from "../components/TransProgress";
+import { Icon } from "../components/Icon";
 
 export default function GlossaryView() {
   const [entries, setEntries] = useState<GlossaryEntry[]>([]);
@@ -117,7 +118,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
     return (
       <div className="suggest-bar">
         <button className="ghost" onClick={suggest} disabled={loading}>
-          {loading ? "Scanning…" : "✨ Auto-suggest from game"}
+          <Icon name="sparkle" size={14} /> {loading ? "Scanning…" : "Auto-suggest from game"}
         </button>
         {translating && <span className="hint">Translating in background…</span>}
         {msg && <span className="ok-msg">{msg}</span>}
@@ -152,9 +153,10 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
                 : "Translate every empty/failed/skipped term (queues behind a running Run)"
             }
           >
+            <Icon name={filled > 0 ? "retry" : "globe"} size={14} />{" "}
             {filled > 0
-              ? `↻ Re-translate remaining (${remaining})`
-              : `🌐 Translate empty (${remaining})`}
+              ? `Re-translate remaining (${remaining})`
+              : `Translate empty (${remaining})`}
           </button>
         )}
         <button className="primary" onClick={() => addSelected(onAdded)} disabled={glossBusy}>
@@ -194,12 +196,13 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
                 <span className="cand-mark">✓</span>
               ) : (
                 <button
-                  className="cand-retry"
+                  className="cand-retry iconbtn"
                   onClick={() => translateOne(c.term, activeConfig())}
                   disabled={glossBusy}
+                  aria-label={`Translate ${c.term} with AI`}
                   title="Translate this term with AI"
                 >
-                  ↻
+                  <Icon name="retry" size={14} />
                 </button>
               )}
             </div>
@@ -235,7 +238,7 @@ function GlossRow({ entry, onChanged }: { entry: GlossaryEntry; onChanged: () =>
       </td>
       <td>
         <button
-          className="ghost"
+          className="iconbtn"
           aria-label={`Delete glossary term ${entry.term}`}
           title="Delete"
           onClick={async () => {
@@ -243,7 +246,7 @@ function GlossRow({ entry, onChanged }: { entry: GlossaryEntry; onChanged: () =>
             onChanged();
           }}
         >
-          🗑
+          <Icon name="trash" size={15} />
         </button>
       </td>
     </tr>

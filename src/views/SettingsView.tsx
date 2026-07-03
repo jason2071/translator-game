@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type ProviderKind } from "../ipc";
 import { PROVIDER_LABELS, useSettings } from "../settings";
+import { Icon } from "../components/Icon";
 
 const KINDS: ProviderKind[] = ["local", "openai", "anthropic", "gemini", "openrouter"];
 
@@ -86,8 +87,13 @@ export default function SettingsView() {
             value={cfg.model}
             onChange={(e) => s.updateProvider(active, { model: e.target.value })}
           />
-          <button className="ghost" onClick={refreshModels} disabled={loadingModels}>
-            {loadingModels ? "…" : "↻ Refresh"}
+          <button
+            className="ghost"
+            onClick={refreshModels}
+            disabled={loadingModels}
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
+          >
+            <Icon name="retry" size={14} /> {loadingModels ? "…" : "Refresh"}
           </button>
         </div>
 

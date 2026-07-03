@@ -4,6 +4,7 @@ import { api, type DetectResult } from "../ipc";
 import { useStore } from "../store";
 import { useTheme } from "../theme";
 import { DEFAULT_SOURCE, DEFAULT_TARGET, SOURCE_LANGS, TARGET_LANGS } from "../langs";
+import { Icon } from "../components/Icon";
 
 export default function ImportView() {
   const openProject = useStore((s) => s.openProject);
@@ -41,8 +42,13 @@ export default function ImportView() {
 
   return (
     <div className="import-view">
-      <button className="theme-fab ghost" onClick={toggleTheme} title="Toggle theme">
-        {theme === "dark" ? "☀" : "🌙"}
+      <button
+        className="theme-fab iconbtn"
+        onClick={toggleTheme}
+        title="Toggle theme"
+        aria-label="Toggle light/dark theme"
+      >
+        <Icon name={theme === "dark" ? "sun" : "moon"} />
       </button>
       <h1>RPGMaker Translator</h1>
       <p className="subtitle">Import a game folder to begin</p>

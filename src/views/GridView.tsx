@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { STATUSES, type Status, type TransUnit } from "../ipc";
+import { type TransUnit } from "../ipc";
 import { useStore } from "../store";
 import { UnitRow } from "../components/UnitRow";
 
@@ -13,8 +13,8 @@ export default function GridView() {
   const virtualizer = useVirtualizer({
     count: units.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 96,
-    overscan: 12,
+    estimateSize: () => 64,
+    overscan: 14,
   });
 
   // Ctrl/Cmd+Enter "save & next": the target row may be outside the mounted
@@ -93,38 +93,12 @@ export default function GridView() {
 
 function FilterBar() {
   const filter = useStore((s) => s.filter);
-  const files = useStore((s) => s.files);
   const setFilter = useStore((s) => s.setFilter);
   const units = useStore((s) => s.units);
 
+  // File + status filters now live in the sidebar; this bar is search-only.
   return (
-    <div className="filter-bar">
-      <select
-        value={filter.file ?? ""}
-        onChange={(e) => setFilter({ file: e.target.value || undefined })}
-      >
-        <option value="">All files ({files.reduce((a, f) => a + f.count, 0)})</option>
-        {files.map((f) => (
-          <option key={f.file} value={f.file}>
-            {f.file} ({f.count})
-          </option>
-        ))}
-      </select>
-
-      <select
-        value={filter.status ?? ""}
-        onChange={(e) =>
-          setFilter({ status: (e.target.value || undefined) as Status | undefined })
-        }
-      >
-        <option value="">Any status</option>
-        {STATUSES.map((s) => (
-          <option key={s} value={s}>
-            {s}
-          </option>
-        ))}
-      </select>
-
+    <div className="searchbar">
       <input
         key={filter.search ?? ""}
         type="search"
