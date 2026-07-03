@@ -51,6 +51,76 @@ pub fn mask(input: &str) -> Masked {
     Masked { text, tokens }
 }
 
+/// Mask using the code grammar of the given engine, sharing [`restore`].
+pub fn mask_for(engine_id: &str, input: &str) -> Masked {
+    match engine_id {
+        "renpy" => mask_renpy(input),
+        _ => mask(input),
+    }
+}
+
+/// Replace Ren'Py codes with `⟦k⟧` sentinels: `[interpolation]`, `{text tags}`,
+/// and backslash escapes (`\"`, `\n`, `\\`). Escaped `[[` / `{{` are literal
+/// text and left alone. Restores via the shared [`restore`].
+pub fn mask_renpy(input: &str) -> Masked {
+    let mut text = String::with_capacity(input.len());
+    let mut tokens: Vec<String> = Vec::new();
+    let b = input.as_bytes();
+    let mut i = 0;
+    while i < input.len() {
+        // Escaped `[[` / `{{` are literal text — copy both, never mask, and do
+        // not re-enter masking on the second bracket.
+        if (b[i] == b'[' || b[i] == b'{') && i + 1 < input.len() && b[i + 1] == b[i] {
+            text.push(b[i] as char);
+            text.push(b[i] as char);
+            i += 2;
+            continue;
+        }
+        let len = match b[i] {
+            b'\\' if i + 1 < input.len() => {
+                // Backslash + the whole next char (handles multi-byte).
+                Some(1 + input[i + 1..].chars().next().unwrap().len_utf8())
+            }
+            b'[' => renpy_bracket_len(&input[i..], b'[', b']'),
+            b'{' => renpy_bracket_len(&input[i..], b'{', b'}'),
+            _ => None,
+        };
+        if let Some(len) = len {
+            let idx = tokens.len();
+            tokens.push(input[i..i + len].to_string());
+            text.push(OPEN);
+            text.push_str(&idx.to_string());
+            text.push(CLOSE);
+            i += len;
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap();
+        text.push(ch);
+        i += ch.len_utf8();
+    }
+    Masked { text, tokens }
+}
+
+/// Byte length of a `[...]` / `{...}` code at the start of `s`, or None if it is
+/// an escaped `[[` / `{{`, is unterminated, or nests another opener.
+fn renpy_bracket_len(s: &str, open: u8, close: u8) -> Option<usize> {
+    let b = s.as_bytes();
+    if b.len() < 2 || b[1] == open {
+        return None; // too short, or an escaped `[[` / `{{`
+    }
+    let mut i = 1;
+    while i < b.len() {
+        if b[i] == open {
+            return None; // nested opener — not a simple code, leave as text
+        }
+        if b[i] == close {
+            return Some(i + 1);
+        }
+        i += 1;
+    }
+    None // unterminated
+}
+
 /// Length in bytes of a control-code token starting at `s[0] == '\\'`, or None.
 ///
 /// Grammar: `\` + (ASCII letters)? + (`[` … `]`)? , or `\` + single punctuation.
@@ -167,5 +237,39 @@ mod tests {
         let bad = format!("{}Hi", "\u{27E6}0\u{27E7}");
         let err = restore(&bad, &m.tokens).unwrap_err();
         assert_eq!(err.missing, vec![1]);
+    }
+
+    #[test]
+    fn renpy_mask_unmask_is_identity() {
+        let samples = [
+            "Hello, [player_name]!",
+            "This is {b}bold{/b} and {color=#ff0000}red{/color}.",
+            "She said \\\"hi\\\" then left.",
+            "Line one\\nLine two",
+            "Literal [[bracket]] and {{brace}} stay.",
+            "Percent 50% off, no codes.",
+            "",
+        ];
+        for s in samples {
+            let m = mask_renpy(s);
+            let back = restore(&m.text, &m.tokens).expect("restore ok");
+            assert_eq!(back, s, "round-trip failed for {s:?}");
+        }
+    }
+
+    #[test]
+    fn renpy_codes_hidden_escaped_brackets_kept() {
+        let m = mask_renpy("Hi [name], {i}ok{/i}, [[lit]]");
+        // Interpolation and both tags are masked; the escaped `[[` is not.
+        assert_eq!(m.tokens, vec!["[name]", "{i}", "{/i}"]);
+        assert!(!m.text.contains("[name]"), "interpolation should be masked");
+        assert!(m.text.contains("[[lit]]"), "escaped [[ must stay literal");
+    }
+
+    #[test]
+    fn mask_for_dispatches_by_engine() {
+        // RPGMaker grammar leaves Ren'Py brackets alone; Ren'Py grammar masks them.
+        assert!(mask_for("rpgmaker-mvmz", "[name]").is_plain());
+        assert!(!mask_for("renpy", "[name]").is_plain());
     }
 }

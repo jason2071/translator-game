@@ -20,7 +20,7 @@ use super::{DetectResult, GameEngine};
 use crate::model::{TransUnit, UnitKind};
 use anyhow::{anyhow, Context, Result};
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub struct RenpyEngine;
@@ -239,8 +239,41 @@ fn first_string(line: &str) -> Option<(usize, usize, usize)> {
     None
 }
 
+/// Byte spans (relative to `line`) of the inner content of each `_("...")`
+/// gettext call — Ren'Py's explicit "this string is translatable" marker, which
+/// may appear anywhere including inside screen/python blocks.
+fn gettext_spans(line: &str) -> Vec<(usize, usize)> {
+    let b = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        // A gettext call is a lone `_` (not the tail of an identifier) then `(`.
+        if b[i] == b'_'
+            && b[i + 1] == b'('
+            && !(i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
+        {
+            let mut j = i + 2;
+            while j < b.len() && (b[j] == b' ' || b[j] == b'\t') {
+                j += 1;
+            }
+            if j < b.len() && (b[j] == b'"' || b[j] == b'\'') {
+                if let Some((inner_rel, inner_len, after_close)) = first_string(&line[j..]) {
+                    if inner_len > 0 {
+                        out.push((j + inner_rel, inner_len));
+                    }
+                    i = j + after_close;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
     let mut skip_indent: Option<usize> = None;
+    let mut seen: HashSet<usize> = HashSet::new(); // inner-start offsets already taken
     let mut offset = 0usize; // byte offset of the current line within the file
 
     for line in content.split_inclusive('\n') {
@@ -252,26 +285,38 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
         let trimmed = raw.trim_start();
         let indent = raw.len() - trimmed.len();
 
-        // Leaving a skipped block? A non-blank line at or below its indent ends
-        // it, and is then processed normally.
-        if let Some(si) = skip_indent {
-            if trimmed.is_empty() || indent > si {
-                continue;
-            }
-            skip_indent = None;
-        }
-
+        // Blank/comment lines carry no text and never close a skipped block.
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
+        // `_("...")` strings are explicit and translatable even inside skipped
+        // (screen/python) blocks, so harvest them before any skip logic.
+        for (rel, len) in gettext_spans(raw) {
+            let abs = line_start + rel;
+            if seen.insert(abs) {
+                out.push(TransUnit::new(
+                    file,
+                    format!("{abs}:{len}"),
+                    UnitKind::Term,
+                    &raw[rel..rel + len],
+                ));
+            }
+        }
+
+        // Leaving a skipped block? A line at or below its indent ends it, and is
+        // then processed normally for bare say/menu strings.
+        if let Some(si) = skip_indent {
+            if indent > si {
+                continue;
+            }
+            skip_indent = None;
+        }
         if is_block_skip(trimmed) {
             skip_indent = Some(indent);
             continue;
         }
-
-        let first = first_token(trimmed);
-        if is_line_skip(first) {
+        if is_line_skip(first_token(trimmed)) {
             continue;
         }
 
@@ -279,6 +324,11 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
             continue;
         };
         if inner_len == 0 {
+            continue;
+        }
+        let abs = line_start + inner_rel;
+        // Already harvested as a `_()` string on this line — don't double-count.
+        if !seen.insert(abs) {
             continue;
         }
         let source = &raw[inner_rel..inner_rel + inner_len];
@@ -305,8 +355,7 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
         } else {
             UnitKind::Dialogue
         };
-        let pointer = format!("{}:{}", line_start + inner_rel, inner_len);
-        out.push(TransUnit::new(file, pointer, kind, source).with_context(speaker));
+        out.push(TransUnit::new(file, format!("{abs}:{inner_len}"), kind, source).with_context(speaker));
     }
 }
 
@@ -378,6 +427,38 @@ init python:
         let units = extract(src);
         let (start, len) = parse_pointer(&units[0].pointer).unwrap();
         assert_eq!(&src[start..start + len], "Hello.");
+    }
+
+    #[test]
+    fn gettext_strings_extracted_even_in_screens() {
+        let src = r#"
+screen main_menu():
+    textbutton _("Start Game") action Start()
+    textbutton "Unwrapped" action NullAction()
+    text _("Options")
+
+label x:
+    $ renpy.notify(_("Progress saved."))
+"#;
+        let units = extract(src);
+        let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+        assert!(texts.contains(&"Start Game"));
+        assert!(texts.contains(&"Options"));
+        assert!(texts.contains(&"Progress saved."));
+        // Unwrapped screen text (no _()) is still skipped.
+        assert!(!texts.contains(&"Unwrapped"));
+        assert_eq!(
+            units.iter().find(|u| u.source == "Start Game").unwrap().kind,
+            UnitKind::Term
+        );
+    }
+
+    #[test]
+    fn gettext_say_is_not_double_counted() {
+        // `e _("Hi")` yields exactly one unit, not one for the say and one for _().
+        let units = extract("    e _(\"Hi\")\n");
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].source, "Hi");
     }
 
     #[test]

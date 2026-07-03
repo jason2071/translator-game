@@ -7,6 +7,7 @@ label start:
     "It was a dark and stormy night."
     e "Hello. I'm glad you could make it."
     e happy "This is going to be fun!" with vpunch
+    e "Welcome back, [player]. {i}Ready?{/i}"
     voice "audio/hello.ogg"
     m "Where should we begin?"
 
@@ -22,11 +23,14 @@ label start:
             jump village
 
     "She said \"watch out\" and pointed."
+    $ renpy.notify(_("Progress saved."))
     return
 
 screen ui_test():
     text "HUD text, not dialogue."
     textbutton "Menu button"
+    textbutton _("Start Game") action Start()
+    text _("Options")
 
 init python:
     greeting = "python code string"

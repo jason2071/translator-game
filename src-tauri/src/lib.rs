@@ -339,10 +339,11 @@ async fn translate_units(
     // source (dedup), and pre-fill any group whose source is already in TM. Only
     // genuinely-new distinct sources reach the AI, so repeated lines and
     // previously-translated strings are never re-billed.
-    let (to_ai, total, reused, glossary, source_lang, target_lang) = {
+    let (to_ai, total, reused, glossary, source_lang, target_lang, engine_id) = {
         let guard = state.project.lock().unwrap();
         let proj = guard.as_ref().ok_or("no project is open")?;
         let overwrite = scope.overwrite.unwrap_or(false);
+        let engine_id = proj.engine_id.clone();
 
         let candidates = if let Some(ids) = &scope.ids {
             project::db::units_by_ids(&proj.conn, ids).map_err(|e| e.to_string())?
@@ -429,7 +430,7 @@ async fn translate_units(
         let source_lang = project::db::get_meta(&proj.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
         let target_lang = project::db::get_meta(&proj.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into());
 
-        (to_ai, total_units, reused, glossary, source_lang, target_lang)
+        (to_ai, total_units, reused, glossary, source_lang, target_lang, engine_id)
     };
 
     let mut summary = TranslateSummary {
@@ -447,8 +448,12 @@ async fn translate_units(
         return Ok(summary);
     }
 
-    // Mask each distinct source once (aligned to to_ai).
-    let masks: Vec<protect::Masked> = to_ai.iter().map(|g| protect::mask(&g.source)).collect();
+    // Mask each distinct source once (aligned to to_ai), using this engine's
+    // code grammar so RPGMaker escapes or Ren'Py tags/interpolation survive.
+    let masks: Vec<protect::Masked> = to_ai
+        .iter()
+        .map(|g| protect::mask_for(&engine_id, &g.source))
+        .collect();
 
     let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
     let client = state.http.clone();
@@ -622,20 +627,22 @@ async fn translate_texts(
     };
 
     // Use the open project's languages if there is one; else default JA->TH.
-    let (source_lang, target_lang) = {
+    let (source_lang, target_lang, engine_id) = {
         let guard = state.project.lock().unwrap();
         match guard.as_ref() {
             Some(p) => (
                 project::db::get_meta(&p.conn, "source_lang").ok().flatten().unwrap_or_else(|| "Japanese".into()),
                 project::db::get_meta(&p.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into()),
+                p.engine_id.clone(),
             ),
-            None => ("Japanese".into(), "Thai".into()),
+            None => ("Japanese".into(), "Thai".into(), String::new()),
         }
     };
 
     let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
     let client = state.http.clone();
-    let masks: Vec<protect::Masked> = texts.iter().map(|t| protect::mask(t)).collect();
+    let masks: Vec<protect::Masked> =
+        texts.iter().map(|t| protect::mask_for(&engine_id, t)).collect();
     let total = texts.len();
     let interval = config.min_interval_ms();
 

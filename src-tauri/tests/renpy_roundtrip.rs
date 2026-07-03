@@ -35,8 +35,14 @@ fn extract_finds_dialogue_not_code() {
     assert!(texts.contains(&"The village"));
     assert!(texts.contains(&"Into the woods we go."));
     assert!(texts.contains(&"She said \\\"watch out\\\" and pointed."));
+    assert!(texts.contains(&"Welcome back, [player]. {i}Ready?{/i}"));
 
-    // Asset names, screen/UI text, python code, and defines are NOT extracted.
+    // `_("...")` strings are extracted even inside a screen/python block.
+    assert!(texts.contains(&"Start Game"));
+    assert!(texts.contains(&"Options"));
+    assert!(texts.contains(&"Progress saved."));
+
+    // Asset names, unwrapped screen/UI text, python code, and defines are NOT.
     assert!(!texts.contains(&"audio/hello.ogg"));
     assert!(!texts.contains(&"HUD text, not dialogue."));
     assert!(!texts.contains(&"Menu button"));
