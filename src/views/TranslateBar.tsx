@@ -82,8 +82,20 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
         <option value="all">All untranslated</option>
       </select>
 
-      <label className="chk">
-        <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} disabled={running} />
+      <label
+        className="chk"
+        title={
+          mode === "all"
+            ? "No effect: 'All untranslated' never touches existing translations"
+            : "Re-translate units that already have a translation"
+        }
+      >
+        <input
+          type="checkbox"
+          checked={overwrite && mode !== "all"}
+          onChange={(e) => setOverwrite(e.target.checked)}
+          disabled={running || mode === "all"}
+        />
         Overwrite existing
       </label>
 

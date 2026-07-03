@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useStore } from "./store";
 import { useTheme } from "./theme";
-import { api, type ExportResult } from "./ipc";
+import { api, type ExportResult, type Status } from "./ipc";
 import ImportView from "./views/ImportView";
 import GridView from "./views/GridView";
 import GlossaryView from "./views/GlossaryView";
@@ -46,6 +46,9 @@ function TopBar({ openPanel }: { openPanel: (p: Panel) => void }) {
   const closeProject = useStore((s) => s.closeProject);
   const refreshMeta = useStore((s) => s.refreshMeta);
   const reloadUnits = useStore((s) => s.reloadUnits);
+  const setFilter = useStore((s) => s.setFilter);
+  // Clicking a stat chip filters the grid to that status (total clears it).
+  const goStatus = (status?: Status) => setFilter({ status, untranslatedOnly: false });
   const [exporting, setExporting] = useState(false);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -93,11 +96,16 @@ function TopBar({ openPanel }: { openPanel: (p: Panel) => void }) {
       <div className="tb-stats">
         {stats && (
           <>
-            <Chip label="total" value={stats.total} />
-            <Chip label="todo" value={stats.untranslated} tone="muted" />
-            {stats.failed > 0 && <Chip label="failed" value={stats.failed} tone="err" />}
-            <Chip label="draft" value={stats.draft} tone="warn" />
-            <Chip label="done" value={stats.translated + stats.reviewed} tone="ok" />
+            <Chip label="total" value={stats.total} onClick={() => goStatus(undefined)} />
+            <Chip label="todo" value={stats.untranslated} tone="muted" onClick={() => goStatus("Untranslated")} />
+            {stats.failed > 0 && (
+              <Chip label="failed" value={stats.failed} tone="err" onClick={() => goStatus("Failed")} />
+            )}
+            <Chip label="draft" value={stats.draft} tone="warn" onClick={() => goStatus("Draft")} />
+            <Chip label="done" value={stats.translated + stats.reviewed} tone="ok" onClick={() => goStatus("Translated")} />
+            {stats.locked > 0 && (
+              <Chip label="locked" value={stats.locked} tone="muted" onClick={() => goStatus("Locked")} />
+            )}
           </>
         )}
       </div>
@@ -154,7 +162,12 @@ function ThemeToggle() {
   const theme = useTheme((s) => s.theme);
   const toggle = useTheme((s) => s.toggle);
   return (
-    <button className="ghost" onClick={toggle} title="Toggle light/dark theme">
+    <button
+      className="ghost"
+      onClick={toggle}
+      title="Toggle light/dark theme"
+      aria-label="Toggle light/dark theme"
+    >
       {theme === "dark" ? "☀" : "🌙"}
     </button>
   );
@@ -164,13 +177,32 @@ function Chip({
   label,
   value,
   tone,
+  onClick,
 }: {
   label: string;
   value: number;
   tone?: "muted" | "warn" | "ok" | "err";
+  onClick?: () => void;
 }) {
+  const clickable = !!onClick;
   return (
-    <span className={`chip ${tone ?? ""}`}>
+    <span
+      className={`chip ${tone ?? ""}${clickable ? " clickable" : ""}`}
+      onClick={onClick}
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      title={clickable ? `Filter: ${label}` : undefined}
+      onKeyDown={
+        clickable
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick!();
+              }
+            }
+          : undefined
+      }
+    >
       <span className="chip-val">{value}</span>
       <span className="chip-lbl">{label}</span>
     </span>

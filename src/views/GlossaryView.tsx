@@ -236,6 +236,8 @@ function GlossRow({ entry, onChanged }: { entry: GlossaryEntry; onChanged: () =>
       <td>
         <button
           className="ghost"
+          aria-label={`Delete glossary term ${entry.term}`}
+          title="Delete"
           onClick={async () => {
             await api.glossaryDelete(entry.id);
             onChanged();

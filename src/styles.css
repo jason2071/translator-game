@@ -3,12 +3,13 @@
   --panel: #24283b;
   --panel2: #1f2335;
   --fg: #c0caf5;
-  --muted: #565f89;
+  --muted: #828bb8; /* raised for WCAG AA on the dark panels */
   --accent: #7aa2f7;
   --ok: #9ece6a;
   --warn: #e0af68;
   --err: #f7768e;
   --lock: #bb9af7;
+  --status-translated: #56b6c2; /* distinct from --accent (interactive) */
   --border: #2f334d;
   --on-accent: #16161e;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -21,12 +22,13 @@
   --panel: #ffffff;
   --panel2: #eef1f7;
   --fg: #2a2e3a;
-  --muted: #7a819a;
+  --muted: #5c6279; /* darkened for WCAG AA on white panels */
   --accent: #3b5bdb;
-  --ok: #2f9e44;
-  --warn: #e8940c;
-  --err: #e03131;
-  --lock: #7048e8;
+  --ok: #1f7a33; /* darkened so chip/status text passes AA */
+  --warn: #a35e00;
+  --err: #d1252b;
+  --lock: #6a3fd6;
+  --status-translated: #0e7490;
   --border: #dfe3ec;
   --on-accent: #ffffff;
   color-scheme: light;
@@ -249,20 +251,19 @@ code {
 .chip.err .chip-val {
   color: var(--err);
 }
-.progress {
-  position: relative;
-  flex: 1;
-  max-width: 260px;
-  height: 8px;
-  background: var(--panel);
-  border-radius: 4px;
-  overflow: hidden;
-  border: 1px solid var(--border);
+/* Chips that map to a status filter are clickable. */
+.chip.clickable {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 0.1rem 0.3rem;
+  margin: -0.1rem -0.3rem;
 }
-.progress-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: linear-gradient(90deg, var(--accent), var(--ok));
+.chip.clickable:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.chip.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* ---- Grid ---- */
@@ -323,10 +324,18 @@ code {
   overflow: auto;
   padding: 0 1rem;
 }
+.grid-scroll.loading {
+  opacity: 0.55;
+  pointer-events: none;
+}
 .empty {
   color: var(--muted);
   text-align: center;
   padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .unit-row {
@@ -369,6 +378,7 @@ code {
 .cell.translation textarea:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .cell.translation textarea.warn {
   border-color: var(--warn);

@@ -6,6 +6,8 @@ import { UnitRow } from "../components/UnitRow";
 
 export default function GridView() {
   const units = useStore((s) => s.units);
+  const loading = useStore((s) => s.loading);
+  const setFilter = useStore((s) => s.setFilter);
   const parentRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -15,6 +17,26 @@ export default function GridView() {
     overscan: 12,
   });
 
+  // Ctrl/Cmd+Enter "save & next": the target row may be outside the mounted
+  // window, so scroll it into view first, then retry focusing until it exists.
+  function focusRowTextarea(index: number, tries = 8) {
+    const el = parentRef.current?.querySelector<HTMLTextAreaElement>(
+      `[data-index="${index}"] textarea`
+    );
+    if (el) {
+      el.focus();
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+      return;
+    }
+    if (tries > 0) requestAnimationFrame(() => focusRowTextarea(index, tries - 1));
+  }
+  function focusRow(index: number) {
+    if (index < 0 || index >= units.length) return;
+    virtualizer.scrollToIndex(index, { align: "center" });
+    requestAnimationFrame(() => focusRowTextarea(index));
+  }
+
   return (
     <div className="grid-wrap">
       <FilterBar />
@@ -23,9 +45,24 @@ export default function GridView() {
         <span>Translation</span>
         <span>Status</span>
       </div>
-      <div className="grid-scroll" ref={parentRef}>
+      <div className={`grid-scroll${loading ? " loading" : ""}`} ref={parentRef}>
         {units.length === 0 ? (
-          <p className="empty">No units match the current filter.</p>
+          <div className="empty">
+            <p>No units match the current filter.</p>
+            <button
+              className="ghost"
+              onClick={() =>
+                setFilter({
+                  file: undefined,
+                  status: undefined,
+                  search: undefined,
+                  untranslatedOnly: false,
+                })
+              }
+            >
+              Reset filters
+            </button>
+          </div>
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
             {virtualizer.getVirtualItems().map((v) => {
@@ -43,7 +80,7 @@ export default function GridView() {
                     transform: `translateY(${v.start}px)`,
                   }}
                 >
-                  <UnitRow unit={unit} />
+                  <UnitRow unit={unit} index={v.index} onNext={focusRow} />
                 </div>
               );
             })}
@@ -89,8 +126,9 @@ function FilterBar() {
       </select>
 
       <input
+        key={filter.search ?? ""}
         type="search"
-        placeholder="Search source / translation…"
+        placeholder="Search source / translation… (Enter)"
         defaultValue={filter.search ?? ""}
         onKeyDown={(e) => {
           if (e.key === "Enter")
