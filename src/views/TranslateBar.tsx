@@ -16,11 +16,12 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
   const active = useSettings((s) => s.active);
   const activeConfig = useSettings((s) => s.activeConfig);
 
-  // Shared status: `running` is true whenever ANY translation (units or
-  // glossary) is in flight, so the two never overlap and use one progress bar.
-  const running = useTranslation((s) => s.busy);
-  const runTranslation = useTranslation((s) => s.run);
+  // Only this Run's own status gates the controls; a glossary job runs in the
+  // shared queue and does not lock the Run button (it just queues).
+  const unitsPhase = useTranslation((s) => s.units.phase);
+  const enqueue = useTranslation((s) => s.enqueue);
   const cancel = useTranslation((s) => s.cancel);
+  const running = unitsPhase !== "idle"; // queued or running
 
   const [mode, setMode] = useState<"shown" | "all">("shown");
   const [overwrite, setOverwrite] = useState(false);
@@ -35,7 +36,7 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
         ? { filter: { untranslatedOnly: true }, overwrite }
         : { filter, overwrite };
     try {
-      const res = await runTranslation("units", () => api.translateUnits(scope, activeConfig()));
+      const res = await enqueue("units", () => api.translateUnits(scope, activeConfig()));
       setSummary(res);
       await refreshMeta();
       await reloadUnits();
@@ -95,12 +96,14 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
           Run
         </button>
       ) : (
-        <button className="ghost" onClick={cancel}>
+        <button className="ghost" onClick={() => cancel("units")}>
           Cancel
         </button>
       )}
 
-      <TransProgress />
+      {/* Separate status per kind: the Run over units and the glossary job. */}
+      <TransProgress kind="units" />
+      <TransProgress kind="glossary" />
 
       {summary && (
         <span className="export-ok">

@@ -553,6 +553,10 @@ code {
   opacity: 0.4;
   cursor: default;
 }
+.tb-count.queued {
+  opacity: 0.7;
+  font-style: italic;
+}
 
 /* ---- Lint ---- */
 .lint-list {

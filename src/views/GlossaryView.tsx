@@ -101,12 +101,11 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
     clear,
   } = useGlossarySuggest();
 
-  // Shared status with the main Run: translating here == a glossary run is live.
-  const busy = useTranslation((s) => s.busy);
-  const kind = useTranslation((s) => s.kind);
+  // Glossary's own queue slot: running (live) or queued (waiting behind a Run).
+  const phase = useTranslation((s) => s.glossary.phase);
   const cancel = useTranslation((s) => s.cancel);
-  const translating = busy && kind === "glossary";
-  const otherBusy = busy && kind !== "glossary"; // a unit Run is holding the lock
+  const translating = phase === "running";
+  const glossBusy = phase !== "idle"; // running or queued — can't queue twice
 
   const filled = cands
     ? cands.filter((c) => (rows[c.term]?.tr ?? "").trim()).length
@@ -138,21 +137,19 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
             {msg}
           </span>
         )}
-        {translating ? (
-          <button className="ghost" onClick={cancel}>
-            Cancel translate
+        {glossBusy ? (
+          <button className="ghost" onClick={() => cancel("glossary")}>
+            {translating ? "Cancel translate" : "Cancel queued"}
           </button>
         ) : (
           <button
             className="ghost"
             onClick={() => translateEmpty(activeConfig())}
-            disabled={otherBusy || remaining === 0}
+            disabled={remaining === 0}
             title={
-              otherBusy
-                ? "A translation is already running"
-                : remaining === 0
-                  ? "All candidates have a translation"
-                  : "Translate every empty/failed/skipped term"
+              remaining === 0
+                ? "All candidates have a translation"
+                : "Translate every empty/failed/skipped term (queues behind a running Run)"
             }
           >
             {filled > 0
@@ -160,14 +157,15 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
               : `🌐 Translate empty (${remaining})`}
           </button>
         )}
-        <button className="primary" onClick={() => addSelected(onAdded)} disabled={translating}>
+        <button className="primary" onClick={() => addSelected(onAdded)} disabled={glossBusy}>
           Add selected
         </button>
-        <button className="ghost" onClick={clear} disabled={translating}>
+        <button className="ghost" onClick={clear} disabled={glossBusy}>
           Cancel
         </button>
       </div>
-      <TransProgress only="glossary" />
+      {/* Modal shows only the glossary status. */}
+      <TransProgress kind="glossary" />
       {translating && (
         <div className="hint suggest-note">
           Running in background — safe to close this dialog; results are kept.
@@ -198,7 +196,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
                 <button
                   className="cand-retry"
                   onClick={() => translateOne(c.term, activeConfig())}
-                  disabled={busy}
+                  disabled={glossBusy}
                   title="Translate this term with AI"
                 >
                   ↻

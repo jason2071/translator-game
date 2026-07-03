@@ -99,8 +99,8 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
       if (!cands) return;
       const todo = cands.filter((c) => !(rows[c.term]?.tr ?? "").trim());
       if (todo.length === 0) return;
-      if (useTranslation.getState().busy) {
-        set({ msg: "Another translation is running" });
+      if (useTranslation.getState().glossary.phase !== "idle") {
+        set({ msg: "Glossary translate already running" });
         return;
       }
       set({ msg: null });
@@ -117,7 +117,7 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
       try {
         const res = await useTranslation
           .getState()
-          .run("glossary", () => api.translateTexts(todo.map((c) => c.term), cfg));
+          .enqueue("glossary", () => api.translateTexts(todo.map((c) => c.term), cfg));
         // Rows already filled live; here just tally and remember. A null result
         // = that term failed (or the run was cancelled).
         let filled = 0;
@@ -144,15 +144,15 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
     },
 
     translateOne: async (term, cfg) => {
-      if (useTranslation.getState().busy) {
-        set({ msg: "Another translation is running" });
+      if (useTranslation.getState().glossary.phase !== "idle") {
+        set({ msg: "Glossary translate already running" });
         return;
       }
       set({ msg: null });
       try {
         const res = await useTranslation
           .getState()
-          .run("glossary", () => api.translateTexts([term], cfg));
+          .enqueue("glossary", () => api.translateTexts([term], cfg));
         const t = res[0];
         if (t) {
           set((s) => ({ rows: { ...s.rows, [term]: { ...s.rows[term], tr: t } } }));

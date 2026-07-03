@@ -11,6 +11,7 @@ dist-ssr/
 .DS_Store
 Thumbs.db
 desktop.ini
+ui/
 
 # Rust / Tauri
 src-tauri/target/
