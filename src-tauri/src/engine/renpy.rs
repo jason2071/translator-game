@@ -103,6 +103,15 @@ impl GameEngine for RenpyEngine {
         }
         Ok(())
     }
+
+    /// A patched `X.rpy` leaves a stale `X.rpyc`; removing it forces Ren'Py to
+    /// recompile from our edited source rather than load the old bytecode.
+    fn stale_companions(&self, file: &str) -> Vec<String> {
+        match file.strip_suffix(".rpy") {
+            Some(stem) => vec![format!("{stem}.rpyc")],
+            None => Vec::new(),
+        }
+    }
 }
 
 /// A Ren'Py project root holds a `game/` dir with `.rpy` scripts; some archives
@@ -459,6 +468,17 @@ label x:
         let units = extract("    e _(\"Hi\")\n");
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].source, "Hi");
+    }
+
+    #[test]
+    fn stale_companions_maps_rpy_to_rpyc() {
+        let eng = RenpyEngine;
+        assert_eq!(eng.stale_companions("script.rpy"), vec!["script.rpyc".to_string()]);
+        assert_eq!(
+            eng.stale_companions("scripts/ch1.rpy"),
+            vec!["scripts/ch1.rpyc".to_string()]
+        );
+        assert!(eng.stale_companions("notes.txt").is_empty());
     }
 
     #[test]

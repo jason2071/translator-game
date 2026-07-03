@@ -43,6 +43,13 @@ pub trait GameEngine: Send + Sync {
     fn extract(&self, root: &Path, opts: &ExtractOpts) -> anyhow::Result<Vec<TransUnit>>;
     /// Write applied translations back, emitting patched files into `out_dir`.
     fn inject(&self, root: &Path, units: &[TransUnit], out_dir: &Path) -> anyhow::Result<()>;
+
+    /// Data-dir-relative companion files that become stale when `file` is
+    /// patched and must be removed so the engine regenerates them (e.g. Ren'Py's
+    /// compiled `.rpyc`). Export backs these up before deleting. Default: none.
+    fn stale_companions(&self, _file: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// All engines known to this build, in detection priority order.

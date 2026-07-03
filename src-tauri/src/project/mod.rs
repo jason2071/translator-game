@@ -126,6 +126,14 @@ pub fn export(project: &Project, make_backup: bool) -> Result<ExportResult> {
     touched.sort();
     touched.dedup();
 
+    // Derived files (e.g. Ren'Py `.rpyc`) that go stale once their source is
+    // patched; back them up and delete them so the engine regenerates them.
+    let companions: Vec<String> = touched
+        .iter()
+        .flat_map(|f| eng.stale_companions(f))
+        .filter(|c| project.data_dir.join(c).exists())
+        .collect();
+
     let backup_dir = if make_backup && !touched.is_empty() {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -133,7 +141,7 @@ pub fn export(project: &Project, make_backup: bool) -> Result<ExportResult> {
             .unwrap_or(0);
         let dir = rpgtl_dir(&project.root).join("backups").join(ts.to_string());
         std::fs::create_dir_all(&dir)?;
-        for file in &touched {
+        for file in touched.iter().chain(companions.iter()) {
             let src = project.data_dir.join(file);
             if src.exists() {
                 // A file path may be nested (e.g. Ren'Py `scripts/ch1.rpy`), so
@@ -152,6 +160,11 @@ pub fn export(project: &Project, make_backup: bool) -> Result<ExportResult> {
 
     // Inject writes patched files in place (out_dir == data_dir).
     eng.inject(&project.root, &units, &project.data_dir)?;
+
+    // Remove now-stale derived files so the engine rebuilds them from our edit.
+    for c in &companions {
+        let _ = std::fs::remove_file(project.data_dir.join(c));
+    }
 
     Ok(ExportResult {
         files_written: touched.len(),
