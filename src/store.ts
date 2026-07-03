@@ -101,10 +101,12 @@ export const useStore = create<AppStore>((set, get) => ({
   editUnit: async (id, translation, status) => {
     const units = get().units;
     const cur = units.find((u) => u.id === id);
-    // First edit of an untranslated unit promotes it to Draft.
+    // First edit of an untranslated/failed unit promotes it to Draft.
     const nextStatus: Status =
       status ??
-      (cur && cur.status === "Untranslated" ? "Draft" : cur?.status ?? "Draft");
+      (cur && (cur.status === "Untranslated" || cur.status === "Failed")
+        ? "Draft"
+        : cur?.status ?? "Draft");
     await api.updateUnit(id, translation, nextStatus);
     set({
       units: units.map((u) =>

@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useStore } from "./store";
 import { useTheme } from "./theme";
-import { useTranslation } from "./translation";
 import { api, type ExportResult } from "./ipc";
 import ImportView from "./views/ImportView";
 import GridView from "./views/GridView";
@@ -84,18 +83,6 @@ function TopBar({ openPanel }: { openPanel: (p: Panel) => void }) {
     }
   }
 
-  const pct =
-    stats && stats.total > 0
-      ? Math.round(((stats.total - stats.untranslated) / stats.total) * 100)
-      : 0;
-
-  // The header bar is overall coverage; it is static during a run (stats update
-  // only after). Hide it while translating so the live Run/glossary bar in the
-  // toolbar is the only progress on screen — no confusing "two bars".
-  const translating = useTranslation(
-    (s) => s.units.phase !== "idle" || s.glossary.phase !== "idle"
-  );
-
   return (
     <header className="topbar">
       <div className="tb-left">
@@ -108,26 +95,35 @@ function TopBar({ openPanel }: { openPanel: (p: Panel) => void }) {
           <>
             <Chip label="total" value={stats.total} />
             <Chip label="todo" value={stats.untranslated} tone="muted" />
+            {stats.failed > 0 && <Chip label="failed" value={stats.failed} tone="err" />}
             <Chip label="draft" value={stats.draft} tone="warn" />
             <Chip label="done" value={stats.translated + stats.reviewed} tone="ok" />
-            {!translating && (
-              <span className="progress" title={`${pct}% covered`}>
-                <span className="progress-fill" style={{ width: `${pct}%` }} />
-              </span>
-            )}
           </>
         )}
       </div>
 
       <div className="tb-actions">
         {result && (
-          <span className="export-ok">
+          <span
+            className="export-ok"
+            title={`Exported ${result.unitsApplied} units → ${result.filesWritten} files${
+              result.backupDir ? " (backup saved)" : ""
+            }`}
+          >
             Exported {result.unitsApplied} units → {result.filesWritten} files
             {result.backupDir ? " (backup saved)" : ""}
           </span>
         )}
-        {tmMsg && <span className="export-ok">{tmMsg}</span>}
-        {err && <span className="error">{err}</span>}
+        {tmMsg && (
+          <span className="export-ok" title={tmMsg}>
+            {tmMsg}
+          </span>
+        )}
+        {err && (
+          <span className="error" title={err}>
+            {err}
+          </span>
+        )}
         <button
           className="ghost"
           onClick={doApplyTm}
@@ -171,7 +167,7 @@ function Chip({
 }: {
   label: string;
   value: number;
-  tone?: "muted" | "warn" | "ok";
+  tone?: "muted" | "warn" | "ok" | "err";
 }) {
   return (
     <span className={`chip ${tone ?? ""}`}>

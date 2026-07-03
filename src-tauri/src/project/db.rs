@@ -200,6 +200,14 @@ pub fn all_units(conn: &Connection) -> Result<Vec<TransUnit>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Set only a unit's status, leaving its translation untouched. Used to flag a
+/// unit `Failed` after an AI attempt without clobbering any existing text.
+pub fn set_status(conn: &Connection, id: i64, status: &str) -> Result<()> {
+    let status = Status::from_str(status).as_str();
+    conn.execute("UPDATE unit SET status = ?1 WHERE id = ?2", params![status, id])?;
+    Ok(())
+}
+
 pub fn update_unit(conn: &Connection, id: i64, translation: Option<&str>, status: &str) -> Result<()> {
     // Normalize the status so an unknown string can never poison stats()/export.
     let status = Status::from_str(status).as_str();
@@ -216,6 +224,7 @@ pub fn update_unit(conn: &Connection, id: i64, translation: Option<&str>, status
 pub struct Stats {
     pub total: i64,
     pub untranslated: i64,
+    pub failed: i64,
     pub draft: i64,
     pub translated: i64,
     pub reviewed: i64,
@@ -233,6 +242,7 @@ pub fn stats(conn: &Connection) -> Result<Stats> {
         s.total += n;
         match status.as_str() {
             "Untranslated" => s.untranslated = n,
+            "Failed" => s.failed = n,
             "Draft" => s.draft = n,
             "Translated" => s.translated = n,
             "Reviewed" => s.reviewed = n,

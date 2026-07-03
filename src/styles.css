@@ -172,7 +172,7 @@ code {
   padding: 0.6rem 1rem;
   background: var(--panel2);
   border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
+  flex-wrap: nowrap; /* keep the header on one row */
 }
 .tb-left {
   display: flex;
@@ -191,13 +191,29 @@ code {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0; /* allow the progress bar to shrink instead of forcing a wrap */
 }
 .tb-actions {
   display: flex;
   align-items: center;
   gap: 0.6rem;
   margin-left: auto;
+  min-width: 0;
+  flex-shrink: 0; /* buttons keep their size... */
+}
+.tb-actions > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+/* ...while transient status messages truncate rather than push buttons down. */
+.tb-actions .export-ok,
+.tb-actions .error {
+  min-width: 0;
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .export-ok {
   color: var(--ok);
@@ -229,6 +245,9 @@ code {
 }
 .chip.ok .chip-val {
   color: var(--ok);
+}
+.chip.err .chip-val {
+  color: var(--err);
 }
 .progress {
   position: relative;

@@ -6,6 +6,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type Status =
   | "Untranslated"
+  | "Failed"
   | "Draft"
   | "Translated"
   | "Reviewed"
@@ -13,6 +14,7 @@ export type Status =
 
 export const STATUSES: Status[] = [
   "Untranslated",
+  "Failed",
   "Draft",
   "Translated",
   "Reviewed",
@@ -41,6 +43,7 @@ export interface DetectResult {
 export interface Stats {
   total: number;
   untranslated: number;
+  failed: number;
   draft: number;
   translated: number;
   reviewed: number;

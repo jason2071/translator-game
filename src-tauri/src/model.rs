@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
     Untranslated,
+    Failed, // an AI attempt failed (no usable translation) — like Untranslated, but flagged
     Draft,
     Translated,
     Reviewed,
@@ -15,13 +16,15 @@ pub enum Status {
 
 impl Status {
     /// Units at this level or higher have a translation worth injecting.
+    /// `Failed` has no usable translation, so it is treated like `Untranslated`.
     pub fn is_applied(self) -> bool {
-        !matches!(self, Status::Untranslated)
+        !matches!(self, Status::Untranslated | Status::Failed)
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
             Status::Untranslated => "Untranslated",
+            Status::Failed => "Failed",
             Status::Draft => "Draft",
             Status::Translated => "Translated",
             Status::Reviewed => "Reviewed",
@@ -31,6 +34,7 @@ impl Status {
 
     pub fn from_str(s: &str) -> Status {
         match s {
+            "Failed" => Status::Failed,
             "Draft" => Status::Draft,
             "Translated" => Status::Translated,
             "Reviewed" => Status::Reviewed,

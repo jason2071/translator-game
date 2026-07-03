@@ -353,7 +353,13 @@ async fn translate_units(
         let mut index: HashMap<String, usize> = HashMap::new();
         let mut total_units = 0usize;
         for u in candidates {
-            if u.source.is_empty() || !(overwrite || u.status == Status::Untranslated) {
+            // Untranslated and previously-Failed units are both eligible; a
+            // normal Run retries the ones that failed before.
+            if u.source.is_empty()
+                || !(overwrite
+                    || u.status == Status::Untranslated
+                    || u.status == Status::Failed)
+            {
                 continue;
             }
             total_units += 1;
@@ -507,18 +513,27 @@ async fn translate_units(
             };
 
         // Restore, then apply each translation to ALL units sharing that source.
+        // Groups that produced no usable text are flagged Failed so they can be
+        // filtered and retried later.
         let mut writes: Vec<(Vec<i64>, String, String)> = Vec::new();
+        let mut failed_ids: Vec<i64> = Vec::new();
         for (j, (g, res)) in chunk.iter().zip(results.into_iter()).enumerate() {
             match res {
                 Some(m) => match protect::restore(&m, &masks[base + j].tokens) {
                     Ok(t) => writes.push((g.ids.clone(), g.source.clone(), t)),
-                    Err(_) => summary.failed += g.ids.len(), // placeholder mangled
+                    Err(_) => {
+                        summary.failed += g.ids.len(); // placeholder mangled
+                        failed_ids.extend(g.ids.iter().copied());
+                    }
                 },
-                None => summary.failed += g.ids.len(),
+                None => {
+                    summary.failed += g.ids.len();
+                    failed_ids.extend(g.ids.iter().copied());
+                }
             }
         }
 
-        if !writes.is_empty() {
+        if !writes.is_empty() || !failed_ids.is_empty() {
             let guard = state.project.lock().unwrap();
             if let Some(proj) = guard.as_ref() {
                 for (ids, source, text) in &writes {
@@ -532,6 +547,9 @@ async fn translate_units(
                     }
                     let _ = project::db::tm_upsert(&proj.conn, source, text);
                     summary.translated += ids.len();
+                }
+                for id in &failed_ids {
+                    let _ = project::db::set_status(&proj.conn, *id, Status::Failed.as_str());
                 }
             }
         }
