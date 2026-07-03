@@ -260,6 +260,44 @@ fn first_string(line: &str) -> Option<(usize, usize, usize)> {
     None
 }
 
+/// Net change in Python bracket depth `()[]{}` across a line, ignoring anything
+/// inside string literals or after a `#` comment. Used to follow multi-line
+/// define/default/$ statements so their bodies aren't mistaken for dialogue.
+fn bracket_delta(line: &str) -> i32 {
+    let b = line.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'#' => break,
+            q @ (b'"' | b'\'') => {
+                i += 1;
+                while i < b.len() {
+                    if b[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == q {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    depth
+}
+
 /// Byte spans (relative to `line`) of the inner content of each `_("...")`
 /// gettext call — Ren'Py's explicit "this string is translatable" marker, which
 /// may appear anywhere including inside screen/python blocks.
@@ -294,6 +332,7 @@ fn gettext_spans(line: &str) -> Vec<(usize, usize)> {
 
 fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
     let mut skip_indent: Option<usize> = None;
+    let mut skip_expr_depth: i32 = 0; // open brackets of a multi-line define/default/$
     let mut seen: HashSet<usize> = HashSet::new(); // inner-start offsets already taken
     let mut offset = 0usize; // byte offset of the current line within the file
 
@@ -325,6 +364,15 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
             }
         }
 
+        // A multi-line define/default/$ (a Python dict/Character(...) spanning
+        // lines) — skip its bare strings (colour values, dict keys, asset paths).
+        // Any `_()` strings on these lines were already harvested above.
+        let delta = bracket_delta(raw);
+        if skip_expr_depth > 0 {
+            skip_expr_depth = (skip_expr_depth + delta).max(0);
+            continue;
+        }
+
         // Leaving a skipped block? A line at or below its indent ends it, and is
         // then processed normally for bare say/menu strings.
         if let Some(si) = skip_indent {
@@ -338,6 +386,10 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
             continue;
         }
         if is_line_skip(first_token(trimmed)) {
+            // If the statement opens brackets, it continues on the next lines.
+            if delta > 0 {
+                skip_expr_depth = delta;
+            }
             continue;
         }
 
@@ -514,6 +566,39 @@ label x:
         let units = extract("    e _(\"Hi\")\n");
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].source, "Hi");
+    }
+
+    #[test]
+    fn multiline_define_body_skips_bare_strings_keeps_gettext() {
+        let src = "\
+define ay = Character(
+    _(\"Ayumi\"),
+    what_color=\"#fff\",
+)
+
+default akane_data = {
+    \"name\": _(\"Akane\"),
+    \"relation\": _(\"step dad\"),
+    \"hair_color\": \"#a83\",
+    \"portrait\": \"images/akane.png\",
+}
+
+label start:
+    ay \"Nice to meet you.\"
+";
+        let units = extract(src);
+        let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+        // `_()` strings inside the multi-line data are still harvested.
+        assert!(texts.contains(&"Ayumi"));
+        assert!(texts.contains(&"Akane"));
+        assert!(texts.contains(&"step dad"));
+        // Bare colour / asset / dict-key strings in the body are not extracted.
+        assert!(!texts.contains(&"#fff"));
+        assert!(!texts.contains(&"#a83"));
+        assert!(!texts.contains(&"images/akane.png"));
+        assert!(!texts.iter().any(|t| t.contains("hair_color")));
+        // Normal dialogue after the block still works.
+        assert!(texts.contains(&"Nice to meet you."));
     }
 
     #[test]
