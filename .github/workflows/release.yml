@@ -46,6 +46,16 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "RPGMaker Translator ${{ github.ref_name }}"
-          releaseBody: "Download an installer below. Users already on v0.2.0+ update automatically."
+          releaseBody: "Download an installer (or the portable .exe) below. Users already on v0.2.0+ update automatically."
           releaseDraft: false
           prerelease: false
+
+      # Also attach the standalone executable as a no-install portable build.
+      - name: Attach portable exe
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $dest = "RPGMaker-Translator-portable-${{ github.ref_name }}.exe"
+          Copy-Item "src-tauri/target/release/rpgmaker-translator.exe" $dest
+          gh release upload ${{ github.ref_name }} $dest --clobber --repo ${{ github.repository }}
