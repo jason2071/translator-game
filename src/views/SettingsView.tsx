@@ -186,6 +186,15 @@ export default function SettingsView() {
           onChange={(e) => s.setShared({ rpm: Number(e.target.value) })}
         />
 
+        <label>Message width guard (chars, 0 = off)</label>
+        <input
+          type="number"
+          min="0"
+          max="120"
+          value={s.maxLineWidth}
+          onChange={(e) => s.setShared({ maxLineWidth: Number(e.target.value) })}
+        />
+
         <label>Thinking / reasoning</label>
         <label className="chk">
           <input

@@ -654,6 +654,14 @@ code {
   font-size: var(--fs-xs);
   color: var(--warn);
 }
+.width-warn {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: var(--fs-xs);
+  color: var(--warn);
+  opacity: 0.85;
+  white-space: pre-line;
+}
 .cell.status {
   display: flex;
   align-items: center;

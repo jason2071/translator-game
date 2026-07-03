@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ProviderConfig, ProviderKind } from "./ipc";
+import { DEFAULT_MAX_LINE_WIDTH } from "./messageWidth";
 
 // Provider configs are non-secret and live in localStorage. API keys never do —
 // they go to the OS keychain via the set_key/has_key/delete_key commands.
@@ -39,11 +40,18 @@ interface SettingsState {
   batchSize: number;
   rpm: number;
   thinking: boolean;
+  /** Message-box width limit (half-width chars); 0 disables the overflow guard. */
+  maxLineWidth: number;
 
   setActive: (k: ProviderKind) => void;
   updateProvider: (k: ProviderKind, patch: Partial<ProviderConfig>) => void;
   setShared: (
-    patch: Partial<Pick<SettingsState, "tone" | "systemPrompt" | "batchSize" | "rpm" | "thinking">>
+    patch: Partial<
+      Pick<
+        SettingsState,
+        "tone" | "systemPrompt" | "batchSize" | "rpm" | "thinking" | "maxLineWidth"
+      >
+    >
   ) => void;
   /** The full ProviderConfig for the active provider, merged with shared opts. */
   activeConfig: () => ProviderConfig;
@@ -58,10 +66,10 @@ function load(): Partial<SettingsState> {
 }
 
 function persist(s: SettingsState) {
-  const { active, providers, tone, systemPrompt, batchSize, rpm, thinking } = s;
+  const { active, providers, tone, systemPrompt, batchSize, rpm, thinking, maxLineWidth } = s;
   localStorage.setItem(
     KEY,
-    JSON.stringify({ active, providers, tone, systemPrompt, batchSize, rpm, thinking })
+    JSON.stringify({ active, providers, tone, systemPrompt, batchSize, rpm, thinking, maxLineWidth })
   );
 }
 
@@ -75,6 +83,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
   batchSize: saved.batchSize ?? 40,
   rpm: saved.rpm ?? 0,
   thinking: saved.thinking ?? false,
+  maxLineWidth: saved.maxLineWidth ?? DEFAULT_MAX_LINE_WIDTH,
 
   setActive: (k) => {
     set({ active: k });
