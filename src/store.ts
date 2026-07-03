@@ -20,6 +20,7 @@ interface AppStore {
   error: string | null;
 
   openProject: (path: string, sourceLang?: string, targetLang?: string) => Promise<void>;
+  reextract: () => Promise<void>;
   closeProject: () => Promise<void>;
   setLanguages: (source: string, target: string) => Promise<void>;
   setFilter: (patch: Partial<UnitFilter>) => Promise<void>;
@@ -49,6 +50,20 @@ export const useStore = create<AppStore>((set, get) => ({
       const project = await api.openProject(path, sourceLang, targetLang);
       useGlossarySuggest.getState().load(project.root); // restore this game's saved panel
       set({ project, filter: { limit: PAGE, offset: 0 } });
+      await get().refreshMeta();
+      await get().reloadUnits();
+    } catch (e) {
+      set({ error: String(e) });
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  reextract: async () => {
+    set({ loading: true, error: null });
+    try {
+      await api.reextract();
+      set({ filter: { limit: PAGE, offset: 0 } });
       await get().refreshMeta();
       await get().reloadUnits();
     } catch (e) {

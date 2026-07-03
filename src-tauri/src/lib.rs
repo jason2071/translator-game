@@ -238,6 +238,20 @@ fn get_stats(state: tauri::State<AppState>) -> Result<Stats, String> {
     with_project(&state, |p| project::db::stats(&p.conn))
 }
 
+/// Re-read the game with the current extractor and replace the unit set. Keeps
+/// translations by source text, plus glossary and TM. Use after the app updates
+/// (a newer extractor may capture different strings).
+#[tauri::command]
+fn reextract_project(state: tauri::State<AppState>) -> Result<Stats, String> {
+    with_project_mut(&state, |p| {
+        let eng = engine::detect(&p.root)
+            .ok_or_else(|| anyhow::anyhow!("engine no longer detected for this project"))?;
+        let units = eng.extract(&p.root, &engine::ExtractOpts::default())?;
+        project::db::replace_units(&mut p.conn, &units)?;
+        project::db::stats(&p.conn)
+    })
+}
+
 #[tauri::command]
 fn list_files(state: tauri::State<AppState>) -> Result<Vec<FileCount>, String> {
     with_project(&state, |p| project::db::files_with_counts(&p.conn))
@@ -819,6 +833,7 @@ pub fn run() {
             detect_game,
             open_project,
             close_project,
+            reextract_project,
             set_languages,
             list_units,
             update_unit,

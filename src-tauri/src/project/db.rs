@@ -103,6 +103,53 @@ pub fn insert_units(conn: &mut Connection, units: &[TransUnit]) -> Result<usize>
     Ok(inserted)
 }
 
+/// Wipe all units and re-insert a fresh extraction (used by Re-import after the
+/// extractor improves). Translations are carried over by source text, so work
+/// already done on unchanged strings is kept; the glossary and TM are untouched.
+pub fn replace_units(conn: &mut Connection, units: &[TransUnit]) -> Result<usize> {
+    // Snapshot finished translations keyed by source before wiping.
+    let prior: std::collections::HashMap<String, (Option<String>, String)> = {
+        let mut stmt =
+            conn.prepare("SELECT source, translation, status FROM unit WHERE status <> 'Untranslated'")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?),
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM unit", [])?;
+    let mut inserted = 0usize;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO unit(file, pointer, kind, context, grp, source, translation, status)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        for u in units {
+            let (translation, status) = match prior.get(&u.source) {
+                Some((t, s)) => (t.clone(), s.clone()),
+                None => (u.translation.clone(), u.status.as_str().to_string()),
+            };
+            stmt.execute(params![
+                u.file,
+                u.pointer,
+                u.kind.as_str(),
+                u.context,
+                u.group,
+                u.source,
+                translation,
+                status,
+            ])?;
+            inserted += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(inserted)
+}
+
 /// Filter/paginate the unit grid. All fields optional.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -522,4 +569,52 @@ pub fn glossary_lint(conn: &Connection) -> Result<Vec<LintWarning>> {
         }
     }
     Ok(warnings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Status, TransUnit, UnitKind};
+
+    fn mem() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        init_schema(&c).unwrap();
+        c
+    }
+
+    fn unit(ptr: &str, src: &str) -> TransUnit {
+        TransUnit::new("a.rpy", ptr, UnitKind::Dialogue, src)
+    }
+
+    #[test]
+    fn replace_units_drops_stale_and_keeps_translations_by_source() {
+        let mut c = mem();
+        insert_units(&mut c, &[unit("0:5", "Hello"), unit("10:4", "#fff")]).unwrap();
+
+        // Translate "Hello".
+        let hello_id = all_units(&c)
+            .unwrap()
+            .into_iter()
+            .find(|u| u.source == "Hello")
+            .unwrap()
+            .id;
+        update_unit(&c, hello_id, Some("สวัสดี"), Status::Translated.as_str()).unwrap();
+
+        // Re-extract: the buggy "#fff" is gone, "Hello" moved to a new pointer,
+        // and a new line appears.
+        let fresh = vec![unit("2:5", "Hello"), unit("20:3", "Bye")];
+        assert_eq!(replace_units(&mut c, &fresh).unwrap(), 2);
+
+        let after = all_units(&c).unwrap();
+        assert_eq!(after.len(), 2, "stale unit removed, count matches fresh");
+        assert!(!after.iter().any(|u| u.source == "#fff"));
+
+        // Translation carried over by source, even though the pointer changed.
+        let h = after.iter().find(|u| u.source == "Hello").unwrap();
+        assert_eq!(h.translation.as_deref(), Some("สวัสดี"));
+        assert_eq!(h.status, Status::Translated);
+        // The genuinely-new unit is untranslated.
+        let b = after.iter().find(|u| u.source == "Bye").unwrap();
+        assert_eq!(b.status, Status::Untranslated);
+    }
 }

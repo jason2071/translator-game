@@ -22,12 +22,14 @@ export function Sidebar({
   const filter = useStore((s) => s.filter);
   const setFilter = useStore((s) => s.setFilter);
   const closeProject = useStore((s) => s.closeProject);
+  const reextract = useStore((s) => s.reextract);
   const refreshMeta = useStore((s) => s.refreshMeta);
   const reloadUnits = useStore((s) => s.reloadUnits);
   const theme = useTheme((s) => s.theme);
   const toggleTheme = useTheme((s) => s.toggle);
 
   const [exporting, setExporting] = useState(false);
+  const [reimporting, setReimporting] = useState(false);
   const [applyingTm, setApplyingTm] = useState(false);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -46,6 +48,26 @@ export function Sidebar({
       setErr(String(e));
     } finally {
       setApplyingTm(false);
+    }
+  }
+
+  async function doReextract() {
+    if (
+      !window.confirm(
+        "Re-read the game and rebuild the string list? Translations already done are kept (matched by source); glossary and memory are unaffected."
+      )
+    )
+      return;
+    setMsg(null);
+    setErr(null);
+    setReimporting(true);
+    try {
+      await reextract();
+      setMsg("Re-imported from the game");
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setReimporting(false);
     }
   }
 
@@ -172,6 +194,10 @@ export function Sidebar({
         <button className="ghost" onClick={doApplyTm} disabled={applyingTm} title="Fill from translation memory + duplicates">
           <Icon name="memory" />
           <span className="lbl">{applyingTm ? "Applying…" : "Apply TM"}</span>
+        </button>
+        <button className="ghost" onClick={doReextract} disabled={reimporting} title="Re-read the game with the current extractor (keeps done translations)">
+          <Icon name="retry" />
+          <span className="lbl">{reimporting ? "Re-importing…" : "Re-import"}</span>
         </button>
         <button className="ghost" onClick={() => openPanel("glossary")}>
           <Icon name="glossary" />
