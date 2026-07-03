@@ -6,9 +6,11 @@ import { PROVIDER_LABELS } from "../settings";
 import { SOURCE_LANGS, TARGET_LANGS } from "../langs";
 import { useTranslation } from "../translation";
 import TransProgress from "../components/TransProgress";
+import { Icon } from "../components/Icon";
 
 export default function TranslateBar({ openSettings }: { openSettings: () => void }) {
   const filter = useStore((s) => s.filter);
+  const stats = useStore((s) => s.stats);
   const reloadUnits = useStore((s) => s.reloadUnits);
   const refreshMeta = useStore((s) => s.refreshMeta);
   const project = useStore((s) => s.project);
@@ -28,13 +30,9 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
   const [summary, setSummary] = useState<TranslateSummary | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  async function run() {
+  async function translate(scope: TranslateScope) {
     setErr(null);
     setSummary(null);
-    const scope: TranslateScope =
-      mode === "all"
-        ? { filter: { untranslatedOnly: true }, overwrite }
-        : { filter, overwrite };
     try {
       const res = await enqueue("units", () => api.translateUnits(scope, activeConfig()));
       setSummary(res);
@@ -44,6 +42,21 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
       setErr(String(e));
     }
   }
+
+  function run() {
+    translate(
+      mode === "all"
+        ? { filter: { untranslatedOnly: true }, overwrite }
+        : { filter, overwrite }
+    );
+  }
+
+  // Re-translate only the units that failed a previous run, no manual filtering.
+  function retryFailed() {
+    translate({ filter: { status: "Failed" } });
+  }
+
+  const failed = stats?.failed ?? 0;
 
   return (
     <div className="toolbar">
@@ -99,8 +112,13 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
         Overwrite existing
       </label>
 
-      <button className="chip-btn" onClick={openSettings} disabled={running}>
-        {PROVIDER_LABELS[active]} ⚙
+      <button
+        className="chip-btn"
+        onClick={openSettings}
+        disabled={running}
+        style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
+      >
+        {PROVIDER_LABELS[active]} <Icon name="settings" size={13} />
       </button>
 
       {!running ? (
@@ -110,6 +128,17 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
       ) : (
         <button className="ghost" onClick={() => cancel("units")}>
           Cancel
+        </button>
+      )}
+
+      {failed > 0 && !running && (
+        <button
+          className="ghost"
+          onClick={retryFailed}
+          title="Re-translate every unit that failed a previous run"
+          style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
+        >
+          <Icon name="retry" size={14} /> Retry failed ({failed})
         </button>
       )}
 
