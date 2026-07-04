@@ -165,6 +165,160 @@ impl IdGen {
     }
 }
 
+/// Escape a string for a Ren'Py `strings` translation (`quote_unicode`): the
+/// text between the quotes of an `old`/`new` line. Does NOT add the quotes.
+pub fn quote_unicode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\u{07}' => out.push_str("\\a"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{0B}' => out.push_str("\\v"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Inner byte span `(start, len)` of the last double-quoted string on `line`,
+/// honoring `\"` escapes. This is a say statement's `what` (the speaker/tags are
+/// unquoted words; a two-arg say's second string is the dialogue).
+fn last_quoted(line: &str) -> Option<(usize, usize)> {
+    let b = line.as_bytes();
+    let mut i = 0;
+    let mut last = None;
+    while i < b.len() {
+        if b[i] == b'"' {
+            let inner = i + 1;
+            let mut j = inner;
+            while j < b.len() {
+                match b[j] {
+                    b'\\' => j += 2,
+                    b'"' => break,
+                    _ => j += 1,
+                }
+            }
+            if j < b.len() {
+                last = Some((inner, j - inner));
+                i = j + 1;
+                continue;
+            }
+            break;
+        }
+        i += 1;
+    }
+    last
+}
+
+/// Fill a generated `tl/<lang>/` skeleton with translations. Ren'Py itself
+/// generated the file (so every identifier is correct); we only replace the text.
+/// `lookup` maps a raw source string (as it appears between the quotes in the
+/// source `.rpy` / the skeleton) to its translation.
+///
+/// - Dialogue blocks: the say line's last quoted string is the `what`; it is
+///   replaced with the translation, re-escaped via [`encode_say_string`].
+/// - `strings` blocks: each `new "…"` is set to the translation of the preceding
+///   `old "…"`, escaped via [`quote_unicode`].
+///
+/// Lines whose source has no translation are left as-is (Ren'Py then shows the
+/// original for those).
+pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut in_strings = false;
+    let mut expect_say = false;
+    let mut pending_old: Option<String> = None;
+
+    for line in content.split_inclusive('\n') {
+        let nl = line.ends_with('\n');
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        let body = body.strip_suffix('\r').unwrap_or(body);
+        let trimmed = body.trim_start();
+        let indent = &body[..body.len() - trimmed.len()];
+
+        // Block headers.
+        if let Some(rest) = trimmed.strip_prefix("translate ") {
+            in_strings = rest.trim_end_matches(':').ends_with("strings");
+            expect_say = !in_strings;
+            pending_old = None;
+            push_line(&mut out, body, nl);
+            continue;
+        }
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            push_line(&mut out, body, nl);
+            continue;
+        }
+
+        if in_strings {
+            if let Some(q) = trimmed.strip_prefix("old ") {
+                pending_old = quoted_inner(q).map(|s| s.to_string());
+                push_line(&mut out, body, nl);
+                continue;
+            }
+            if trimmed.starts_with("new ") {
+                if let Some(old) = pending_old.take() {
+                    if let Some(tr) = lookup(&old) {
+                        push_line(&mut out, &format!("{indent}new \"{}\"", quote_unicode(&tr)), nl);
+                        continue;
+                    }
+                }
+                push_line(&mut out, body, nl);
+                continue;
+            }
+            push_line(&mut out, body, nl);
+            continue;
+        }
+
+        // Dialogue block: the first non-comment content line is the say.
+        if expect_say {
+            expect_say = false;
+            if let Some((s, l)) = last_quoted(body) {
+                let src = &body[s..s + l];
+                if let Some(tr) = lookup(src) {
+                    let mut rebuilt = String::new();
+                    rebuilt.push_str(&body[..s - 1]); // up to and incl. the opening quote's position
+                    rebuilt.push_str(&encode_say_string(&tr));
+                    rebuilt.push_str(&body[s + l + 1..]); // after the closing quote
+                    push_line(&mut out, &rebuilt, nl);
+                    continue;
+                }
+            }
+        }
+        push_line(&mut out, body, nl);
+    }
+    out
+}
+
+fn push_line(out: &mut String, body: &str, nl: bool) {
+    out.push_str(body);
+    if nl {
+        out.push('\n');
+    }
+}
+
+/// Inner text of a leading `"…"` (honoring `\"`), e.g. from an `old "x"` tail.
+fn quoted_inner(s: &str) -> Option<&str> {
+    let b = s.as_bytes();
+    if b.is_empty() || b[0] != b'"' {
+        return None;
+    }
+    let mut j = 1;
+    while j < b.len() {
+        match b[j] {
+            b'\\' => j += 2,
+            b'"' => return Some(&s[1..j]),
+            _ => j += 1,
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +364,55 @@ mod tests {
     fn label_dots_become_underscores() {
         let mut g = IdGen::new();
         assert_eq!(g.unique(Some("a.b.c"), "0000ffff"), "a_b_c_0000ffff");
+    }
+
+    fn fill(content: &str, pairs: &[(&str, &str)]) -> String {
+        let map: std::collections::HashMap<String, String> =
+            pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        fill_tl(content, &|s: &str| map.get(s).cloned())
+    }
+
+    #[test]
+    fn fill_dialogue_block() {
+        let skel = "\
+# game/script.rpy:6
+translate thai start_abc:
+
+    # e \"Hello.\"
+    e \"Hello.\"
+";
+        let got = fill(skel, &[("Hello.", "สวัสดี")]);
+        assert!(got.contains("    e \"\u{e2a}\u{e27}\u{e31}\u{e2a}\u{e14}\u{e35}\"")); // e "สวัสดี"
+        assert!(got.contains("    # e \"Hello.\"")); // original comment untouched
+    }
+
+    #[test]
+    fn fill_two_arg_replaces_only_dialogue() {
+        let skel = "translate thai x_1:\n\n    # \"Bob\" \"Hi there.\"\n    \"Bob\" \"Hi there.\"\n";
+        let got = fill(skel, &[("Hi there.", "\u{e2a}\u{e27}\u{e31}\u{e2a}\u{e14}\u{e35}")]);
+        // Speaker "Bob" stays; only the dialogue string is translated.
+        assert!(got.contains("    \"Bob\" \"\u{e2a}\u{e27}\u{e31}\u{e2a}\u{e14}\u{e35}\""));
+    }
+
+    #[test]
+    fn fill_strings_block() {
+        let skel = "translate thai strings:\n\n    # game/x.rpy:3\n    old \"Start\"\n    new \"Start\"\n";
+        let got = fill(skel, &[("Start", "\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}")]);
+        assert!(got.contains("    old \"Start\""));
+        assert!(got.contains("    new \"\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}\""));
+    }
+
+    #[test]
+    fn fill_leaves_untranslated_as_is() {
+        let skel = "translate thai x_1:\n\n    e \"Untranslated.\"\n";
+        let got = fill(skel, &[]);
+        assert_eq!(got, skel); // no lookup -> unchanged
+    }
+
+    #[test]
+    fn fill_escapes_quotes_in_translation() {
+        let skel = "translate thai x_1:\n\n    \"orig\"\n";
+        let got = fill(skel, &[("orig", "say \"hi\"")]);
+        assert!(got.contains("    \"say \\\"hi\\\"\""));
     }
 }

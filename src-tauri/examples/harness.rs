@@ -39,7 +39,9 @@ harness <command> [args]
   glossary <project.db> [model] [n]
   one      <project.db> [model]
   export   <game-dir>
-  reconcile <game-dir> [--apply]";
+  reconcile <game-dir> [--apply]
+  tlcheck  <game-dir> <oracle-tl/thai-dir>
+  tlfill   <game-dir> [lang]";
 
 #[tokio::main]
 async fn main() {
@@ -54,6 +56,8 @@ async fn main() {
         "one" => cmd_one(rest).await,
         "export" => cmd_export(rest),
         "reconcile" => cmd_reconcile(rest),
+        "tlcheck" => cmd_tlcheck(rest),
+        "tlfill" => cmd_tlfill(rest),
         _ => eprintln!("{USAGE}"),
     }
 }
@@ -405,6 +409,141 @@ fn cmd_reconcile(rest: &[String]) {
     println!("\nreverted {} bogus units to Untranslated", bogus.len());
     let r = app_lib::project::export(&project, true).expect("re-export");
     println!("re-exported: files_written={} units_applied={}", r.files_written, r.units_applied);
+}
+
+/// Validate the Ren'Py translation-identifier parser against a ground-truth
+/// oracle: the `game/tl/thai/` tree that the game's own bundled Ren'Py generated
+/// (`<game>.exe <basedir> translate thai`). For each source `.rpy`, compares the
+/// identifiers our `dialogue_blocks` computes against the oracle's, in order.
+fn cmd_tlcheck(rest: &[String]) {
+    let (Some(game), Some(oracle)) = (arg(rest, 0), arg(rest, 1)) else {
+        return eprintln!("tlcheck <game-dir> <oracle-tl/thai-dir>");
+    };
+    let root = PathBuf::from(game);
+    let dir = engine::renpy::game_dir(&root).expect("not a Ren'Py game");
+    let oracle = PathBuf::from(oracle);
+
+    let mut files = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().and_then(|n| n.to_str()) != Some("tl") {
+                    stack.push(p);
+                }
+            } else if p.extension().and_then(|x| x.to_str()) == Some("rpy") {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+
+    let (mut total, mut matched, mut mism_files) = (0usize, 0usize, 0usize);
+    for p in &files {
+        let rel = p.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
+        let content = match std::fs::read_to_string(p) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let mine: Vec<String> = engine::renpy::dialogue_blocks(&content)
+            .into_iter()
+            .map(|b| b.identifier)
+            .collect();
+
+        let orc_path = oracle.join(&rel);
+        let orc_ids = parse_oracle_ids(&orc_path);
+
+        total += mine.len();
+        if mine == orc_ids {
+            matched += mine.len();
+        } else {
+            mism_files += 1;
+            // Report the first divergence.
+            let n = mine.len().min(orc_ids.len());
+            let first = (0..n).find(|&i| mine[i] != orc_ids[i]);
+            println!("MISMATCH {rel}: mine={} oracle={}", mine.len(), orc_ids.len());
+            if let Some(i) = first {
+                println!("  first diff at #{i}: mine={:?} oracle={:?}", mine[i], orc_ids[i]);
+            }
+            matched += (0..n).filter(|&i| mine[i] == orc_ids[i]).count();
+        }
+    }
+    println!(
+        "\nfiles: {}  mismatched files: {}\nsay ids: {} total, {} matched ({:.2}%)",
+        files.len(),
+        mism_files,
+        total,
+        matched,
+        if total > 0 { 100.0 * matched as f64 / total as f64 } else { 100.0 }
+    );
+}
+
+/// Fill a generated `game/tl/<lang>/` skeleton with the project's translations,
+/// matching each source string to its DB translation. Ren'Py generated the
+/// skeleton (identifiers already correct); this only substitutes the text.
+fn cmd_tlfill(rest: &[String]) {
+    let Some(game) = arg(rest, 0) else {
+        return eprintln!("tlfill <game-dir> [lang]");
+    };
+    let lang = arg(rest, 1).unwrap_or("thai");
+    let root = PathBuf::from(game);
+    let dir = engine::renpy::game_dir(&root).expect("not a Ren'Py game");
+    let tl = dir.join("tl").join(lang);
+    if !tl.is_dir() {
+        return eprintln!("no {} — run `<game>.exe <dir> translate {lang}` first", tl.display());
+    }
+
+    let conn = open_db(root.join(".rpgtl/project.db").to_str().unwrap());
+    let units = db::all_units(&conn).unwrap();
+    let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for u in units {
+        if u.status.is_applied() {
+            if let Some(t) = u.translation {
+                map.entry(u.source).or_insert(t);
+            }
+        }
+    }
+    println!("translation map: {} distinct sources", map.len());
+    let lookup = |s: &str| map.get(s).cloned();
+
+    let mut files = 0usize;
+    let mut stack = vec![tl.clone()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|x| x.to_str()) == Some("rpy") {
+                let content = std::fs::read_to_string(&p).unwrap();
+                let filled = engine::renpy_tl::fill_tl(&content, &lookup);
+                if filled != content {
+                    std::fs::write(&p, filled).unwrap();
+                }
+                files += 1;
+            }
+        }
+    }
+    println!("filled {files} tl files under {}", tl.display());
+}
+
+/// Collect the `translate thai <id>:` identifiers (excluding the `strings` block)
+/// from an oracle tl file, in order.
+fn parse_oracle_ids(path: &std::path::Path) -> Vec<String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("translate thai ") {
+            if let Some(id) = rest.strip_suffix(':') {
+                if id != "strings" {
+                    out.push(id.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 async fn cmd_one(rest: &[String]) {

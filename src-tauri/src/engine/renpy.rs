@@ -16,6 +16,7 @@
 //! not mistaken for dialogue.
 
 use super::codes::ExtractOpts;
+use super::renpy_tl::{self, Say};
 use super::{DetectResult, GameEngine};
 use crate::model::{TransUnit, UnitKind};
 use anyhow::{anyhow, Context, Result};
@@ -470,6 +471,234 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
         };
         out.push(TransUnit::new(file, format!("{abs}:{inner_len}"), kind, source).with_context(speaker));
     }
+}
+
+/// One Ren'Py say statement, located and identified for `tl/<lang>/` output.
+#[derive(Debug, Clone)]
+pub struct DiaBlock {
+    /// The translation identifier Ren'Py will look this line up by.
+    pub identifier: String,
+    /// Byte span `(start, len)` of the say's inner text — matches the `TransUnit`
+    /// pointer so the DB translation can be found.
+    pub what_start: usize,
+    pub what_len: usize,
+    /// Everything on the say line except the text, so the translated line can be
+    /// rebuilt as `<prefix> "<translation>"<suffix>`.
+    pub prefix: String,
+    pub suffix: String,
+    /// 1-based source line (for the tl file's location comment).
+    pub line: usize,
+}
+
+/// Parse each say statement in a `.rpy`, assigning the Ren'Py translation
+/// identifier (`label_<md5>` with `_N` collision suffixes). Mirrors
+/// [`extract_rpy`]'s say detection exactly so the byte spans line up with the
+/// extracted `TransUnit`s, then adds label tracking + `get_code` hashing.
+///
+/// Menu choices and `_()` strings are NOT returned here — Ren'Py translates
+/// those through the string-translation (`translate <lang> strings:`) path.
+pub fn dialogue_blocks(content: &str) -> Vec<DiaBlock> {
+    let mut skip_indent: Option<usize> = None;
+    let mut skip_expr_depth: i32 = 0;
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut offset = 0usize;
+    let mut line_no = 0usize;
+
+    let mut label: Option<String> = None;
+    let mut ids = renpy_tl::IdGen::new();
+    let mut out: Vec<DiaBlock> = Vec::new();
+
+    for line in content.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
+        line_no += 1;
+
+        let raw = line.strip_suffix('\n').unwrap_or(line);
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        let trimmed = raw.trim_start();
+        let indent = raw.len() - trimmed.len();
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // `_()` strings go to the string-translation path — mark their offsets so
+        // an `e _("...")` say isn't also emitted as an id-block (matches extract).
+        for (rel, _len) in gettext_spans(raw) {
+            seen.insert(line_start + rel);
+        }
+
+        let delta = bracket_delta(raw);
+        if skip_expr_depth > 0 {
+            skip_expr_depth = (skip_expr_depth + delta).max(0);
+            continue;
+        }
+
+        if let Some(si) = skip_indent {
+            if indent > si {
+                continue;
+            }
+            skip_indent = None;
+        }
+        if is_block_skip(trimmed) {
+            skip_indent = Some(indent);
+            continue;
+        }
+        if is_line_skip(first_token(trimmed)) {
+            // Track the current label for identifier prefixes. A `_`-prefixed
+            // label is an "alternate" and does not change the base label.
+            if first_token(trimmed) == "label" {
+                if let Some(name) = label_name(trimmed) {
+                    if !name.starts_with('_') {
+                        label = Some(name);
+                    }
+                }
+            }
+            if delta > 0 {
+                skip_expr_depth = delta;
+            }
+            continue;
+        }
+
+        let Some((inner_rel, inner_len, after_close)) = first_string(raw) else {
+            continue;
+        };
+        if inner_len == 0 {
+            continue;
+        }
+
+        // Two-argument say `"Speaker" "dialogue"`: who is the encoded speaker
+        // string, the translated text is the second string.
+        let rest = raw[after_close..].trim_start();
+        if rest.starts_with('"') || rest.starts_with('\'') {
+            if let Some((rel2, len2, after2)) = first_string(&raw[after_close..]) {
+                let abs2 = line_start + after_close + rel2;
+                if len2 > 0 && seen.insert(abs2) {
+                    let speaker = &raw[inner_rel..inner_rel + inner_len];
+                    let start = after_close + rel2;
+                    let what = &raw[start..start + len2];
+                    let suffix = raw[after_close + after2..].to_string();
+                    let say = build_say(renpy_tl::encode_say_string(speaker), what, &suffix);
+                    let id = ids.unique(label.as_deref(), &renpy_tl::digest(&[say]));
+                    out.push(DiaBlock {
+                        identifier: id,
+                        what_start: abs2,
+                        what_len: len2,
+                        prefix: raw[indent..start].to_string(),
+                        suffix,
+                        line: line_no,
+                    });
+                }
+            }
+            continue;
+        }
+
+        let abs = line_start + inner_rel;
+        if !seen.insert(abs) {
+            continue;
+        }
+
+        // A trailing `:` marks a menu choice → string-translation path, not a say.
+        let after = raw[after_close..].trim();
+        if after.trim_end().ends_with(':') {
+            continue;
+        }
+
+        let prefix_txt = raw[indent..inner_rel - 1].trim();
+        if first_token(prefix_txt) == "extend" {
+            // `extend` continues the previous say; Ren'Py still gives it its own
+            // id from get_code with who="extend".
+        }
+        let what = &raw[inner_rel..inner_rel + inner_len];
+        let suffix = raw[after_close..].to_string();
+        let say = build_say_from_prefix(prefix_txt, what, &suffix);
+        let id = ids.unique(label.as_deref(), &renpy_tl::digest(&[say]));
+        out.push(DiaBlock {
+            identifier: id,
+            what_start: abs,
+            what_len: inner_len,
+            prefix: raw[indent..inner_rel].to_string(),
+            suffix,
+            line: line_no,
+        });
+    }
+    out
+}
+
+/// The label name from a `label NAME(...):` / `label NAME:` line, or None.
+fn label_name(trimmed: &str) -> Option<String> {
+    let after = trimmed.strip_prefix("label")?;
+    let after = after.trim_start();
+    let end = after.find(|c: char| c == ':' || c == '(' || c.is_whitespace()).unwrap_or(after.len());
+    let name = &after[..end];
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// Build a [`Say`] whose `who` is already known (e.g. a two-arg speaker string).
+fn build_say(who: String, what: &str, suffix: &str) -> Say {
+    let (interact, with_) = parse_suffix(suffix);
+    Say {
+        who,
+        what: what.to_string(),
+        interact,
+        with_,
+        ..Default::default()
+    }
+}
+
+/// Build a [`Say`] from a normal say's prefix (`who [attrs] [@ temp]`).
+fn build_say_from_prefix(prefix: &str, what: &str, suffix: &str) -> Say {
+    let mut toks = prefix.split_whitespace();
+    let who = toks.next().unwrap_or("").to_string();
+    let mut attributes = Vec::new();
+    let mut temporary_attributes = Vec::new();
+    let mut in_temp = false;
+    for t in toks {
+        if t == "@" {
+            in_temp = true;
+        } else if let Some(rest) = t.strip_prefix('@') {
+            in_temp = true;
+            temporary_attributes.push(rest.to_string());
+        } else if in_temp {
+            temporary_attributes.push(t.to_string());
+        } else {
+            attributes.push(t.to_string());
+        }
+    }
+    let (interact, with_) = parse_suffix(suffix);
+    Say {
+        who,
+        attributes,
+        temporary_attributes,
+        what: what.to_string(),
+        interact,
+        with_,
+        ..Default::default()
+    }
+}
+
+/// Pull `nointeract` and a `with <expr>` clause out of a say's trailing text.
+fn parse_suffix(suffix: &str) -> (bool, Option<String>) {
+    let s = suffix.trim();
+    let mut interact = true;
+    let mut with_ = None;
+    if let Some(pos) = s.find("with ") {
+        // `with` must be a standalone word.
+        let before_ok = pos == 0 || s.as_bytes()[pos - 1] == b' ';
+        if before_ok {
+            with_ = Some(s[pos + 5..].trim().to_string());
+        }
+    }
+    for t in s.split_whitespace() {
+        if t == "nointeract" {
+            interact = false;
+        }
+    }
+    (interact, with_)
 }
 
 #[cfg(test)]
