@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api, type TranslateScope, type TranslateSummary } from "../ipc";
 import { useStore } from "../store";
 import { useSettings } from "../settings";
@@ -30,12 +31,25 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
   const [summary, setSummary] = useState<TranslateSummary | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  // Surface the first transport-level error (AI unreachable / rate-limited) the
+  // moment it happens, so a Run doesn't silently mark everything Failed.
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    api
+      .onTranslateError((msg) => setErr(`AI error: ${msg}`))
+      .then((fn) => (unlisten = fn));
+    return () => unlisten?.();
+  }, []);
+
   async function translate(scope: TranslateScope) {
     setErr(null);
     setSummary(null);
     try {
       const res = await enqueue("units", () => api.translateUnits(scope, activeConfig()));
       setSummary(res);
+      // A transport error may have occurred even though the command resolved
+      // (the Run keeps going and marks the rest Failed).
+      if (res.error) setErr(`AI error: ${res.error}`);
       await refreshMeta();
       await reloadUnits();
     } catch (e) {

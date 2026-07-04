@@ -274,6 +274,10 @@ struct TranslateSummary {
     reused: usize,
     failed: usize,
     cancelled: bool,
+    /// First provider error seen (network down, HTTP 401/429 rate-limit, …), so
+    /// the UI can tell "the AI is unreachable / limited" apart from ordinary
+    /// per-unit failures. `None` when the run hit no transport-level error.
+    error: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -293,6 +297,17 @@ struct Progress {
 struct TextItem {
     index: usize,
     text: Option<String>,
+}
+
+/// A unit whose translation was just persisted, emitted per batch during a Run
+/// (`translate://units`) so the grid can fill that row — translation + status —
+/// live, the same UX the glossary panel gets from `translate://item`.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnitUpdate {
+    id: i64,
+    translation: Option<String>,
+    status: String,
 }
 
 /// A distinct source string plus every unit id that shares it. Translating the
@@ -339,7 +354,7 @@ async fn translate_units(
     // source (dedup), and pre-fill any group whose source is already in TM. Only
     // genuinely-new distinct sources reach the AI, so repeated lines and
     // previously-translated strings are never re-billed.
-    let (to_ai, total, reused, glossary, source_lang, target_lang, engine_id) = {
+    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id) = {
         let guard = state.project.lock().unwrap();
         let proj = guard.as_ref().ok_or("no project is open")?;
         let overwrite = scope.overwrite.unwrap_or(false);
@@ -403,6 +418,7 @@ async fn translate_units(
         // Pre-fill from persisted TM; everything else goes to the AI.
         let mut to_ai: Vec<Group> = Vec::new();
         let mut reused = 0usize;
+        let mut reused_updates: Vec<UnitUpdate> = Vec::new();
         for g in order {
             if let Some(tm) = project::db::tm_lookup(&proj.conn, &g.source).ok().flatten() {
                 for id in &g.ids {
@@ -412,6 +428,11 @@ async fn translate_units(
                         Some(&tm),
                         Status::Translated.as_str(),
                     );
+                    reused_updates.push(UnitUpdate {
+                        id: *id,
+                        translation: Some(tm.clone()),
+                        status: Status::Translated.as_str().to_string(),
+                    });
                 }
                 reused += g.ids.len();
             } else {
@@ -430,7 +451,7 @@ async fn translate_units(
         let source_lang = project::db::get_meta(&proj.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
         let target_lang = project::db::get_meta(&proj.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into());
 
-        (to_ai, total_units, reused, glossary, source_lang, target_lang, engine_id)
+        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id)
     };
 
     let mut summary = TranslateSummary {
@@ -444,6 +465,10 @@ async fn translate_units(
         "translate://progress",
         Progress { done, total, translated: reused, failed: 0 },
     );
+    // Fill the reused rows in the grid live too.
+    if !reused_updates.is_empty() {
+        let _ = app.emit("translate://units", reused_updates);
+    }
     if to_ai.is_empty() {
         return Ok(summary);
     }
@@ -464,6 +489,7 @@ async fn translate_units(
 
     let mut first = true;
     let mut base = 0usize; // index of the chunk's first group within to_ai
+    let mut last_error: Option<String> = None; // first transport-level failure
     for chunk in to_ai.chunks(batch_size) {
         if state.cancel.load(Ordering::SeqCst) {
             summary.cancelled = true;
@@ -517,11 +543,23 @@ async fn translate_units(
                             items: vec![req.items[j].clone()],
                             ..req.clone()
                         };
-                        let r = provider
+                        let r = match provider
                             .translate_batch(&client, key.as_deref(), &single)
                             .await
-                            .ok()
-                            .and_then(|mut v| v.pop());
+                        {
+                            Ok(mut v) => v.pop(),
+                            Err(e) => {
+                                // Network down / HTTP 401 / 429 rate-limit, etc.
+                                // Surface the first one live so the user isn't left
+                                // watching a Run silently mark everything Failed.
+                                let msg = e.to_string();
+                                if last_error.is_none() {
+                                    let _ = app.emit("translate://error", &msg);
+                                }
+                                last_error.get_or_insert(msg);
+                                None
+                            }
+                        };
                         out.push(r);
                         done += g.ids.len();
                         let _ = app.emit(
@@ -583,6 +621,29 @@ async fn translate_units(
             }
         }
 
+        // Push this batch's freshly-written rows to the grid so it fills live,
+        // instead of only refreshing when the whole Run finishes.
+        let mut updates: Vec<UnitUpdate> = Vec::new();
+        for (ids, _source, text) in &writes {
+            for id in ids {
+                updates.push(UnitUpdate {
+                    id: *id,
+                    translation: Some(text.clone()),
+                    status: Status::Translated.as_str().to_string(),
+                });
+            }
+        }
+        for id in &failed_ids {
+            updates.push(UnitUpdate {
+                id: *id,
+                translation: None,
+                status: Status::Failed.as_str().to_string(),
+            });
+        }
+        if !updates.is_empty() {
+            let _ = app.emit("translate://units", updates);
+        }
+
         let _ = app.emit(
             "translate://progress",
             Progress {
@@ -595,6 +656,7 @@ async fn translate_units(
         base += chunk.len();
     }
 
+    summary.error = last_error;
     Ok(summary)
 }
 

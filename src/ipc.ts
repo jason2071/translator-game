@@ -128,6 +128,15 @@ export interface TranslateSummary {
   reused: number;
   failed: number;
   cancelled: boolean;
+  /** First transport-level provider error (unreachable / 401 / 429), if any. */
+  error?: string | null;
+}
+
+/** A unit filled during a Run, pushed live so the grid updates row-by-row. */
+export interface UnitUpdate {
+  id: number;
+  translation: string | null;
+  status: Status;
 }
 
 export interface GlossCandidate {
@@ -229,4 +238,12 @@ export const api = {
 
   onTextItem: (cb: (it: TextItem) => void): Promise<UnlistenFn> =>
     listen<TextItem>("translate://item", (e) => cb(e.payload)),
+
+  // Units filled during a Run, emitted per batch so the grid fills live.
+  onUnitsUpdate: (cb: (updates: UnitUpdate[]) => void): Promise<UnlistenFn> =>
+    listen<UnitUpdate[]>("translate://units", (e) => cb(e.payload)),
+
+  // First transport-level error during a Run (AI unreachable / rate-limited).
+  onTranslateError: (cb: (message: string) => void): Promise<UnlistenFn> =>
+    listen<string>("translate://error", (e) => cb(e.payload)),
 };

@@ -7,6 +7,7 @@ import {
   type Status,
   type TransUnit,
   type UnitFilter,
+  type UnitUpdate,
 } from "./ipc";
 import { useGlossarySuggest } from "./glossarySuggest";
 
@@ -28,6 +29,7 @@ interface AppStore {
   refreshStats: () => Promise<void>;
   editUnit: (id: number, translation: string, status?: Status) => Promise<void>;
   setStatus: (id: number, status: Status) => Promise<void>;
+  applyUnitUpdates: (updates: UnitUpdate[]) => void;
 }
 
 // Load the whole matching set; the grid is virtualized so only the visible
@@ -123,5 +125,21 @@ export const useStore = create<AppStore>((set, get) => ({
       units: get().units.map((u) => (u.id === id ? { ...u, status } : u)),
     });
     await get().refreshStats();
+  },
+
+  // Apply a batch of Run results the backend already persisted, so the grid
+  // fills row-by-row live (like the glossary panel) instead of only refreshing
+  // when the whole Run finishes. Rows outside the current view are ignored;
+  // they load correctly on the next reload.
+  applyUnitUpdates: (updates) => {
+    if (updates.length === 0) return;
+    const byId = new Map(updates.map((u) => [u.id, u]));
+    set({
+      units: get().units.map((u) => {
+        const up = byId.get(u.id);
+        return up ? { ...u, translation: up.translation, status: up.status } : u;
+      }),
+    });
+    void get().refreshStats();
   },
 }));
