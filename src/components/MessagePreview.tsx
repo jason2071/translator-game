@@ -78,10 +78,12 @@ export function MessagePreview({
   text,
   speaker,
   maxWidth,
+  engineId,
 }: {
   text: string;
   speaker?: string | null;
   maxWidth: number;
+  engineId?: string | null;
 }) {
   const lines = (text || "").split("\n");
   return (
@@ -92,7 +94,7 @@ export function MessagePreview({
         style={maxWidth > 0 ? { width: `${Math.max(maxWidth, 8)}ch` } : undefined}
       >
         {lines.map((ln, i) => {
-          const over = maxWidth > 0 && displayWidth(ln) > maxWidth;
+          const over = maxWidth > 0 && displayWidth(ln, engineId) > maxWidth;
           return (
             <div key={i} className={over ? "mp-line over" : "mp-line"}>
               {ln === "" ? " " : renderLine(ln)}

@@ -8,8 +8,20 @@
 // and whether a face graphic narrows the box. It is meant as an advisory guard,
 // not an exact renderer.
 
-// \C[2], \V[7], \FS[24], \N[1], \., \!, \\, and masked ⟦n⟧ sentinels.
+// Inline codes draw nothing, so they are stripped before counting width. Each
+// engine has its own grammar; masked ⟦n⟧ sentinels are stripped for all.
+// RPGMaker: \C[2], \V[7], \FS[24], \N[1], \., \!, \\ …
 const CODE_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|⟦\d+⟧/g;
+// Ren'Py: [interpolation], {text tags}, backslash escapes.
+const RENPY_CODE_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}|⟦\d+⟧/g;
+// TyranoScript/KAG: [tags], backslash escapes.
+const TYRANO_CODE_RE = /\\.|\[[^\]]*\]|⟦\d+⟧/g;
+
+function codeRe(engineId?: string | null): RegExp {
+  if (engineId === "renpy") return RENPY_CODE_RE;
+  if (engineId === "tyrano") return TYRANO_CODE_RE;
+  return CODE_RE;
+}
 
 /** True for glyphs RPGMaker draws at double width (CJK ideographs, kana, …). */
 function isFullWidth(cp: number): boolean {
@@ -41,9 +53,9 @@ function isZeroWidth(cp: number): boolean {
 }
 
 /** Roughly the on-screen width of one line, in half-width character units. */
-export function displayWidth(line: string): number {
+export function displayWidth(line: string, engineId?: string | null): number {
   let w = 0;
-  for (const ch of line.replace(CODE_RE, "")) {
+  for (const ch of line.replace(codeRe(engineId), "")) {
     const cp = ch.codePointAt(0)!;
     if (isZeroWidth(cp)) continue;
     w += isFullWidth(cp) ? 2 : 1;
@@ -59,11 +71,15 @@ export interface Overflow {
 }
 
 /** Per-line overflow for a (possibly multi-line) translation, given a limit. */
-export function overflowLines(text: string, max: number): Overflow[] {
+export function overflowLines(
+  text: string,
+  max: number,
+  engineId?: string | null
+): Overflow[] {
   if (!text || max <= 0) return [];
   const out: Overflow[] = [];
   text.split("\n").forEach((ln, i) => {
-    const w = displayWidth(ln);
+    const w = displayWidth(ln, engineId);
     if (w > max) out.push({ line: i + 1, width: w });
   });
   return out;

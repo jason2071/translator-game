@@ -54,7 +54,7 @@ export const UnitRow = memo(function UnitRow({
   // Overflow guard: flag lines wider than the box, for boxed kinds only.
   const boxed = BOXED_KINDS.has(unit.kind);
   const overflow =
-    maxLineWidth > 0 && boxed ? overflowLines(value, maxLineWidth) : [];
+    maxLineWidth > 0 && boxed ? overflowLines(value, maxLineWidth, engineId) : [];
 
   return (
     <div className="unit-row" style={{ borderLeftColor: statusColor(unit.status) }}>
@@ -121,6 +121,7 @@ export const UnitRow = memo(function UnitRow({
             text={value}
             speaker={unit.kind === "Dialogue" ? unit.context : null}
             maxWidth={maxLineWidth}
+            engineId={engineId}
           />
         )}
       </div>

@@ -150,7 +150,7 @@ fn cmd_extract(rest: &[String]) {
     let mut with_codes = 0usize;
     for u in &units {
         *by_kind.entry(u.kind.as_str()).or_default() += 1;
-        if u.source.contains('\\') {
+        if !protect::mask_for(eng.id(), &u.source).is_plain() {
             with_codes += 1;
         }
     }

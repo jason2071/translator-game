@@ -55,8 +55,66 @@ pub fn mask(input: &str) -> Masked {
 pub fn mask_for(engine_id: &str, input: &str) -> Masked {
     match engine_id {
         "renpy" => mask_renpy(input),
+        "tyrano" => mask_tyrano(input),
         _ => mask(input),
     }
+}
+
+/// Replace TyranoScript/KAG codes with `⟦k⟧` sentinels: `[tags]` (inline and
+/// block, quote-aware so an attribute value may contain `]`) and backslash
+/// escapes. Restores via the shared [`restore`].
+pub fn mask_tyrano(input: &str) -> Masked {
+    let mut text = String::with_capacity(input.len());
+    let mut tokens: Vec<String> = Vec::new();
+    let b = input.as_bytes();
+    let mut i = 0;
+    while i < input.len() {
+        let len = match b[i] {
+            b'[' => tyrano_tag_len(&input[i..]),
+            b'\\' if i + 1 < input.len() => {
+                Some(1 + input[i + 1..].chars().next().unwrap().len_utf8())
+            }
+            _ => None,
+        };
+        if let Some(len) = len {
+            let idx = tokens.len();
+            tokens.push(input[i..i + len].to_string());
+            text.push(OPEN);
+            text.push_str(&idx.to_string());
+            text.push(CLOSE);
+            i += len;
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap();
+        text.push(ch);
+        i += ch.len_utf8();
+    }
+    Masked { text, tokens }
+}
+
+/// Byte length of a `[...]` KAG tag at the start of `s`, honoring quoted
+/// attribute values that may contain `]`. None if unterminated or it nests
+/// another `[`.
+fn tyrano_tag_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 1;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'"' | b'\'') => {
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += 1;
+                }
+                if i < b.len() {
+                    i += 1;
+                }
+            }
+            b']' => return Some(i + 1),
+            b'[' => return None,
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// Replace Ren'Py codes with `⟦k⟧` sentinels: `[interpolation]`, `{text tags}`,
@@ -271,5 +329,32 @@ mod tests {
         // RPGMaker grammar leaves Ren'Py brackets alone; Ren'Py grammar masks them.
         assert!(mask_for("rpgmaker-mvmz", "[name]").is_plain());
         assert!(!mask_for("renpy", "[name]").is_plain());
+        // TyranoScript masks `[l]`/`[r]` KAG tags.
+        assert!(!mask_for("tyrano", "hi[l][r]").is_plain());
+    }
+
+    #[test]
+    fn tyrano_mask_unmask_is_identity() {
+        let samples = [
+            "It was a quiet morning.[l][r]",
+            "Welcome, [emb exp=\"f.name\"]![p]",
+            "[chara_show name=\"akane\"]こんにちは[l]",
+            "A quoted bracket [glink text=\"a]b\"] survives.",
+            "Path escape \\[ and \\\\ stay.",
+            "No codes here at all.",
+            "",
+        ];
+        for s in samples {
+            let m = mask_tyrano(s);
+            let back = restore(&m.text, &m.tokens).expect("restore ok");
+            assert_eq!(back, s, "round-trip failed for {s:?}");
+        }
+    }
+
+    #[test]
+    fn tyrano_codes_are_hidden_from_the_model_text() {
+        let m = mask_tyrano("Hi[l][r]there");
+        assert_eq!(m.tokens, vec!["[l]", "[r]"]);
+        assert_eq!(m.text, "Hi\u{27E6}0\u{27E7}\u{27E6}1\u{27E7}there");
     }
 }

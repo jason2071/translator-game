@@ -1,13 +1,14 @@
 # Roadmap — next engines + backlog
 
-The app translates games by hand or AI. It currently ships **two engines** —
-RPGMaker MV/MZ (JSON) and Ren'Py (`.rpy`) — as of **v0.3.0** (in-app auto-update
-live). This document captures the proven engine-adding pattern, a recommended
+The app translates games by hand or AI. It ships **three engines** — RPGMaker
+MV/MZ (JSON), Ren'Py (`.rpy`), and **TyranoScript** (`.ks`, `engine/tyrano.rs`,
+on the `engine-tyrano` branch) — building on **v0.3.0** (in-app auto-update
+live). This document captures the proven engine-adding pattern, the recommended
 next engine, ranked alternatives, and independent backlog items, so work can
 resume in one step.
 
-Nothing here is started yet. The engine-adding pattern below is the same
-regardless of which target is chosen next.
+The engine-adding pattern below is the same regardless of which target is chosen
+next.
 
 ## The engine-adding pattern (proven with Ren'Py — reuse it)
 Adding an engine touches only the engine seam; model/DB/UI are engine-agnostic.
@@ -37,22 +38,37 @@ Adding an engine touches only the engine seam; model/DB/UI are engine-agnostic.
   `extract <game>` prints the breakdown + verifies round-trip; `ai <game> <model>
   <n>` translates via Ollama with the right masking.
 
-## Recommended next engine: TyranoScript / KiriKiri (`.ks` text)
-Text-based, so it reuses the byte-span locator + protect pattern from Ren'Py at
-moderate effort, and covers a large JP visual-novel catalog (audience overlaps
-our users). Lower risk than any binary format.
-- **detect**: a `data/` or `scenario/` tree of `.ks` files (Tyrano: `data/scenario`).
-- **extract**: text lives between KAG tags — segments that aren't tags or labels.
-  Skip `[macro]`/`[jump]`/`[eval]`/`*labels`/`@`-commands; capture narrative text
-  and `[ptext]`/message text. Speaker often via `[chara_...]` or a `#name` line →
-  context.
-- **locator**: byte span (same as Ren'Py).
-- **protect** (`mask_tyrano`): KAG tags `[...]`, `%variables`, ruby `[ruby ...]`,
-  and `&`-entities.
+## Done: TyranoScript (`.ks` text) — `engine/tyrano.rs`
+Text-based, reuses the Ren'Py byte-span locator + protect pattern. Detects
+`data/scenario/*.ks`; extracts message text (inline `[tags]` kept in the source,
+masked around the AI), `[glink text=]` choices, and `[chara_new jname=]` character
+names; carries `#name` as speaker context. Skips comments (`;`), labels (`*`),
+`@`-command lines, and `[iscript]`/`[html]` code blocks. `mask_tyrano` protects
+KAG `[tags]` and `\` escapes (quote-aware so an attribute value may contain `]`).
+UTF-8 only. Fixture + round-trip test in `tests/tyrano_roundtrip.rs`; verified
+end-to-end through Ollama (inline tags + `[emb]` survive mask/restore).
+
+Known gaps (follow-up): `#name` written as literal display text (games without
+`[chara_new]`) is context-only, not translated; `*label|caption` save titles and
+`[ptext]`/`[ruby]` attributes not extracted; MessagePreview still renders raw KAG
+tags (RPGMaker-flavored preview, same as Ren'Py today).
+
+## Recommended next engine: KiriKiri (KAG) — the encoding layer on top of Tyrano
+KiriKiri is the JP visual-novel engine TyranoScript's KAG tag syntax descends
+from, so the `tyrano.rs` parser + `mask_tyrano` apply **verbatim**. The only new
+work is encoding.
 - **Main new challenge — encoding**: KiriKiri scripts are frequently Shift-JIS or
-  UTF-16; Tyrano is usually UTF-8. Detect the file encoding, decode to UTF-8 for
+  UTF-16; TyranoScript is UTF-8. Detect the file encoding, decode to UTF-8 for
   editing, and re-encode to the original on inject so round-trip stays byte-exact.
-  This is the one piece Ren'Py did not need (its `.rpy` are UTF-8).
+  This is the one piece the UTF-8 engines did not need. Add an encoding-detect +
+  transcode step at the `read`/`write` boundary in the engine (keep stored
+  `source`/pointer in decoded UTF-8 byte terms, map back on write); a small crate
+  like `encoding_rs` handles Shift-JIS/UTF-16 both ways.
+- **detect**: KiriKiri lacks TyranoScript's `data/scenario` convention — `.ks`
+  files may sit anywhere (often beside `.tjs`, in a `Data.xp3` archive when
+  packed). Detection likely keys on `.ks` + `.tjs`/`startup.tjs` presence, and
+  packed `.xp3` archives need unpacking first (out of scope for a first cut —
+  target loose/extracted `.ks`).
 
 ## Alternatives
 - **RPGMaker VX Ace / VX / XP** — same audience as the flagship MV/MZ (largest JP
@@ -65,10 +81,14 @@ our users). Lower risk than any binary format.
   encrypted), Unity (IL2CPP/Mono/TextMeshPro — XUnity's domain), Unreal (`.locres`).
 
 ## Small backlog (independent, quick — do alongside or between engines)
-- **Engine-aware overflow default**: the message-width guard default 46 is
-  RPGMaker-tuned; Ren'Py auto word-wraps so it over-warns. In
-  `src/messageWidth.ts` / the import flow, default to 46 for RPGMaker and 0/high
-  for Ren'Py (per `project.engineId`).
+- **Engine-aware overflow default**: `displayWidth`/`overflowLines` now strip each
+  engine's inline codes (RPGMaker `\c`, Ren'Py `[]`/`{}`, Tyrano `[]`) so the width
+  count is right (done on `engine-tyrano`). Still RPGMaker-tuned in *default*: the
+  fixed 46-char guard over-warns for VN engines that auto word-wrap (Ren'Py, Tyrano).
+  Remaining: default `maxLineWidth` to 46 for RPGMaker and 0/high for VN engines
+  (per `project.engineId`) in the import flow. Also: MessagePreview `renderLine`
+  only tokenizes RPGMaker `\`-codes, so Ren'Py/Tyrano bracket codes render literally
+  — make it engine-aware for a true preview.
 - **Tier 3 robustness**: no frontend tests exist (add vitest + RTL for store /
   translation queue / UnitRow); add a `translate_units` orchestrator test (tauri
   mock runtime); add a CI **build+test on push/PR** workflow (CI today only does

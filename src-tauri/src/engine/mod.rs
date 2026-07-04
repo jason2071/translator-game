@@ -11,6 +11,7 @@ pub mod codes;
 pub mod mvmz;
 pub mod protect;
 pub mod renpy;
+pub mod tyrano;
 
 use crate::model::TransUnit;
 use std::path::Path;
@@ -54,7 +55,11 @@ pub trait GameEngine: Send + Sync {
 
 /// All engines known to this build, in detection priority order.
 pub fn engines() -> Vec<Box<dyn GameEngine>> {
-    vec![Box::new(mvmz::MvMzEngine), Box::new(renpy::RenpyEngine)]
+    vec![
+        Box::new(mvmz::MvMzEngine),
+        Box::new(renpy::RenpyEngine),
+        Box::new(tyrano::TyranoEngine),
+    ]
 }
 
 /// Return the first engine that recognizes `root`, if any.
