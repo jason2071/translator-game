@@ -1,8 +1,10 @@
 # RPGMaker Translator
 
-Desktop app to translate RPGMaker games — **RPGMaker MV/MZ** in V1, with an
-engine-plugin architecture ready for VX Ace, 2000/2003, Ren'Py, Wolf RPG, etc.
-Translate by hand or with AI (Local / Claude / OpenAI / Gemini / OpenRouter).
+Desktop app to translate RPG / visual-novel games — **RPGMaker MV/MZ**,
+**Ren'Py**, **TyranoScript**, and **KiriKiri** — with an engine-plugin
+architecture ready for more (VX Ace, 2000/2003, Godot, …). Translate by hand or
+with AI (Local / Claude / OpenAI / Gemini / OpenRouter / any OpenAI-compatible
+endpoint).
 
 Built with **Tauri v2** (Rust core) + **React + Vite + TypeScript**.
 
@@ -18,15 +20,18 @@ Project-based workflow — the original game is never touched until you export:
    with an automatic backup of every file that changes.
 
 Features: virtualized grid for 10k+ strings, translation memory (auto-fills
-duplicate/identical strings), glossary + consistency lint, RPGMaker control-code
-protection (`\C[n]`, `\V[n]`, …) so AI can't corrupt them, batch translation with
-rate-limit + retry, and API keys stored in the OS keychain (never on disk).
+duplicate/identical strings), glossary + consistency lint, engine-aware code
+protection (RPGMaker `\C[n]`, Ren'Py `[tag]`/`{tag}`, KAG `[tag]`) so AI can't
+corrupt markup, batch translation with rate-limit + retry, a grid that fills
+row-by-row live as results land, and API keys stored in the OS keychain (never on
+disk).
 
 ## Architecture
 
 ```
 src-tauri/src/
-  engine/        GameEngine trait + registry; mvmz.rs (MV/MZ), codes.rs, protect.rs
+  engine/        GameEngine trait + registry; mvmz / renpy / tyrano / kirikiri,
+                 codes.rs, protect.rs, encoding.rs (KiriKiri Shift-JIS/UTF-16)
   project/       SQLite store (db.rs), open/create + backup/export (mod.rs)
   ai/            TranslationProvider trait; openai/anthropic/gemini; prompt + retry
   keys.rs        OS keychain (keyring)
@@ -34,8 +39,9 @@ src-tauri/src/
 src/             React UI (ImportView, GridView, TranslateBar, SettingsView, Glossary)
 ```
 
-Each translatable string is located by an **RFC-6901 JSON Pointer** into its
-file, so injection rewrites exactly that node and nothing else. A round-trip test
+Each translatable string is located by an **engine-opaque pointer** — an RFC-6901
+JSON Pointer for the JSON engine, a byte span for the text engines — so injection
+rewrites exactly that node/span and nothing else. A per-engine round-trip test
 (`extract → inject source==translation → compare`) guarantees no structural loss.
 
 **Adding an engine** = implement `GameEngine` in a new file and list it in
@@ -54,6 +60,10 @@ file, so injection rewrites exactly that node and nothing else. A round-trip tes
 pnpm install
 pnpm tauri dev      # launches the app with hot-reload
 ```
+
+For dev you can supply provider API keys via a `.env` (copy `.env.example`) — it
+is loaded only in debug builds, so `pnpm tauri dev` picks up `RPGTL_KEY_OPENAI`
+etc. without touching the OS keychain. Release builds ignore `.env`.
 
 ## Build a release / installer
 
@@ -77,8 +87,9 @@ Tests run against a synthetic MZ fixture in `src-tauri/tests/fixtures/mz-sample`
    the API key (stored in the OS keychain — Local/Ollama needs no key).
 2. Optionally set tone, an extra prompt, batch size, and a rate limit.
 3. Add **Glossary** terms (proper nouns, stats) for consistency.
-4. In the **AI translate** bar choose a scope and **Run** (cancellable, with a
-   live progress bar). **Apply TM** fills duplicates for free.
+4. In the **AI translate** bar choose a scope and **Run** (cancellable; the grid
+   fills row-by-row as batches land, and a connection/rate-limit error is shown
+   the moment it happens). **Apply TM** fills duplicates for free.
 5. **Export → game** when done (auto-backup to `.rpgtl/backups/<timestamp>/`).
 
 ### Providers
@@ -91,6 +102,10 @@ Tests run against a synthetic MZ fixture in `src-tauri/tests/fixtures/mz-sample`
 | Claude     | `api.anthropic.com/v1/messages`       | yes |
 | Gemini     | `…:generateContent`                   | yes |
 
+The Local / OpenAI / OpenRouter kinds take a custom **Base URL**, so any
+OpenAI-compatible gateway works — e.g. OpenCode Zen (`opencode.ai/zen/v1`),
+Ollama Cloud, or LM Studio. Use **Refresh** to pull the endpoint's model list.
+
 ## Project data
 
 A sidecar `.rpgtl/` folder is created next to the game:
@@ -100,6 +115,6 @@ on **Export**.
 
 ## Roadmap
 
-- More engines: VX Ace/VX/XP (`.rvdata2`), RPGMaker 2000/2003 (LCF binary),
-  Ren'Py, Wolf RPG, Unity.
+- More engines: Godot (`.po`/`.csv`), HTML (Twine/SugarCube), VX Ace/VX/XP
+  (`.rvdata2`), RPGMaker 2000/2003 (LCF binary), Wolf RPG. See `docs/ROADMAP.md`.
 - Fuzzy translation memory, per-run token/cost estimate, multi-select in the grid.
