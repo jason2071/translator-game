@@ -46,14 +46,26 @@ export default function App() {
   useEffect(() => {
     if (closeGuardRegistered) return;
     closeGuardRegistered = true;
-    getCurrentWindow()
+    const win = getCurrentWindow();
+    win
       .onCloseRequested(async (event) => {
-        if (useTranslation.getState().active !== null) {
-          const quit = await ask(
-            "A translation is still running. Finished batches are already saved, but the rest will stop. Quit anyway?",
-            { title: "Quit while translating?", kind: "warning" }
-          );
-          if (!quit) event.preventDefault();
+        const active = useTranslation.getState().active;
+        if (active === null) return; // idle → let the window close normally
+
+        // Cancel the close SYNCHRONOUSLY first. Showing a native dialog while the
+        // OS close is mid-flight deadlocks WebView2 on Windows — the message loop
+        // handling the close is blocked waiting on the modal, so the app appears
+        // frozen and can't be closed. With the close already prevented the loop
+        // is free to show the confirm; if the user quits we force-close via
+        // destroy(), which bypasses this handler (no re-entry).
+        event.preventDefault();
+        const quit = await ask(
+          "A translation is still running. Finished batches are already saved, but the rest will stop. Quit anyway?",
+          { title: "Quit while translating?", kind: "warning" }
+        );
+        if (quit) {
+          useTranslation.getState().cancel(active);
+          await win.destroy();
         }
       })
       .catch(() => {});
