@@ -30,6 +30,8 @@ async-trait = "0.1"
 tokio = { version = "1", features = ["time"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 encoding_rs = "0.8"
+# Dev-only: `.env` loading for local API keys (guarded by debug_assertions).
+dotenvy = "0.15"
 
 [dev-dependencies]
 tempfile = "3"

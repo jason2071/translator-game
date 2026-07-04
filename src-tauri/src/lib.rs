@@ -807,6 +807,14 @@ fn delete_key(provider: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Dev convenience: load a `.env` (searched from the CWD upward, so the repo
+    // root works) so `pnpm tauri dev` picks up API keys via `keys::get_key`'s
+    // env fallback. Debug builds only — release never reads keys from `.env`.
+    #[cfg(debug_assertions)]
+    {
+        let _ = dotenvy::dotenv();
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
