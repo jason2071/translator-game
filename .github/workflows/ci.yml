@@ -1,0 +1,55 @@
+name: ci
+
+# Build + test on every push to main and on pull requests, so regressions are
+# caught before cutting a release. (The release installers are built separately
+# in release.yml, which triggers on a `v*` tag.)
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref cancels an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    env:
+      # The repo rule is "Rust must build warning-free". Dependencies are compiled
+      # with --cap-lints allow, so this only gates our own crate's warnings.
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      # Frontend gate: tsc (strict, noUnusedLocals) + vite build.
+      - name: Frontend typecheck + build
+        run: pnpm build
+
+      # Rust core: unit + integration tests (engine extraction, round-trip,
+      # project flow, TM/glossary, control-code protection, AI prompt/parse).
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
