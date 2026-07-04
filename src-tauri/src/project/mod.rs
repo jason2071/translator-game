@@ -40,6 +40,25 @@ fn rpgtl_dir(root: &Path) -> PathBuf {
     root.join(".rpgtl")
 }
 
+/// Backup directories under `.rpgtl/backups/`, oldest-first by their numeric
+/// timestamp name. The earliest backup that contains a given file holds that
+/// file's original bytes — it was saved just before the first export touched it.
+fn earliest_backup_dirs(backups_root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<(u64, PathBuf)> = match std::fs::read_dir(backups_root) {
+        Ok(rd) => rd
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| {
+                let ts = e.file_name().to_string_lossy().parse::<u64>().ok()?;
+                Some((ts, e.path()))
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    dirs.sort_by_key(|(ts, _)| *ts);
+    dirs.into_iter().map(|(_, p)| p).collect()
+}
+
 /// Open an existing project at `root`, or create + populate one from the game.
 /// The bool is true when this call extracted a fresh project.
 pub fn open_or_create(
@@ -158,7 +177,50 @@ pub fn export(project: &Project, make_backup: bool) -> Result<ExportResult> {
         None
     };
 
-    // Inject writes patched files in place (out_dir == data_dir).
+    // Keep a pristine snapshot of each touched file's ORIGINAL bytes under
+    // `.rpgtl/source/`. A unit's `pointer` is a byte offset into the *original*
+    // file, but injection writes in place, so without this a second export would
+    // splice those original offsets into the already-translated bytes — cutting
+    // multi-byte characters and producing invalid UTF-8 (and doubled text). The
+    // snapshot is captured the first time a file is exported and restored before
+    // every later export, making re-export idempotent and safe.
+    //
+    // Seeding the snapshot prefers the *earliest* backup of the file (the
+    // original, saved before the very first export) over the live file, so a
+    // project that was already exported before this fix — its live file already
+    // translated — still snapshots ORIGINAL bytes and its next export repairs
+    // the file instead of corrupting it further.
+    let source_dir = rpgtl_dir(&project.root).join("source");
+    let backups_root = rpgtl_dir(&project.root).join("backups");
+    let earliest_backups = earliest_backup_dirs(&backups_root);
+    for file in &touched {
+        let live = project.data_dir.join(file);
+        let snap = source_dir.join(file);
+        if !snap.exists() {
+            // First export of this file under the snapshot scheme: capture its
+            // pristine bytes from the earliest backup, else the live file.
+            let origin = earliest_backups
+                .iter()
+                .map(|d| d.join(file))
+                .find(|p| p.exists())
+                .unwrap_or_else(|| live.clone());
+            if origin.exists() {
+                if let Some(parent) = snap.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&origin, &snap)
+                    .with_context(|| format!("snapshotting original {file}"))?;
+            }
+        }
+        if snap.exists() {
+            // Reset the live file to its original before injecting.
+            std::fs::copy(&snap, &live)
+                .with_context(|| format!("restoring original {file}"))?;
+        }
+    }
+
+    // Inject writes patched files in place (out_dir == data_dir), now always
+    // starting from the original bytes restored above.
     eng.inject(&project.root, &units, &project.data_dir)?;
 
     // Remove now-stale derived files so the engine rebuilds them from our edit.

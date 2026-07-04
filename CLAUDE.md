@@ -93,8 +93,17 @@ localStorage).
   conventional name) and `run()` loads a `.env` via `dotenvy`, so `pnpm tauri
   dev` can use a shell/`.env` key without the keychain; release ignores both.
 - **Game files are read-only until Export.** All state is kept in the sidecar
-  `<game>/.rpgtl/` (`project.db`, backups). `project::export` backs up the files
-  it will touch, then injects in place.
+  `<game>/.rpgtl/` (`project.db`, backups, `source/`). `project::export` backs up
+  the files it will touch, then injects in place.
+- **Export must be idempotent.** A `pointer` is a byte offset into the *original*
+  file, but export injects in place, so a naive second export would splice
+  original offsets into already-translated bytes — cutting multi-byte characters
+  (invalid UTF-8) and doubling text. `project::export` therefore snapshots each
+  file's original bytes into `.rpgtl/source/` on first export and restores from it
+  before every later injection, so re-export reproduces the same output. The
+  snapshot is seeded from the earliest `.rpgtl/backups/<ts>/` copy when present
+  (so a project exported before this scheme still snapshots ORIGINAL bytes and
+  self-repairs on its next export). `tests/reexport_idempotent.rs` guards this.
 
 ## Adding an engine
 
