@@ -17,6 +17,10 @@ import { UpdateBanner } from "./components/UpdateBanner";
 
 type Panel = "none" | "glossary" | "lint" | "settings";
 
+// The window close guard is registered exactly once for the app's lifetime.
+// See the effect below — unlistening an onCloseRequested handler must be avoided.
+let closeGuardRegistered = false;
+
 export default function App() {
   const project = useStore((s) => s.project);
   const applyUnitUpdates = useStore((s) => s.applyUnitUpdates);
@@ -33,8 +37,15 @@ export default function App() {
 
   // Warn before quitting while a translation is still running. Finished batches
   // are already persisted; the confirm just stops the user losing the rest.
+  //
+  // Registered exactly once for the app's lifetime and deliberately NOT
+  // unlistened. Calling an onCloseRequested handler's unlisten() leaves the
+  // window unable to close at all (tauri-apps/tauri#7119); React StrictMode's
+  // dev-only mount → cleanup → mount would otherwise run that unlisten and the
+  // app could no longer be closed (its process then lingers in the background).
   useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
+    if (closeGuardRegistered) return;
+    closeGuardRegistered = true;
     getCurrentWindow()
       .onCloseRequested(async (event) => {
         if (useTranslation.getState().active !== null) {
@@ -45,9 +56,7 @@ export default function App() {
           if (!quit) event.preventDefault();
         }
       })
-      .then((fn) => (unlisten = fn))
       .catch(() => {});
-    return () => unlisten?.();
   }, []);
 
   if (!project) return <ImportView />;
