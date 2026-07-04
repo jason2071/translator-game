@@ -160,8 +160,6 @@ export const api = {
 
   closeProject: () => invoke<void>("close_project"),
 
-  reextract: () => invoke<Stats>("reextract_project"),
-
   setLanguages: (source: string, target: string) =>
     invoke<void>("set_languages", { source, target }),
 
