@@ -15,6 +15,9 @@
 //!                                         n candidates (the "Translate empty" path).
 //!   one      <project.db> [model]        Translate one untranslated unit and write
 //!                                         it back into the live project.db.
+//!   export   <game-dir>                  Export the project twice in place and
+//!                                         verify it is idempotent + valid UTF-8
+//!                                         (regression guard for double-export).
 //!
 //! `model` defaults to gemma4:12b (Local/Ollama). Language defaults to Japanese
 //! -> Thai, or the project's stored languages when a project.db is given.
@@ -34,7 +37,9 @@ harness <command> [args]
   stats    <project.db>
   ai       <game-dir> [model] [n]
   glossary <project.db> [model] [n]
-  one      <project.db> [model]";
+  one      <project.db> [model]
+  export   <game-dir>
+  reconcile <game-dir> [--apply]";
 
 #[tokio::main]
 async fn main() {
@@ -47,6 +52,8 @@ async fn main() {
         "ai" => cmd_ai(rest).await,
         "glossary" => cmd_glossary(rest).await,
         "one" => cmd_one(rest).await,
+        "export" => cmd_export(rest),
+        "reconcile" => cmd_reconcile(rest),
         _ => eprintln!("{USAGE}"),
     }
 }
@@ -266,6 +273,138 @@ async fn cmd_glossary(rest: &[String]) {
         let ai = out[i].clone().unwrap_or_else(|| "[FAILED]".into());
         println!("{:<22} {:<9} x{:<3} prefill={:<10} AI={}", c.term, c.kind, c.count, prefill, ai);
     }
+}
+
+/// Export a project twice in place and verify re-export is idempotent (the
+/// double-export corruption regression) and, for the UTF-8 text engines, that
+/// the output is valid UTF-8. Run against a COPY of a real game.
+fn cmd_export(rest: &[String]) {
+    let Some(game) = arg(rest, 0) else {
+        return eprintln!("export <game-dir>");
+    };
+    let root = PathBuf::from(game);
+    let (project, _fresh) =
+        app_lib::project::open_or_create(&root, "auto", "Thai").expect("open project");
+    let data = project.data_dir.clone();
+    let engine = project.engine_id.clone();
+    let stats = db::stats(&project.conn).unwrap();
+    println!(
+        "engine={engine}  data_dir={}\nunits: total={} translated={} reviewed={} draft={}",
+        data.display(),
+        stats.total,
+        stats.translated,
+        stats.reviewed,
+        stats.draft
+    );
+
+    let touched: BTreeSet<String> = db::all_units(&project.conn)
+        .unwrap()
+        .into_iter()
+        .filter(|u| u.status.is_applied())
+        .map(|u| u.file)
+        .collect();
+    println!("applied files: {}", touched.len());
+
+    let r1 = app_lib::project::export(&project, true).expect("export #1");
+    println!("export #1: files_written={} units_applied={}", r1.files_written, r1.units_applied);
+    let after1: BTreeMap<String, Vec<u8>> = touched
+        .iter()
+        .map(|f| (f.clone(), std::fs::read(data.join(f)).unwrap_or_default()))
+        .collect();
+
+    let r2 = app_lib::project::export(&project, false).expect("export #2");
+    println!("export #2: files_written={}", r2.files_written);
+    let after2: BTreeMap<String, Vec<u8>> = touched
+        .iter()
+        .map(|f| (f.clone(), std::fs::read(data.join(f)).unwrap_or_default()))
+        .collect();
+
+    // Ren'Py / Tyrano / Godot catalogs are UTF-8; KiriKiri/MvMz may not be.
+    let text_utf8 = matches!(engine.as_str(), "renpy" | "tyrano" | "godot");
+    let mut drift = 0usize;
+    let mut invalid = 0usize;
+    for f in &touched {
+        if after1[f] != after2[f] {
+            drift += 1;
+            println!("  DRIFT (not idempotent): {f}");
+        }
+        if text_utf8 && std::str::from_utf8(&after2[f]).is_err() {
+            invalid += 1;
+            println!("  INVALID UTF-8: {f}");
+        }
+    }
+    println!(
+        "\nidempotent re-export: {}  ({drift} drift)",
+        if drift == 0 { "OK" } else { "FAIL" }
+    );
+    if text_utf8 {
+        println!(
+            "valid UTF-8:          {}  ({invalid} invalid)",
+            if invalid == 0 { "OK" } else { "FAIL" }
+        );
+    }
+    println!("snapshot dir created: {}", root.join(".rpgtl/source").exists());
+}
+
+/// Reconcile a project's DB against the CURRENT (fixed) extractor: find units the
+/// extractor no longer produces (e.g. code strings that used to leak out of
+/// `init … python` blocks), which were wrongly translated. Extraction runs on the
+/// pristine `.rpgtl/source/` snapshot so pointers match the DB's original offsets.
+/// With `--apply`, reverts those units to Untranslated and re-exports, so their
+/// spans keep the original code and the game runs again.
+fn cmd_reconcile(rest: &[String]) {
+    let Some(game) = arg(rest, 0) else {
+        return eprintln!("reconcile <game-dir> [--apply]");
+    };
+    let apply = rest.iter().any(|s| s == "--apply");
+    let root = PathBuf::from(game);
+    let (project, _) =
+        app_lib::project::open_or_create(&root, "auto", "Thai").expect("open project");
+
+    let source_root = root.join(".rpgtl").join("source");
+    let Some(eng) = engine::detect(&source_root) else {
+        return eprintln!("no .rpgtl/source snapshot (run an export first) — cannot reconcile");
+    };
+    let valid: BTreeSet<(String, String)> = eng
+        .extract(&source_root, &ExtractOpts::default())
+        .unwrap()
+        .into_iter()
+        .map(|u| (u.file, u.pointer))
+        .collect();
+
+    let units = db::all_units(&project.conn).unwrap();
+    // A unit is bogus if we have its original (its file exists in the snapshot)
+    // yet the fixed extractor no longer produces that (file, pointer). Checking
+    // file existence on disk — not "has any valid unit" — so a file that became
+    // pure code (all its old units were code strings) is still judged.
+    let bogus: Vec<_> = units
+        .iter()
+        .filter(|u| {
+            source_root.join(&u.file).exists()
+                && !valid.contains(&(u.file.clone(), u.pointer.clone()))
+        })
+        .collect();
+
+    println!(
+        "db units: {}   valid (fixed extractor): {}   bogus (wrongly extracted): {}",
+        units.len(),
+        valid.len(),
+        bogus.len()
+    );
+    for u in bogus.iter().take(25) {
+        println!("  BOGUS {}@{}  src={:?}  tr={:?}", u.file, u.pointer, u.source, u.translation);
+    }
+
+    if !apply {
+        println!("\n(dry-run — pass --apply to revert these to Untranslated and re-export)");
+        return;
+    }
+    for u in &bogus {
+        db::update_unit(&project.conn, u.id, None, Status::Untranslated.as_str()).unwrap();
+    }
+    println!("\nreverted {} bogus units to Untranslated", bogus.len());
+    let r = app_lib::project::export(&project, true).expect("re-export");
+    println!("re-exported: files_written={} units_applied={}", r.files_written, r.units_applied);
 }
 
 async fn cmd_one(rest: &[String]) {

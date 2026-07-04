@@ -201,7 +201,6 @@ fn parse_pointer(p: &str) -> Option<(usize, usize)> {
 fn is_block_skip(trimmed: &str) -> bool {
     const HEADS: &[&str] = &[
         "python",
-        "init python",
         "screen ",
         "screen:",
         "style ",
@@ -211,7 +210,28 @@ fn is_block_skip(trimmed: &str) -> bool {
         "layeredimage ",
         "testcase ",
     ];
-    HEADS.iter().any(|h| trimmed.starts_with(h))
+    if HEADS.iter().any(|h| trimmed.starts_with(h)) {
+        return true;
+    }
+    // `init [priority] python [in <namespace>]:` — a Python block whose body is
+    // raw code, regardless of the optional integer priority (e.g.
+    // `init -100 python in phone.application:`). Skip it so code strings like a
+    // `style="empty"` kwarg aren't mistaken for dialogue and translated (which
+    // would rename the style and crash Ren'Py). A bare `init python …` matches
+    // here too. Any `_()`-wrapped strings inside are still harvested earlier.
+    if let Some(rest) = trimmed.strip_prefix("init") {
+        if rest.starts_with(char::is_whitespace) {
+            let mut toks = rest.split_whitespace();
+            let mut head = toks.next();
+            if head.map(|t| t.parse::<i64>().is_ok()).unwrap_or(false) {
+                head = toks.next(); // consume the optional priority
+            }
+            if head.map(|t| t.trim_end_matches(':')) == Some("python") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Statements whose leading keyword means any string on the line is not
@@ -610,6 +630,34 @@ label start:
             vec!["scripts/ch1.rpyc".to_string()]
         );
         assert!(eng.stale_companions("notes.txt").is_empty());
+    }
+
+    #[test]
+    fn init_priority_python_block_skips_code_strings() {
+        // Regression: a `style="empty"` kwarg inside `init -100 python in …:` was
+        // extracted and translated, renaming the style and crashing Ren'Py.
+        let src = "\
+init -100 python in phone.application:
+    def Icon(d):
+        rv = Fixed(bg, d, style=\"empty\", xysize=(10, 10))
+        note = _(\"Messages\")
+        return rv
+
+init 5 python:
+    x = \"raw_code_string\"
+
+label start:
+    e \"Real dialogue.\"
+";
+        let units = extract(src);
+        let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+        // Code strings inside the priority-init python blocks are NOT extracted.
+        assert!(!texts.contains(&"empty"), "style name must not be translated");
+        assert!(!texts.contains(&"raw_code_string"));
+        // A `_()`-wrapped string inside the block is still translatable.
+        assert!(texts.contains(&"Messages"));
+        // Normal dialogue outside the blocks still works.
+        assert!(texts.contains(&"Real dialogue."));
     }
 
     #[test]
