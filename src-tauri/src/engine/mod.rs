@@ -18,6 +18,7 @@ pub mod kirikiri;
 pub mod mvmz;
 pub mod protect;
 pub mod renpy;
+pub mod renpy_tl;
 pub mod tyrano;
 
 use crate::model::TransUnit;
