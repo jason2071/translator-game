@@ -20,7 +20,7 @@ and are much riskier.
 | **RPGM** (MV/MZ) | `data/*.json` (event lists, database, System) | text | ✅ Supported |
 | **Ren'Py** | `game/**/*.rpy` (say / menu / `_()`) | text | ✅ Supported |
 | **TyranoScript** | `data/scenario/*.ks` (message / glink / jname) | text | ✅ Supported |
-| **KiriKiri** (KAG) | `*.ks` (same KAG tags, Shift-JIS/UTF-16) | text | 🟡 Medium (encoding) |
+| **KiriKiri** (KAG) | `*.ks` (same KAG tags, Shift-JIS/UTF-16) | text | ✅ Supported |
 | **RPGM** (VX Ace/VX/XP) | `Data/*.rvdata2` = Ruby Marshal | binary | 🔴 Hard |
 | **RPGM** (2000/2003) | `*.lmu` / `RPG_RT.ldb` (liblcf) | binary | 🔴 Hard |
 | **Godot** | `.po` / `.csv` → `.translation`; `.tscn` scenes | text (mostly) | 🟢 Easy (if `.po`/`.csv`) |
@@ -48,13 +48,16 @@ and are much riskier.
 - **TyranoScript** — `.ks` KAG scenario scripts; pointer = byte span; splice-in-place
   inject. Extracts message text, `[glink text=]` choices, and `[chara_new jname=]`
   names; skips comments/labels/`@`-commands and `[iscript]`/`[html]` blocks;
-  protects `[tags]`. UTF-8 only for now. `src-tauri/src/engine/tyrano.rs`.
+  protects `[tags]`. UTF-8 only. `src-tauri/src/engine/tyrano.rs`.
+- **KiriKiri (KAG)** — `.ks` scripts in **Shift-JIS/UTF-16** (or UTF-8). Reuses
+  the TyranoScript KAG parser + `mask_tyrano` verbatim behind an encoding layer
+  (`src-tauri/src/engine/encoding.rs`): decode-on-read, re-encode-on-write, so
+  round-trip stays byte-exact. Detected by a `.tjs`/`.xp3` fingerprint (tried
+  before TyranoScript). When a translation isn't representable in the source
+  encoding (e.g. Thai in a Shift-JIS game) the file is written as UTF-16LE, which
+  KiriKiri loads natively. `src-tauri/src/engine/kirikiri.rs`.
 
 ### Text-based candidates (fit the model — recommended path)
-- **KiriKiri (KAG)** (`.ks`) — the JP visual-novel engine TyranoScript's tag
-  syntax descends from, so it reuses the TyranoScript parser + protect verbatim.
-  Only new work: Shift-JIS/UTF-16 decode-on-read, re-encode-on-write for byte-exact
-  round-trip (TyranoScript is UTF-8). *(Next pick — see `ROADMAP.md`.)*
 - **Godot** — trivial when the game ships `.po`/`.csv` gettext catalogs; scene
   text in `.tscn` (text) is also parseable. `.translation` (compiled) is binary —
   prefer the source catalogs.
@@ -89,8 +92,7 @@ and are much riskier.
 ## How this maps to our roadmap
 The engine-adding pattern (implement `GameEngine`, byte-span locator, `mask_for`
 + `codes.ts`, skip derived files, fixture + round-trip test) is documented in
-`ROADMAP.md`. Text-based engines came first (Ren'Py, then TyranoScript). Next up
-the same **text-based** track: **KiriKiri** (TyranoScript's parser + a Shift-JIS/
-UTF-16 encoding layer), then Godot/HTML — after which decide whether the **VX Ace**
-audience justifies a Ruby Marshal codec. Unity/Flash are out of scope for a
-file-extract tool.
+`ROADMAP.md`. Text-based engines came first (Ren'Py → TyranoScript → KiriKiri).
+Next up the same **text-based** track: **Godot** (`.po`/`.csv`) or **HTML**
+(Twine/SugarCube) — after which decide whether the **VX Ace** audience justifies
+a Ruby Marshal codec. Unity/Flash are out of scope for a file-extract tool.

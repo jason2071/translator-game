@@ -55,7 +55,8 @@ pub fn mask(input: &str) -> Masked {
 pub fn mask_for(engine_id: &str, input: &str) -> Masked {
     match engine_id {
         "renpy" => mask_renpy(input),
-        "tyrano" => mask_tyrano(input),
+        // KiriKiri shares TyranoScript's KAG tag syntax, so it masks the same way.
+        "tyrano" | "kirikiri" => mask_tyrano(input),
         _ => mask(input),
     }
 }
@@ -329,8 +330,9 @@ mod tests {
         // RPGMaker grammar leaves Ren'Py brackets alone; Ren'Py grammar masks them.
         assert!(mask_for("rpgmaker-mvmz", "[name]").is_plain());
         assert!(!mask_for("renpy", "[name]").is_plain());
-        // TyranoScript masks `[l]`/`[r]` KAG tags.
+        // TyranoScript and KiriKiri mask `[l]`/`[r]` KAG tags.
         assert!(!mask_for("tyrano", "hi[l][r]").is_plain());
+        assert!(!mask_for("kirikiri", "hi[l][r]").is_plain());
     }
 
     #[test]

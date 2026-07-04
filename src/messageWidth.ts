@@ -14,12 +14,12 @@
 const CODE_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|⟦\d+⟧/g;
 // Ren'Py: [interpolation], {text tags}, backslash escapes.
 const RENPY_CODE_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}|⟦\d+⟧/g;
-// TyranoScript/KAG: [tags], backslash escapes.
+// TyranoScript / KiriKiri KAG: [tags], backslash escapes.
 const TYRANO_CODE_RE = /\\.|\[[^\]]*\]|⟦\d+⟧/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_CODE_RE;
-  if (engineId === "tyrano") return TYRANO_CODE_RE;
+  if (engineId === "tyrano" || engineId === "kirikiri") return TYRANO_CODE_RE;
   return CODE_RE;
 }
 

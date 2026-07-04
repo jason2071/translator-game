@@ -1,13 +1,18 @@
 //! Engine plugin seam. Each supported game type implements [`GameEngine`];
 //! [`detect`] fingerprints a folder and returns the matching engine.
 //!
-//! Ships [`mvmz::MvMzEngine`] (RPGMaker MV/MZ, JSON) and [`renpy::RenpyEngine`]
-//! (Ren'Py `.rpy` scripts). Adding VX Ace, RPGMaker 2000/2003, etc. later means
-//! dropping in a new impl and listing it in [`engines`] — nothing else in the
-//! app changes. The `pointer` on a `TransUnit` is engine-defined (a JSON Pointer
-//! for MV/MZ, a byte span for Ren'Py); only the owning engine interprets it.
+//! Ships [`mvmz::MvMzEngine`] (RPGMaker MV/MZ, JSON), [`renpy::RenpyEngine`]
+//! (Ren'Py `.rpy`), [`tyrano::TyranoEngine`] (TyranoScript `.ks`, UTF-8), and
+//! [`kirikiri::KiriKiriEngine`] (KiriKiri `.ks`, Shift-JIS/UTF-16 — same KAG
+//! parser as Tyrano behind an encoding layer). Adding VX Ace, RPGMaker
+//! 2000/2003, etc. later means dropping in a new impl and listing it in
+//! [`engines`] — nothing else in the app changes. The `pointer` on a
+//! `TransUnit` is engine-defined (a JSON Pointer for MV/MZ, a byte span for the
+//! text engines); only the owning engine interprets it.
 
 pub mod codes;
+pub mod encoding;
+pub mod kirikiri;
 pub mod mvmz;
 pub mod protect;
 pub mod renpy;
@@ -58,6 +63,10 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
     vec![
         Box::new(mvmz::MvMzEngine),
         Box::new(renpy::RenpyEngine),
+        // KiriKiri before TyranoScript: both use `.ks`, but KiriKiri carries a
+        // `.tjs`/`.xp3` fingerprint that Tyrano lacks, so the more specific match
+        // must be tried first (Tyrano would otherwise claim loose root `.ks`).
+        Box::new(kirikiri::KiriKiriEngine),
         Box::new(tyrano::TyranoEngine),
     ]
 }

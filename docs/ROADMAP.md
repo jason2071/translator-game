@@ -1,11 +1,12 @@
 # Roadmap — next engines + backlog
 
-The app translates games by hand or AI. It ships **three engines** — RPGMaker
-MV/MZ (JSON), Ren'Py (`.rpy`), and **TyranoScript** (`.ks`, `engine/tyrano.rs`,
-on the `engine-tyrano` branch) — building on **v0.3.0** (in-app auto-update
-live). This document captures the proven engine-adding pattern, the recommended
-next engine, ranked alternatives, and independent backlog items, so work can
-resume in one step.
+The app translates games by hand or AI. It ships **four engines** — RPGMaker
+MV/MZ (JSON), Ren'Py (`.rpy`), TyranoScript (`.ks`, UTF-8), and **KiriKiri**
+(`.ks`, Shift-JIS/UTF-16, `engine/kirikiri.rs` + `engine/encoding.rs`, on the
+`engine-kirikiri` branch) — building on **v0.4.0** (in-app auto-update live).
+This document captures the proven engine-adding pattern, the recommended next
+engine, ranked alternatives, and independent backlog items, so work can resume
+in one step.
 
 The engine-adding pattern below is the same regardless of which target is chosen
 next.
@@ -53,22 +54,35 @@ Known gaps (follow-up): `#name` written as literal display text (games without
 `[ptext]`/`[ruby]` attributes not extracted; MessagePreview still renders raw KAG
 tags (RPGMaker-flavored preview, same as Ren'Py today).
 
-## Recommended next engine: KiriKiri (KAG) — the encoding layer on top of Tyrano
+## Done: KiriKiri (KAG) — `engine/kirikiri.rs` + `engine/encoding.rs`
 KiriKiri is the JP visual-novel engine TyranoScript's KAG tag syntax descends
-from, so the `tyrano.rs` parser + `mask_tyrano` apply **verbatim**. The only new
-work is encoding.
-- **Main new challenge — encoding**: KiriKiri scripts are frequently Shift-JIS or
-  UTF-16; TyranoScript is UTF-8. Detect the file encoding, decode to UTF-8 for
-  editing, and re-encode to the original on inject so round-trip stays byte-exact.
-  This is the one piece the UTF-8 engines did not need. Add an encoding-detect +
-  transcode step at the `read`/`write` boundary in the engine (keep stored
-  `source`/pointer in decoded UTF-8 byte terms, map back on write); a small crate
-  like `encoding_rs` handles Shift-JIS/UTF-16 both ways.
-- **detect**: KiriKiri lacks TyranoScript's `data/scenario` convention — `.ks`
-  files may sit anywhere (often beside `.tjs`, in a `Data.xp3` archive when
-  packed). Detection likely keys on `.ks` + `.tjs`/`startup.tjs` presence, and
-  packed `.xp3` archives need unpacking first (out of scope for a first cut —
-  target loose/extracted `.ks`).
+from, so the `tyrano.rs` parser (`extract_ks`) + `mask_tyrano` are reused
+**verbatim**; the only new work was encoding. `engine/encoding.rs` detects the
+file encoding (BOM, else UTF-8-validity, else Shift-JIS), decodes each `.ks` to
+UTF-8 for the parser (`pointer`/`source` in decoded-UTF-8 byte terms), and
+re-encodes on inject. Only stateless encodings are handled (UTF-8, UTF-16LE/BE,
+Shift-JIS) so `encode(decode(bytes)) == bytes` and `translation == source`
+round-trips byte-identical. `encoding_rs` provides the Shift-JIS codec; UTF-16 is
+hand-rolled both ways. Detection keys on a `.tjs`/`.xp3` fingerprint and is tried
+**before** TyranoScript so a KiriKiri game with loose `.ks` isn't mis-claimed.
+Fixtures + round-trip tests in `tests/kirikiri_roundtrip.rs`.
+
+Known gaps (follow-up): UTF-16 **without a BOM** isn't detected (KiriKiri UTF-16
+scripts carry one); packed **`.xp3` archives** aren't unpacked (target
+loose/extracted `.ks`); a translation unrepresentable in the source encoding
+(e.g. Thai into a Shift-JIS game) forces the whole file to **UTF-16LE** on export
+(KiriKiri loads it natively, but the file is no longer byte-identical and its
+untranslated lines transcode too — intentional). ISO-2022-JP (stateful) is
+unsupported.
+
+## Recommended next engine: Godot (`.po`/`.csv`) or HTML (Twine/SugarCube)
+With the KAG lineage covered, the cheapest remaining text wins are gettext-style
+catalogs. **Godot** games that ship `.po`/`.csv` are near-trivial (line-based
+`msgid`/`msgstr`); the byte-span locator applies directly and there is no
+encoding twist (UTF-8). Skip the compiled `.translation`. **HTML** (Twine's
+`:: PassageName` structure) is the alternative if VN/text-adventure titles
+dominate. After that, weigh whether the **VX Ace** audience justifies a Ruby
+Marshal codec (largest effort — see below).
 
 ## Alternatives
 - **RPGMaker VX Ace / VX / XP** — same audience as the flagship MV/MZ (largest JP

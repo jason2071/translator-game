@@ -29,6 +29,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 async-trait = "0.1"
 tokio = { version = "1", features = ["time"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+encoding_rs = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
@@ -36,6 +37,7 @@ tokio = { version = "1", features = ["macros", "rt", "time"] }
 async-trait = "0.1"
 anyhow = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+encoding_rs = "0.8"
 
 [features]
 # Default off; enable to keep the console window on Windows release builds.

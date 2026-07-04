@@ -18,8 +18,9 @@
 //!
 //! `[iscript]…[endscript]` / `[html]…[endhtml]` blocks are raw JS/HTML and are
 //! skipped so their code strings are not mistaken for dialogue. Scripts are read
-//! as UTF-8 (TyranoScript's default); the Shift-JIS/UTF-16 KiriKiri variant is a
-//! later addition.
+//! as UTF-8 (TyranoScript's default); the same KAG parser is reused by
+//! `engine::kirikiri` for the Shift-JIS/UTF-16 KiriKiri variant, which wraps it
+//! in an encoding layer.
 
 use super::codes::ExtractOpts;
 use super::{DetectResult, GameEngine};
@@ -329,7 +330,10 @@ fn scan_tag_attrs(
 // Line-based extraction
 // ---------------------------------------------------------------------------
 
-fn extract_ks(file: &str, content: &str, out: &mut Vec<TransUnit>) {
+/// Parse one KAG `.ks` script (already decoded to UTF-8) into translatable
+/// units. Shared with the KiriKiri engine, which speaks the same KAG tag syntax
+/// and only differs in file encoding (see `engine::kirikiri`).
+pub(super) fn extract_ks(file: &str, content: &str, out: &mut Vec<TransUnit>) {
     let mut speaker: Option<String> = None;
     let mut in_block = false; // inside [iscript]…[endscript] / [html]…[endhtml]
     let mut seen: HashSet<usize> = HashSet::new();

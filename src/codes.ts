@@ -7,12 +7,12 @@ const RPGMAKER_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]/g;
 // Ren'Py: [interpolation], {text tags}, and backslash escapes (\", \n). Escaped
 // [[ / {{ are literal text, so a bare doubled bracket contributes no code.
 const RENPY_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}/g;
-// TyranoScript/KAG: [tags] (inline and block) and backslash escapes.
+// TyranoScript / KiriKiri KAG: [tags] (inline and block) and backslash escapes.
 const TYRANO_RE = /\\.|\[[^\]]*\]/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_RE;
-  if (engineId === "tyrano") return TYRANO_RE;
+  if (engineId === "tyrano" || engineId === "kirikiri") return TYRANO_RE;
   return RPGMAKER_RE;
 }
 
