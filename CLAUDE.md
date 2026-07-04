@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Desktop app to translate RPG / visual-novel games by hand or via AI. Four engines
+Desktop app to translate RPG / visual-novel games by hand or via AI. Five engines
 ship: **RPGMaker MV/MZ** (JSON), **Ren'Py** (`.rpy`), **TyranoScript** (`.ks`,
-UTF-8), and **KiriKiri** (`.ks`, Shift-JIS/UTF-16). Tauri v2 (Rust core) +
-React/Vite/TypeScript. The Rust side owns all heavy logic (parse, extract, inject,
+UTF-8), **KiriKiri** (`.ks`, Shift-JIS/UTF-16), and **Godot** (gettext `.po` /
+translation `.csv`). Tauri v2 (Rust core) + React/Vite/TypeScript. The Rust side owns all heavy logic (parse, extract, inject,
 DB, AI orchestration, keychain); the frontend is a thin view over Tauri `invoke`
 commands + events.
 
@@ -37,11 +37,13 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
 
 - **`engine/`** — the plugin seam. `GameEngine` trait (`detect`/`describe`/
   `extract`/`inject`), one impl per format: `mvmz.rs`, `renpy.rs`, `tyrano.rs`,
-  `kirikiri.rs` (registered in `engines()`, tried in order). `codes.rs` maps
-  RPGMaker event command codes (401 text, 102 choices, 320 name-change, …) to
+  `kirikiri.rs`, `godot.rs` (registered in `engines()`, tried in order). `codes.rs`
+  maps RPGMaker event command codes (401 text, 102 choices, 320 name-change, …) to
   translatable parameter slots. `protect.rs` masks control/markup codes per
   engine (`mask_for(engine_id, …)`). `encoding.rs` is KiriKiri's Shift-JIS/UTF-16
-  ↔ UTF-8 layer; KiriKiri reuses the TyranoScript KAG parser behind it.
+  ↔ UTF-8 layer; KiriKiri reuses the TyranoScript KAG parser behind it. `godot.rs`
+  handles gettext `.po` (`msgstr` in place, `msgid` as context) and Godot
+  translation `.csv` (first locale column in place), both via the byte-span pointer.
 - **`project/`** — SQLite persistence (`db.rs`) and project lifecycle (`mod.rs`):
   open/create the sidecar store, backup, and export.
 - **`ai/`** — one `TranslationProvider` trait, providers behind it, plus prompt

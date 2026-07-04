@@ -9,10 +9,14 @@ const RPGMAKER_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]/g;
 const RENPY_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}/g;
 // TyranoScript / KiriKiri KAG: [tags] (inline and block) and backslash escapes.
 const TYRANO_RE = /\\.|\[[^\]]*\]/g;
+// Godot: BBCode [tag], String.format braces {0}/{name}, printf %s/%d/%.2f/%1$s,
+// and backslash escapes.
+const GODOT_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+ 0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_RE;
   if (engineId === "tyrano" || engineId === "kirikiri") return TYRANO_RE;
+  if (engineId === "godot") return GODOT_RE;
   return RPGMAKER_RE;
 }
 

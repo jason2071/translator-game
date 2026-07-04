@@ -1,12 +1,12 @@
 # Roadmap — next engines + backlog
 
-The app translates games by hand or AI. It ships **four engines** — RPGMaker
-MV/MZ (JSON), Ren'Py (`.rpy`), TyranoScript (`.ks`, UTF-8), and **KiriKiri**
-(`.ks`, Shift-JIS/UTF-16, `engine/kirikiri.rs` + `engine/encoding.rs`, on the
-`engine-kirikiri` branch) — building on **v0.4.0** (in-app auto-update live).
-This document captures the proven engine-adding pattern, the recommended next
-engine, ranked alternatives, and independent backlog items, so work can resume
-in one step.
+The app translates games by hand or AI. It ships **five engines** — RPGMaker
+MV/MZ (JSON), Ren'Py (`.rpy`), TyranoScript (`.ks`, UTF-8), **KiriKiri**
+(`.ks`, Shift-JIS/UTF-16, `engine/kirikiri.rs` + `engine/encoding.rs`), and
+**Godot** (gettext `.po` / translation `.csv`, `engine/godot.rs`) — building on
+**v0.6.0** (in-app auto-update live). This document captures the proven
+engine-adding pattern, the recommended next engine, ranked alternatives, and
+independent backlog items, so work can resume in one step.
 
 The engine-adding pattern below is the same regardless of which target is chosen
 next.
@@ -75,22 +75,38 @@ loose/extracted `.ks`); a translation unrepresentable in the source encoding
 untranslated lines transcode too — intentional). ISO-2022-JP (stateful) is
 unsupported.
 
-## Recommended next engine: Godot (`.po`/`.csv`) or HTML (Twine/SugarCube)
-With the KAG lineage covered, the cheapest remaining text wins are gettext-style
-catalogs. **Godot** games that ship `.po`/`.csv` are near-trivial (line-based
-`msgid`/`msgstr`); the byte-span locator applies directly and there is no
-encoding twist (UTF-8). Skip the compiled `.translation`. **HTML** (Twine's
-`:: PassageName` structure) is the alternative if VN/text-adventure titles
-dominate. After that, weigh whether the **VX Ace** audience justifies a Ruby
-Marshal codec (largest effort — see below).
+## Done: Godot (`.po` / `.csv`) — `engine/godot.rs`
+Gettext-style catalogs, the cheapest text win after the KAG lineage. Detection
+requires a `project.godot` fingerprint alongside a `.po`/`.csv` (so a plain
+gettext project isn't mistaken for a game); the `.godot/` import cache and
+compiled `.translation` are skipped. Both formats reuse the byte-span locator and
+translate values **in place** (UTF-8, a leading BOM preserved): a `.po` entry's
+`msgstr` is translated with its `msgid` carried as context (the header and empty
+templates are skipped, single-line `msgstr` only); a `.csv` translates the first
+locale column (index 1) with `key · locale` as context. `mask_godot` protects
+BBCode `[tag]`, `String.format` braces `{0}`/`{name}`, printf `%s`/`%d`, and
+backslash escapes. Fixtures + round-trip tests in `tests/godot_roundtrip.rs`.
+
+Known gaps (follow-up): only the **first** CSV locale column is translated (a
+byte-span rewrite can't add a new target column; duplicate the source column
+first to keep the original); an **empty-`msgstr` template** and **multi-line
+`msgstr`** are skipped (targets a populated single-locale catalog, mirroring how
+every text engine translates existing text in place); `msgstr[n]` plurals and
+non-comma CSV delimiters aren't handled; packed `.pck` archives aren't unpacked.
+
+## Recommended next engine: HTML (Twine/SugarCube) or VX Ace
+With the gettext catalogs covered, the next text win is **HTML** (Twine's
+`:: PassageName` structure) if VN/text-adventure titles dominate. Otherwise weigh
+whether the **VX Ace** audience justifies a Ruby Marshal codec (largest effort —
+see below).
 
 ## Alternatives
 - **RPGMaker VX Ace / VX / XP** — same audience as the flagship MV/MZ (largest JP
   RPG catalog). Blocker: `Data/*.rvdata2` is a **Ruby Marshal** binary dump; no
   mature Rust crate, so it needs a hand-rolled Marshal reader + writer with
   byte-exact round-trip. Highest audience value, **largest effort/risk** (multi-week).
-- **Godot** — `.po` / `.csv` are trivial (gettext); `.translation` is binary. Low
-  effort but niche unless the game ships `.po`.
+- **HTML** (Twine/SugarCube) — `:: PassageName` passages are line-based text; the
+  byte-span locator applies directly. Low effort, niche audience.
 - **Others** (later): RPGMaker 2000/2003 (liblcf, C++), Wolf RPG (`.mps`, often
   encrypted), Unity (IL2CPP/Mono/TextMeshPro — XUnity's domain), Unreal (`.locres`).
 

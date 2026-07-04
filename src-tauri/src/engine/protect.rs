@@ -57,7 +57,97 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         "renpy" => mask_renpy(input),
         // KiriKiri shares TyranoScript's KAG tag syntax, so it masks the same way.
         "tyrano" | "kirikiri" => mask_tyrano(input),
+        "godot" => mask_godot(input),
         _ => mask(input),
+    }
+}
+
+/// Replace Godot placeholders with `⟦k⟧` sentinels: BBCode `[tag]`, `String`
+/// format braces `{0}`/`{name}`, printf `%s`/`%d`/`%.2f`/`%1$s`, and backslash
+/// escapes (`\n`, `\t`, `\"`). Restores via the shared [`restore`].
+pub fn mask_godot(input: &str) -> Masked {
+    let mut text = String::with_capacity(input.len());
+    let mut tokens: Vec<String> = Vec::new();
+    let b = input.as_bytes();
+    let mut i = 0;
+    while i < input.len() {
+        let len = match b[i] {
+            b'[' => bracket_len(&input[i..], b'[', b']'),
+            b'{' => bracket_len(&input[i..], b'{', b'}'),
+            b'%' => printf_len(&input[i..]),
+            b'\\' if i + 1 < input.len() => {
+                Some(1 + input[i + 1..].chars().next().unwrap().len_utf8())
+            }
+            _ => None,
+        };
+        if let Some(len) = len {
+            let idx = tokens.len();
+            tokens.push(input[i..i + len].to_string());
+            text.push(OPEN);
+            text.push_str(&idx.to_string());
+            text.push(CLOSE);
+            i += len;
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap();
+        text.push(ch);
+        i += ch.len_utf8();
+    }
+    Masked { text, tokens }
+}
+
+/// Byte length of a `[...]`/`{...}` code at the start of `s`, or None if it is
+/// empty (`[]`), nests another opener, or is unterminated.
+fn bracket_len(s: &str, open: u8, close: u8) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 1;
+    while i < b.len() {
+        match b[i] {
+            c if c == open => return None, // nested opener — leave as text
+            c if c == close => return if i > 1 { Some(i + 1) } else { None },
+            _ => i += 1,
+        }
+    }
+    None // unterminated
+}
+
+/// Byte length of a printf-style conversion at the start of `s` (`s[0] == '%'`),
+/// e.g. `%s`, `%d`, `%03d`, `%.2f`, `%1$s`, `%%`. None if `%` isn't followed by a
+/// valid conversion (so a bare `50%` is left as text).
+fn printf_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    debug_assert_eq!(b[0], b'%');
+    let mut i = 1;
+    // Literal `%%`.
+    if i < b.len() && b[i] == b'%' {
+        return Some(2);
+    }
+    // Optional argument index `n$`.
+    let mut j = i;
+    while j < b.len() && b[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j < b.len() && b[j] == b'$' && j > i {
+        i = j + 1;
+    }
+    // Flags, width, precision.
+    while i < b.len() && matches!(b[i], b'-' | b'+' | b' ' | b'0' | b'#') {
+        i += 1;
+    }
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i < b.len() && b[i] == b'.' {
+        i += 1;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    // Conversion letter.
+    if i < b.len() && matches!(b[i], b's' | b'd' | b'i' | b'f' | b'g' | b'e' | b'E' | b'x' | b'X' | b'o' | b'c') {
+        Some(i + 1)
+    } else {
+        None
     }
 }
 
@@ -333,6 +423,35 @@ mod tests {
         // TyranoScript and KiriKiri mask `[l]`/`[r]` KAG tags.
         assert!(!mask_for("tyrano", "hi[l][r]").is_plain());
         assert!(!mask_for("kirikiri", "hi[l][r]").is_plain());
+        // Godot masks format braces and printf conversions.
+        assert!(!mask_for("godot", "Level {0}").is_plain());
+        assert!(!mask_for("godot", "You have %d gold").is_plain());
+    }
+
+    #[test]
+    fn godot_mask_unmask_is_identity() {
+        let samples = [
+            "Level {0} reached!",
+            "Hello {name}, you have %d gold.",
+            "Damage: %.2f (%1$s)",
+            "[b]Bold[/b] and [color=red]red[/color] text.",
+            "Newline\\n and a quote \\\" here.",
+            "50% off, no real codes here.",
+            "",
+        ];
+        for s in samples {
+            let m = mask_godot(s);
+            let back = restore(&m.text, &m.tokens).expect("restore ok");
+            assert_eq!(back, s, "round-trip failed for {s:?}");
+        }
+    }
+
+    #[test]
+    fn godot_masks_placeholders_but_not_bare_percent() {
+        let m = mask_godot("Got %d gold ([b]nice[/b]), 50% bonus, {name}!");
+        assert_eq!(m.tokens, vec!["%d", "[b]", "[/b]", "{name}"]);
+        // The bare `50%` (percent then space) is not a conversion, so it stays.
+        assert!(m.text.contains("50% bonus"));
     }
 
     #[test]

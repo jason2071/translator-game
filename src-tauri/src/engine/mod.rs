@@ -2,9 +2,10 @@
 //! [`detect`] fingerprints a folder and returns the matching engine.
 //!
 //! Ships [`mvmz::MvMzEngine`] (RPGMaker MV/MZ, JSON), [`renpy::RenpyEngine`]
-//! (Ren'Py `.rpy`), [`tyrano::TyranoEngine`] (TyranoScript `.ks`, UTF-8), and
+//! (Ren'Py `.rpy`), [`tyrano::TyranoEngine`] (TyranoScript `.ks`, UTF-8),
 //! [`kirikiri::KiriKiriEngine`] (KiriKiri `.ks`, Shift-JIS/UTF-16 — same KAG
-//! parser as Tyrano behind an encoding layer). Adding VX Ace, RPGMaker
+//! parser as Tyrano behind an encoding layer), and [`godot::GodotEngine`] (Godot
+//! gettext `.po` / translation `.csv` catalogs). Adding VX Ace, RPGMaker
 //! 2000/2003, etc. later means dropping in a new impl and listing it in
 //! [`engines`] — nothing else in the app changes. The `pointer` on a
 //! `TransUnit` is engine-defined (a JSON Pointer for MV/MZ, a byte span for the
@@ -12,6 +13,7 @@
 
 pub mod codes;
 pub mod encoding;
+pub mod godot;
 pub mod kirikiri;
 pub mod mvmz;
 pub mod protect;
@@ -68,6 +70,9 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // must be tried first (Tyrano would otherwise claim loose root `.ks`).
         Box::new(kirikiri::KiriKiriEngine),
         Box::new(tyrano::TyranoEngine),
+        // Godot needs its own `project.godot` fingerprint, so it never overlaps
+        // the others; order is immaterial.
+        Box::new(godot::GodotEngine),
     ]
 }
 

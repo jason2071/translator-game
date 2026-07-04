@@ -16,10 +16,13 @@ const CODE_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|⟦\d+⟧/g;
 const RENPY_CODE_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}|⟦\d+⟧/g;
 // TyranoScript / KiriKiri KAG: [tags], backslash escapes.
 const TYRANO_CODE_RE = /\\.|\[[^\]]*\]|⟦\d+⟧/g;
+// Godot: BBCode [tag], format braces, printf conversions, backslash escapes.
+const GODOT_CODE_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+ 0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_CODE_RE;
   if (engineId === "tyrano" || engineId === "kirikiri") return TYRANO_CODE_RE;
+  if (engineId === "godot") return GODOT_CODE_RE;
   return CODE_RE;
 }
 

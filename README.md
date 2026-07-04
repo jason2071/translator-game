@@ -1,10 +1,10 @@
 # RPGMaker Translator
 
 Desktop app to translate RPG / visual-novel games — **RPGMaker MV/MZ**,
-**Ren'Py**, **TyranoScript**, and **KiriKiri** — with an engine-plugin
-architecture ready for more (VX Ace, 2000/2003, Godot, …). Translate by hand or
-with AI (Local / Claude / OpenAI / Gemini / OpenRouter / any OpenAI-compatible
-endpoint).
+**Ren'Py**, **TyranoScript**, **KiriKiri**, and **Godot** (`.po`/`.csv`) — with an
+engine-plugin architecture ready for more (VX Ace, 2000/2003, HTML/Twine, …).
+Translate by hand or with AI (Local / Claude / OpenAI / Gemini / OpenRouter / any
+OpenAI-compatible endpoint).
 
 Built with **Tauri v2** (Rust core) + **React + Vite + TypeScript**.
 
@@ -30,8 +30,8 @@ disk).
 
 ```
 src-tauri/src/
-  engine/        GameEngine trait + registry; mvmz / renpy / tyrano / kirikiri,
-                 codes.rs, protect.rs, encoding.rs (KiriKiri Shift-JIS/UTF-16)
+  engine/        GameEngine trait + registry; mvmz / renpy / tyrano / kirikiri /
+                 godot, codes.rs, protect.rs, encoding.rs (KiriKiri Shift-JIS/UTF-16)
   project/       SQLite store (db.rs), open/create + backup/export (mod.rs)
   ai/            TranslationProvider trait; openai/anthropic/gemini; prompt + retry
   keys.rs        OS keychain (keyring)
@@ -115,6 +115,6 @@ on **Export**.
 
 ## Roadmap
 
-- More engines: Godot (`.po`/`.csv`), HTML (Twine/SugarCube), VX Ace/VX/XP
-  (`.rvdata2`), RPGMaker 2000/2003 (LCF binary), Wolf RPG. See `docs/ROADMAP.md`.
+- More engines: HTML (Twine/SugarCube), VX Ace/VX/XP (`.rvdata2`), RPGMaker
+  2000/2003 (LCF binary), Wolf RPG. See `docs/ROADMAP.md`.
 - Fuzzy translation memory, per-run token/cost estimate, multi-select in the grid.
