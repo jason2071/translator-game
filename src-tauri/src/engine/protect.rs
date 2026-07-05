@@ -325,6 +325,23 @@ fn code_len(s: &str) -> Option<usize> {
     }
 }
 
+/// Do the control codes in `translated` match those in `source` exactly (same
+/// multiset), under the given engine's code grammar?
+///
+/// [`restore`] only catches a *dropped* sentinel. It cannot catch codes the model
+/// *added* — e.g. a weak local model that bleeds a neighbor line's `\c[…]` (shown
+/// to it as unmasked context) into this unit's output. Such a translation restores
+/// cleanly yet carries foreign codes that would corrupt the game text. Re-masking
+/// the translation and comparing its token multiset to the source's rejects that:
+/// a legitimate translation may reorder codes but never gains or loses one.
+pub fn codes_match(engine_id: &str, source: &str, translated: &str) -> bool {
+    let mut a = mask_for(engine_id, source).tokens;
+    let mut b = mask_for(engine_id, translated).tokens;
+    a.sort();
+    b.sort();
+    a == b
+}
+
 /// Error from [`restore`]: which sentinel indices went missing, plus the
 /// best-effort text with whatever sentinels *were* found already substituted.
 #[derive(Debug, Clone)]
@@ -415,6 +432,25 @@ mod tests {
         let bad = format!("{}Hi", "\u{27E6}0\u{27E7}");
         let err = restore(&bad, &m.tokens).unwrap_err();
         assert_eq!(err.missing, vec![1]);
+    }
+
+    #[test]
+    fn codes_match_rejects_bled_neighbor_codes() {
+        let eng = "rpgmaker-mvmz";
+        // The reported failure: a source with no RPGMaker codes whose translation
+        // picked up `\c[…]`/`\v[…]` bled from adjacent "Water Left"/"Stamina" lines.
+        let src = "Used for watering crops. <br>";
+        let bad = "ใช้สำหรับรดน้ำพืชผล <br>น้ำที่เหลือ: \\c[1]\\v[205]/16\\c[0] <br>\\c[10]-3\\c[0] \\c[1]Stamina\\c[0]";
+        assert!(!codes_match(eng, src, bad), "foreign codes must be rejected");
+
+        // A clean translation of the same line keeps exactly its (zero) codes.
+        assert!(codes_match(eng, src, "ใช้สำหรับรดน้ำพืชผล <br>"));
+
+        // Reordering the real codes is fine; dropping or adding one is not.
+        let coded = "\\C[2]Fire\\C[0] burns";
+        assert!(codes_match(eng, coded, "เผา \\C[2]ไฟ\\C[0] ไหม้"));
+        assert!(!codes_match(eng, coded, "เผา \\C[2]ไฟ ไหม้"), "dropped \\C[0]");
+        assert!(!codes_match(eng, coded, "เผา \\C[2]ไฟ\\C[0]\\C[0] ไหม้"), "extra \\C[0]");
     }
 
     #[test]

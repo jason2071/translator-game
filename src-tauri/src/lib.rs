@@ -637,9 +637,18 @@ async fn translate_units(
         for (j, (g, res)) in chunk.iter().zip(results.into_iter()).enumerate() {
             let reason = match res {
                 Some(m) => match protect::restore(&m, &masks[base + j].tokens) {
-                    Ok(t) => {
+                    // Restore succeeded, but a weak model can still *add* codes it
+                    // doesn't own — bleeding a neighbor line's `\c[…]` (shown as
+                    // context) into this output. Reject when the translation's code
+                    // set no longer matches the source's, so we never store text
+                    // carrying another unit's markup.
+                    Ok(t) if protect::codes_match(&engine_id, &g.source, &t) => {
                         writes.push((g.ids.clone(), g.source.clone(), t));
                         continue;
+                    }
+                    Ok(_) => {
+                        "Inline codes changed — the translation's codes don't match the source"
+                            .to_string()
                     }
                     // The model returned text but a masked ⟦…⟧ placeholder came back
                     // altered, so we can't safely reinsert the game's codes.
