@@ -726,6 +726,17 @@ code {
   align-items: center;
   gap: var(--sp-2);
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+/* Thin vertical divider separating the Run options (scope/overwrite) from the
+   action buttons. */
+.tb-sep {
+  width: 1px;
+  align-self: stretch;
+  min-height: 1.4rem;
+  background: var(--border);
+  margin: 0 0.15rem;
 }
 .tb-icon-btn {
   display: inline-flex;
@@ -749,11 +760,6 @@ code {
 }
 .tb-status .tb-progress .bar {
   height: 8px;
-}
-.tb-label {
-  font-weight: 700;
-  color: var(--accent);
-  font-size: var(--fs-sm);
 }
 .chip-btn {
   background: var(--panel);

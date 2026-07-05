@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { api, type TranslateScope, type TranslateSummary } from "../ipc";
 import { useStore } from "../store";
 import { useSettings, PROVIDER_LABELS, PROVIDER_KINDS } from "../settings";
@@ -11,6 +12,8 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
   const filter = useStore((s) => s.filter);
   const setFilter = useStore((s) => s.setFilter);
   const stats = useStore((s) => s.stats);
+  // Count of units matching the current filter (== the "N shown" search matches).
+  const total = useStore((s) => s.total);
   const refreshTotal = useStore((s) => s.refreshTotal);
   const refreshMeta = useStore((s) => s.refreshMeta);
   const project = useStore((s) => s.project);
@@ -59,14 +62,29 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
     translate({ filter: { status: "Failed" } });
   }
 
+  // Re-translate every unit matching the current search (overwrites them). Unlike
+  // Run (which scopes to the selected file), this sends the whole active filter —
+  // search, status, untranslatedOnly — so it covers exactly the "N shown" matches.
+  async function retranslateMatches() {
+    const ok = await ask(
+      `Re-translate all ${total} unit(s) matching this search? ` +
+        `This overwrites their current translations.`,
+      { title: "Re-translate search matches?", kind: "warning" }
+    );
+    if (!ok) return;
+    // The store's filter holds only search/file/status/untranslatedOnly (never
+    // limit/offset — the grid sets those per fetch), so it's the scope as-is; the
+    // backend pages it and overrides limit/offset itself.
+    translate({ filter, overwrite: true });
+  }
+
   const failed = stats?.failed ?? 0;
 
   return (
     <>
       <div className="toolbar">
+        {/* Left: static per-project config — language pair + AI provider. */}
         <div className="tb-config">
-          <span className="tb-label">AI translate</span>
-
           <div className="lang-switch">
             <select
               value={project?.sourceLang ?? "Auto"}
@@ -95,6 +113,24 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
             </select>
           </div>
 
+          <select
+            className="tb-provider"
+            value={active}
+            onChange={(e) => setActive(e.target.value as typeof active)}
+            disabled={running}
+            title="AI provider used for Run (configure providers in Settings)"
+          >
+            {PROVIDER_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {PROVIDER_LABELS[k]}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Right: the Run and its options (scope + overwrite), then secondary
+            actions that only appear when relevant. */}
+        <div className="tb-actions">
           <span
             className="tb-scope"
             title="Run translates this — click a file (or 'All files') in the sidebar to change it"
@@ -112,21 +148,8 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
             Overwrite existing
           </label>
 
-          <select
-            value={active}
-            onChange={(e) => setActive(e.target.value as typeof active)}
-            disabled={running}
-            title="AI provider used for Run (configure providers in Settings)"
-          >
-            {PROVIDER_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {PROVIDER_LABELS[k]}
-              </option>
-            ))}
-          </select>
-        </div>
+          <span className="tb-sep" />
 
-        <div className="tb-actions">
           {!running ? (
             <button className="primary" onClick={run}>
               Run
@@ -137,20 +160,31 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
             </button>
           )}
 
+          {filter.search && total > 0 && !running && (
+            <button
+              className="ghost tb-icon-btn"
+              onClick={retranslateMatches}
+              title="Re-translate every unit matching the current search (overwrites their translations)"
+            >
+              <Icon name="retry" size={14} /> Re-translate matches ({total})
+            </button>
+          )}
+
           {failed > 0 && !running && (
             <button className="ghost tb-icon-btn" onClick={retryFailed} title="Re-translate every unit that failed a previous run">
               <Icon name="retry" size={14} /> Retry failed ({failed})
             </button>
           )}
 
-          <button
-            className="ghost tb-icon-btn"
-            onClick={onOpenErrors}
-            disabled={failed === 0}
-            title="See which units failed and why"
-          >
-            <Icon name="warn" size={14} /> Errors ({failed})
-          </button>
+          {failed > 0 && (
+            <button
+              className="ghost tb-icon-btn"
+              onClick={onOpenErrors}
+              title="See which units failed and why"
+            >
+              <Icon name="warn" size={14} /> Errors ({failed})
+            </button>
+          )}
         </div>
       </div>
 
