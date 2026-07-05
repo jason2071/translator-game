@@ -24,6 +24,7 @@ interface SuggestState {
   cands: GlossCandidate[] | null;
   rows: Record<string, Row>;
   loading: boolean; // scanning for candidates
+  adding: boolean; // an "Add selected" write is in flight (guards double-click)
   msg: string | null;
 
   load: (root: string) => void; // restore this game's saved panel (on open)
@@ -61,6 +62,7 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
     cands: null,
     rows: {},
     loading: false,
+    adding: false,
     msg: null,
 
     load: (root) => {
@@ -219,15 +221,22 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
     },
 
     addSelected: async (onAdded) => {
-      const { cands, rows } = get();
-      if (!cands) return;
+      const { cands, rows, adding } = get();
+      if (!cands || adding) return; // guard a double-click while the write is in flight
       const items: [string, string][] = cands
         .filter((c) => rows[c.term]?.on && rows[c.term]?.tr.trim())
         .map((c) => [c.term, rows[c.term].tr.trim()]);
-      const n = await api.glossaryAddBulk(items);
-      set({ cands: null, rows: {}, msg: `Added ${n}` });
-      persist(); // cands null -> removes the saved working set
-      onAdded();
+      set({ adding: true });
+      try {
+        const n = await api.glossaryAddBulk(items);
+        set({ cands: null, rows: {}, msg: `Added ${n}` });
+        persist(); // cands null -> removes the saved working set
+        onAdded();
+      } catch (e) {
+        set({ msg: String(e) });
+      } finally {
+        set({ adding: false });
+      }
     },
 
     clear: () => {

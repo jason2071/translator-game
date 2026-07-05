@@ -424,8 +424,16 @@ pub fn glossary_delete(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Insert several glossary entries in one transaction (skips empties).
+/// Insert several glossary entries in one transaction. Skips empties and any
+/// term already in the glossary (case-insensitive), so a re-add — or an
+/// accidental double-click of "Add selected" — never creates duplicates. Also
+/// dedups within the batch itself.
 pub fn glossary_add_bulk(conn: &mut Connection, items: &[(String, String)]) -> Result<usize> {
+    let mut seen: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("SELECT term FROM glossary")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.filter_map(|r| r.ok()).map(|t| t.trim().to_lowercase()).collect()
+    };
     let tx = conn.transaction()?;
     let mut added = 0usize;
     {
@@ -433,7 +441,8 @@ pub fn glossary_add_bulk(conn: &mut Connection, items: &[(String, String)]) -> R
             "INSERT INTO glossary(term, translation, note, case_sensitive) VALUES(?1, ?2, NULL, 0)",
         )?;
         for (term, translation) in items {
-            if term.trim().is_empty() || translation.trim().is_empty() {
+            let key = term.trim().to_lowercase();
+            if key.is_empty() || translation.trim().is_empty() || !seen.insert(key) {
                 continue;
             }
             added += stmt.execute(params![term, translation])?;
@@ -639,6 +648,28 @@ mod tests {
         // Every row exactly once, strictly increasing (no overlap, no gap).
         assert_eq!(seen.len(), 500);
         assert!(seen.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn glossary_add_bulk_never_duplicates() {
+        let mut conn = mem_db(&[]);
+        let set = [
+            ("Stamina".to_string(), "พลังกาย".to_string()),
+            ("EXP".to_string(), "ค่าประสบการณ์".to_string()),
+        ];
+        // First add takes both.
+        assert_eq!(glossary_add_bulk(&mut conn, &set).unwrap(), 2);
+        // Re-adding the same set (e.g. a double-clicked "Add selected") adds none.
+        assert_eq!(glossary_add_bulk(&mut conn, &set).unwrap(), 0);
+        // Case-insensitive vs existing, and intra-batch: "stamina" is a dup of the
+        // stored "Stamina"; "HP" appears twice in one batch → inserted once.
+        let batch = [
+            ("stamina".to_string(), "x".to_string()),
+            ("HP".to_string(), "พลังชีวิต".to_string()),
+            ("HP".to_string(), "y".to_string()),
+        ];
+        assert_eq!(glossary_add_bulk(&mut conn, &batch).unwrap(), 1);
+        assert_eq!(glossary_list(&conn).unwrap().len(), 3);
     }
 }
 

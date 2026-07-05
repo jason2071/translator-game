@@ -95,6 +95,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
     cands,
     rows,
     loading,
+    adding,
     msg,
     suggest,
     suggestAi,
@@ -221,8 +222,12 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
           )}
 
           <span className="suggest-head-sep" />
-          <button className="primary" onClick={() => addSelected(onAdded)} disabled={glossBusy}>
-            Add selected
+          <button
+            className="primary"
+            onClick={() => addSelected(onAdded)}
+            disabled={glossBusy || adding}
+          >
+            {adding ? "Adding…" : "Add selected"}
           </button>
           <button className="ghost" onClick={clear} disabled={glossBusy}>
             Cancel
