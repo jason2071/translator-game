@@ -48,6 +48,42 @@ fn base_or(cfg: &ProviderConfig, default: &str) -> String {
         .to_string()
 }
 
+impl OpenAiCompat {
+    /// Try Ollama's native `/api/chat`. Unlike the OpenAI-compat `/v1` shim, it
+    /// honours `think` fully — with thinking off a reasoning model (qwen3, …)
+    /// emits no reasoning at all, so responses are fast and never truncated by a
+    /// reasoning blow-out. Returns `None` on any failure (e.g. the backend is LM
+    /// Studio, which has no `/api/chat`) so the caller falls back to `/v1`.
+    async fn ollama_chat(
+        &self,
+        client: &reqwest::Client,
+        sys: &str,
+        user: &str,
+        req: &BatchReq,
+    ) -> Option<String> {
+        let root = self.base.strip_suffix("/v1").unwrap_or(&self.base).trim_end_matches('/');
+        let url = format!("{root}/api/chat");
+        let mut body = json!({
+            "model": req.model,
+            "messages": [
+                { "role": "system", "content": sys },
+                { "role": "user", "content": user },
+            ],
+            "stream": false,
+            "options": { "temperature": req.temperature, "num_predict": req.max_tokens },
+        });
+        if let Some(think) = req.thinking {
+            body["think"] = json!(think);
+        }
+        let resp = client.post(&url).json(&body).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let v: serde_json::Value = resp.json().await.ok()?;
+        v["message"]["content"].as_str().map(str::to_string)
+    }
+}
+
 #[async_trait]
 impl TranslationProvider for OpenAiCompat {
     async fn translate_batch(
@@ -59,12 +95,22 @@ impl TranslationProvider for OpenAiCompat {
         let (sys, mut user) = build_messages(req);
         // Reasoning local models (e.g. Ollama qwen3) keep "thinking" even with
         // thinking off over the OpenAI-compat endpoint — the reasoning is counted
-        // against max_tokens and can consume the whole budget before the answer,
-        // giving an empty/truncated response. The `/no_think` soft switch curbs it
-        // and is harmless to non-reasoning models / LM Studio (just extra text).
+        // against max_tokens and can consume the whole budget before the answer.
+        // The `/no_think` soft switch curbs it on the /v1 fallback and is harmless
+        // to non-reasoning models / LM Studio (just extra text).
         if self.is_local && req.thinking == Some(false) {
             user.push_str(" /no_think");
         }
+
+        // Local: prefer Ollama's native /api/chat, where `think:false` truly
+        // disables reasoning (fast, no wasted tokens). Falls through to /v1 when
+        // it isn't Ollama (e.g. LM Studio) or the call fails.
+        if self.is_local {
+            if let Some(content) = self.ollama_chat(client, &sys, &user, req).await {
+                return parse_batch_response(&content, req.items.len());
+            }
+        }
+
         let url = format!("{}/chat/completions", self.base);
         let mut body = json!({
             "model": req.model,
