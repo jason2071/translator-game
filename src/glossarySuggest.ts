@@ -14,6 +14,9 @@ import { useTranslation } from "./translation";
 interface Row {
   on: boolean;
   tr: string;
+  /** The last AI attempt for this term failed (empty/mangled) — kept so the UI
+   *  can flag it even when an older translation is still in `tr`. */
+  failed?: boolean;
 }
 
 interface SuggestState {
@@ -99,7 +102,10 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
     translateEmpty: async (cfg, all = false) => {
       const { cands, rows } = get();
       if (!cands) return;
-      const todo = all ? cands : cands.filter((c) => !(rows[c.term]?.tr ?? "").trim());
+      // Empty OR previously-failed terms (re-translate-all takes everything).
+      const todo = all
+        ? cands
+        : cands.filter((c) => !(rows[c.term]?.tr ?? "").trim() || rows[c.term]?.failed);
       if (todo.length === 0) return;
       if (useTranslation.getState().glossary.phase !== "idle") {
         set({ msg: "Glossary translate already running" });
@@ -112,7 +118,7 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
       const unlisten = await api.onTextItem((it) => {
         const term = todo[it.index]?.term;
         if (term && it.text) {
-          set((s) => ({ rows: { ...s.rows, [term]: { ...s.rows[term], tr: it.text! } } }));
+          set((s) => ({ rows: { ...s.rows, [term]: { ...s.rows[term], tr: it.text!, failed: false } } }));
           persist();
         }
       });
@@ -120,24 +126,31 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
         const res = await useTranslation
           .getState()
           .enqueue("glossary", () => api.translateTexts(todo.map((c) => c.term), cfg));
-        // Rows already filled live; here just tally and remember. A null result
+        // Rows already filled live; here tally, remember, and flag the failures so
+        // the UI can surface exactly which terms didn't translate. A null result
         // = that term failed (or the run was cancelled).
         let filled = 0;
         let failed = 0;
         const pairs: [string, string][] = [];
-        todo.forEach((c, i) => {
-          const t = res[i];
-          if (t) {
-            filled++;
-            pairs.push([c.term, t]);
-          } else {
-            failed++;
-          }
+        set((s) => {
+          const next = { ...s.rows };
+          todo.forEach((c, i) => {
+            const t = res[i];
+            if (t) {
+              filled++;
+              pairs.push([c.term, t]);
+              next[c.term] = { ...next[c.term], failed: false };
+            } else {
+              failed++;
+              next[c.term] = { ...next[c.term], failed: true };
+            }
+          });
+          return { rows: next };
         });
         // Persist to TM (dedup vs unit translation) and to disk (panel survives).
         if (pairs.length) await api.rememberTexts(pairs);
         persist();
-        set({ msg: failed > 0 ? `Filled ${filled} · ${failed} failed` : `Filled ${filled}` });
+        set({ msg: failed > 0 ? `${failed} term(s) failed — see the failed filter` : null });
       } catch (e) {
         set({ msg: String(e) });
       } finally {
@@ -157,11 +170,12 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
           .enqueue("glossary", () => api.translateTexts([term], cfg));
         const t = res[0];
         if (t) {
-          set((s) => ({ rows: { ...s.rows, [term]: { ...s.rows[term], tr: t } } }));
+          set((s) => ({ rows: { ...s.rows, [term]: { ...s.rows[term], tr: t, failed: false } } }));
           await api.rememberTexts([[term, t]]);
           persist();
-          set({ msg: `Filled ${term}` });
+          set({ msg: null });
         } else {
+          set((s) => ({ rows: { ...s.rows, [term]: { ...s.rows[term], failed: true } } }));
           set({ msg: `${term} failed` });
         }
       } catch (e) {

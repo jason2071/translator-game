@@ -1134,11 +1134,33 @@ code {
 .suggest-row.filled {
   background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
+.suggest-row.failed {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
 .cand-mark {
   color: var(--ok);
   font-weight: 700;
   width: 1ch;
   text-align: center;
+}
+.cand-fail {
+  color: var(--warn);
+  font-weight: 700;
+  width: 1ch;
+  text-align: center;
+}
+/* Clickable "N failed" count in the glossary header — toggles a failures-only view. */
+.gloss-failed-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--warn);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.gloss-failed-toggle.active {
+  font-weight: 700;
 }
 .cand-actions {
   display: inline-flex;

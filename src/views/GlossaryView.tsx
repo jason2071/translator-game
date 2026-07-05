@@ -110,11 +110,19 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
   const translating = phase === "running";
   const glossBusy = phase !== "idle"; // running or queued — can't queue twice
 
+  const failedCount = cands ? cands.filter((c) => rows[c.term]?.failed).length : 0;
+  // Filled = has a translation and the last attempt didn't fail.
   const filled = cands
-    ? cands.filter((c) => (rows[c.term]?.tr ?? "").trim()).length
+    ? cands.filter((c) => (rows[c.term]?.tr ?? "").trim() && !rows[c.term]?.failed).length
     : 0;
-  // Remaining = failed + never-translated + skipped; the AI button retries these.
+  // Remaining = empty + failed; the AI button retries these.
   const remaining = cands ? cands.length - filled : 0;
+
+  // Filter the candidate list down to just the failures, so they're easy to find.
+  const [failedOnly, setFailedOnly] = useState(false);
+  useEffect(() => {
+    if (failedCount === 0) setFailedOnly(false);
+  }, [failedCount]);
 
   if (!cands) {
     return (
@@ -134,6 +142,16 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
         <div className="suggest-head-info">
           <strong>{cands.length} candidates</strong>
           <span className="hint">· {filled} filled</span>
+          {failedCount > 0 && (
+            <button
+              type="button"
+              className={`gloss-failed-toggle${failedOnly ? " active" : ""}`}
+              onClick={() => setFailedOnly((v) => !v)}
+              title={failedOnly ? "Show all terms" : "Show only the terms that failed"}
+            >
+              · {failedCount} failed
+            </button>
+          )}
           {msg && (
             <span className={/fail|error|running|no api/i.test(msg) ? "error" : "ok-msg"}>
               {msg}
@@ -206,9 +224,14 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
       )}
       <div className="suggest-list">
         {cands.map((c) => {
-          const done = !!(rows[c.term]?.tr ?? "").trim();
+          const failed = !!rows[c.term]?.failed;
+          const done = !!(rows[c.term]?.tr ?? "").trim() && !failed;
+          if (failedOnly && !failed) return null;
           return (
-            <div key={c.term} className={`suggest-row${done ? " filled" : ""}`}>
+            <div
+              key={c.term}
+              className={`suggest-row${failed ? " failed" : done ? " filled" : ""}`}
+            >
               <input
                 type="checkbox"
                 checked={rows[c.term]?.on ?? true}
@@ -224,7 +247,13 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
                 onChange={(e) => setRow(c.term, { tr: e.target.value })}
               />
               <span className="cand-actions">
-                {done && <span className="cand-mark">✓</span>}
+                {failed ? (
+                  <span className="cand-fail" title="AI failed for this term — retry it">
+                    ⚠
+                  </span>
+                ) : (
+                  done && <span className="cand-mark">✓</span>
+                )}
                 <button
                   className="cand-retry iconbtn"
                   onClick={() => translateOne(c.term, glossaryConfig())}
