@@ -179,10 +179,13 @@ code {
   text-align: center;
   position: relative;
 }
-.theme-fab {
+.import-topbar {
   position: fixed;
   top: 1rem;
   right: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 .import-view h1 {
   font-size: var(--fs-xl);
@@ -351,13 +354,14 @@ code {
   font-size: var(--fs-xs);
 }
 .app-version {
-  margin-top: 2rem;
+  margin: 0;
   color: var(--subtle);
   font-size: var(--fs-xs);
 }
 .sidebar-version {
-  margin: 0.5rem 0 0;
-  text-align: center;
+  grid-column: 1 / -1;
+  margin: 0.25rem 0 0;
+  text-align: left;
   color: var(--subtle);
   font-size: var(--fs-xs);
 }

@@ -66,14 +66,17 @@ export default function ImportView() {
 
   return (
     <div className="import-view">
-      <button
-        className="theme-fab iconbtn"
-        onClick={toggleTheme}
-        title="Toggle theme"
-        aria-label="Toggle light/dark theme"
-      >
-        <Icon name={theme === "dark" ? "sun" : "moon"} />
-      </button>
+      <div className="import-topbar">
+        {version && <span className="app-version">v{version}</span>}
+        <button
+          className="theme-fab iconbtn"
+          onClick={toggleTheme}
+          title="Toggle theme"
+          aria-label="Toggle light/dark theme"
+        >
+          <Icon name={theme === "dark" ? "sun" : "moon"} />
+        </button>
+      </div>
       <h1>RPGMaker Translator</h1>
       <p className="subtitle">Import a game folder to begin</p>
 
@@ -203,8 +206,6 @@ export default function ImportView() {
           </ul>
         </section>
       )}
-
-      {version && <p className="app-version">v{version}</p>}
     </div>
   );
 }
