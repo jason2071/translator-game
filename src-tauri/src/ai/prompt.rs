@@ -26,11 +26,19 @@ pub fn build_messages(req: &BatchReq) -> (String, String) {
         tgt = req.target_lang,
         tone = req.tone,
     ));
+    sys.push_str("Rules:\n");
+    // Only mention the ⟦…⟧ placeholders when the batch actually contains some —
+    // otherwise a model (especially a fast, non-reasoning one) tends to invent a
+    // literal ⟦n⟧ in the output just because the prompt named it.
+    if req.items.iter().any(|it| it.text.contains('⟦')) {
+        sys.push_str(
+            " - Some items contain placeholders like ⟦0⟧, ⟦1⟧ (game control codes). \
+             Copy each one EXACTLY as written; never translate, renumber, add, or \
+             remove them, and keep them in natural positions.\n",
+        );
+    }
     sys.push_str(
-        "Rules:\n\
-         - Preserve every ⟦n⟧ placeholder EXACTLY as written; do not translate, \
-         renumber, add, or remove them. Keep them in natural positions.\n\
-         - Preserve line breaks. Do not add commentary or quotes around text.\n\
+        " - Preserve line breaks. Do not add commentary or quotes around text.\n\
          - Translate only the `t` field; echo back each item's original `i`.\n\
          - `ctx` (speaker/where it appears) and `box` (the full message this line \
          is part of) are context ONLY — read them for accuracy, never translate \
@@ -269,7 +277,7 @@ mod tests {
     #[test]
     fn messages_include_rules_and_glossary() {
         let (sys, user) = build_messages(&req(vec!["Hello ⟦0⟧"]));
-        assert!(sys.contains("⟦n⟧"));
+        assert!(sys.contains("⟦0⟧")); // placeholder rule, shown because the item has a code
         assert!(sys.contains("HP => พลังชีวิต"));
         assert!(user.contains("Hello ⟦0⟧"));
     }
@@ -324,6 +332,17 @@ mod tests {
         let text = "[{\"i\":0,\"t\":\"A\"}] trailing <think> partial reasoning...";
         let r = parse_batch_response(text, 1).unwrap();
         assert_eq!(r, vec!["A"]);
+    }
+
+    #[test]
+    fn placeholder_rule_only_when_codes_present() {
+        // No control codes → the prompt must not name any ⟦…⟧ placeholder, or the
+        // model tends to invent a literal one in the output.
+        let (sys, _) = build_messages(&req(vec!["Hello, world!"]));
+        assert!(!sys.contains('\u{27E6}'), "unexpected ⟦ in prompt: {sys}");
+        // With a masked code, the placeholder rule appears.
+        let (sys2, _) = build_messages(&req(vec!["Hi \u{27E6}0\u{27E7} there"]));
+        assert!(sys2.contains("\u{27E6}0\u{27E7}"), "placeholder rule missing");
     }
 
     #[test]
