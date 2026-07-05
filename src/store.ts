@@ -10,6 +10,7 @@ import {
   type UnitUpdate,
 } from "./ipc";
 import { useGlossarySuggest } from "./glossarySuggest";
+import { useRecents } from "./recents";
 
 interface AppStore {
   project: ProjectInfo | null;
@@ -49,6 +50,7 @@ export const useStore = create<AppStore>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const project = await api.openProject(path, sourceLang, targetLang);
+      useRecents.getState().add(project); // remember it for the import-screen history
       useGlossarySuggest.getState().load(project.root); // restore this game's saved panel
       set({ project, filter: { limit: PAGE, offset: 0 } });
       await get().refreshMeta();

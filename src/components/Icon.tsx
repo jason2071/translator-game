@@ -19,7 +19,9 @@ export type IconName =
   | "chevron-left"
   | "chevron-right"
   | "check"
-  | "eye";
+  | "eye"
+  | "folder"
+  | "clock";
 
 const PATHS: Record<IconName, JSX.Element> = {
   export: (
@@ -95,6 +97,13 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
       <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  folder: <path d="M4 6a1 1 0 0 1 1-1h4l2 2h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6z" />,
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 3" />
     </>
   ),
 };

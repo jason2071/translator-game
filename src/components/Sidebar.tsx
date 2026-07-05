@@ -1,4 +1,5 @@
-import { useState, type CSSProperties } from "react";
+import { useState, useEffect, type CSSProperties } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { api, type ExportResult, type Status } from "../ipc";
 import { useStore } from "../store";
 import { useTheme } from "../theme";
@@ -32,6 +33,11 @@ export function Sidebar({
   const [result, setResult] = useState<ExportResult | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
+  }, []);
 
   async function doApplyTm() {
     setMsg(null);
@@ -197,6 +203,7 @@ export function Sidebar({
             <Icon name="close" />
           </button>
         </div>
+        {!collapsed && version && <p className="sidebar-version">v{version}</p>}
       </div>
     </aside>
   );
