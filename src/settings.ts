@@ -43,6 +43,8 @@ const DEFAULTS: Record<ProviderKind, ProviderConfig> = {
 
 interface SettingsState {
   active: ProviderKind;
+  /** Provider used for glossary auto-translate — independent of the Run provider. */
+  glossaryProvider: ProviderKind;
   providers: Record<ProviderKind, ProviderConfig>;
   tone: string;
   systemPrompt: string;
@@ -53,6 +55,7 @@ interface SettingsState {
   maxLineWidth: number;
 
   setActive: (k: ProviderKind) => void;
+  setGlossaryProvider: (k: ProviderKind) => void;
   updateProvider: (k: ProviderKind, patch: Partial<ProviderConfig>) => void;
   setShared: (
     patch: Partial<
@@ -66,6 +69,8 @@ interface SettingsState {
   configFor: (kind: ProviderKind) => ProviderConfig;
   /** The full ProviderConfig for the active (Run) provider. */
   activeConfig: () => ProviderConfig;
+  /** The full ProviderConfig for the glossary auto-translate provider. */
+  glossaryConfig: () => ProviderConfig;
 }
 
 function load(): Partial<SettingsState> {
@@ -77,10 +82,10 @@ function load(): Partial<SettingsState> {
 }
 
 function persist(s: SettingsState) {
-  const { active, providers, tone, systemPrompt, batchSize, rpm, thinking, maxLineWidth } = s;
+  const { active, glossaryProvider, providers, tone, systemPrompt, batchSize, rpm, thinking, maxLineWidth } = s;
   localStorage.setItem(
     KEY,
-    JSON.stringify({ active, providers, tone, systemPrompt, batchSize, rpm, thinking, maxLineWidth })
+    JSON.stringify({ active, glossaryProvider, providers, tone, systemPrompt, batchSize, rpm, thinking, maxLineWidth })
   );
 }
 
@@ -88,6 +93,7 @@ const saved = load();
 
 export const useSettings = create<SettingsState>((set, get) => ({
   active: saved.active ?? "openai",
+  glossaryProvider: saved.glossaryProvider ?? saved.active ?? "openai",
   providers: { ...DEFAULTS, ...(saved.providers ?? {}) },
   tone: saved.tone ?? "casual",
   systemPrompt: saved.systemPrompt ?? "",
@@ -98,6 +104,10 @@ export const useSettings = create<SettingsState>((set, get) => ({
 
   setActive: (k) => {
     set({ active: k });
+    persist(get());
+  },
+  setGlossaryProvider: (k) => {
+    set({ glossaryProvider: k });
     persist(get());
   },
   updateProvider: (k, patch) => {
@@ -120,4 +130,5 @@ export const useSettings = create<SettingsState>((set, get) => ({
     };
   },
   activeConfig: () => get().configFor(get().active),
+  glossaryConfig: () => get().configFor(get().glossaryProvider),
 }));

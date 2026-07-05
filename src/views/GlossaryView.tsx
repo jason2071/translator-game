@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type GlossaryEntry } from "../ipc";
-import { useSettings } from "../settings";
+import { api, type GlossaryEntry, type ProviderKind } from "../ipc";
+import { PROVIDER_LABELS, PROVIDER_KINDS, useSettings } from "../settings";
 import { useGlossarySuggest } from "../glossarySuggest";
 import { useTranslation } from "../translation";
 import TransProgress from "../components/TransProgress";
@@ -88,7 +88,9 @@ export default function GlossaryView() {
 }
 
 function SuggestPanel({ onAdded }: { onAdded: () => void }) {
-  const activeConfig = useSettings((s) => s.activeConfig);
+  const glossaryConfig = useSettings((s) => s.glossaryConfig);
+  const glossaryProvider = useSettings((s) => s.glossaryProvider);
+  const setGlossaryProvider = useSettings((s) => s.setGlossaryProvider);
   const {
     cands,
     rows,
@@ -138,6 +140,19 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
             {msg}
           </span>
         )}
+        <select
+          className="gloss-provider"
+          value={glossaryProvider}
+          onChange={(e) => setGlossaryProvider(e.target.value as ProviderKind)}
+          disabled={glossBusy}
+          title="AI provider used for glossary translation (independent of the Run provider)"
+        >
+          {PROVIDER_KINDS.map((k) => (
+            <option key={k} value={k}>
+              {PROVIDER_LABELS[k]}
+            </option>
+          ))}
+        </select>
         {glossBusy ? (
           <button className="ghost" onClick={() => cancel("glossary")}>
             {translating ? "Cancel translate" : "Cancel queued"}
@@ -146,7 +161,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
           <>
             <button
               className="ghost"
-              onClick={() => translateEmpty(activeConfig())}
+              onClick={() => translateEmpty(glossaryConfig())}
               disabled={remaining === 0}
               title={
                 remaining === 0
@@ -162,7 +177,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
             {filled > 0 && (
               <button
                 className="ghost"
-                onClick={() => translateEmpty(activeConfig(), true)}
+                onClick={() => translateEmpty(glossaryConfig(), true)}
                 title="Re-translate every term with AI, overwriting ones already filled"
               >
                 <Icon name="retry" size={14} /> Re-translate all ({cands.length})
@@ -207,7 +222,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
                 {done && <span className="cand-mark">✓</span>}
                 <button
                   className="cand-retry iconbtn"
-                  onClick={() => translateOne(c.term, activeConfig())}
+                  onClick={() => translateOne(c.term, glossaryConfig())}
                   disabled={glossBusy}
                   aria-label={`${done ? "Re-translate" : "Translate"} ${c.term} with AI`}
                   title={done ? "Re-translate this term with AI" : "Translate this term with AI"}

@@ -1056,6 +1056,11 @@ code {
   align-items: center;
   gap: 0.35rem;
 }
+.gloss-provider {
+  font-size: var(--fs-sm);
+  padding: 0.25rem 0.4rem;
+  max-width: 12rem;
+}
 .suggest-note {
   margin: 0;
   padding: 0.3rem 0.7rem;
