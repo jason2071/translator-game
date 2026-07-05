@@ -38,7 +38,7 @@ const DEFAULTS: Record<ProviderKind, ProviderConfig> = {
     temperature: 0.3,
   },
   anthropic: { kind: "anthropic", model: "claude-sonnet-5", temperature: 0.3 },
-  gemini: { kind: "gemini", model: "gemini-1.5-flash", temperature: 0.3 },
+  gemini: { kind: "gemini", model: "gemini-2.5-flash", temperature: 0.3 },
 };
 
 interface SettingsState {
@@ -73,6 +73,17 @@ interface SettingsState {
   glossaryConfig: () => ProviderConfig;
 }
 
+// gemini-1.5-* were retired from the API (404). Bump a stale saved model so a
+// returning user isn't stuck with a gemini provider that can't reach any model.
+function migrateProviders(
+  p: Record<ProviderKind, ProviderConfig>
+): Record<ProviderKind, ProviderConfig> {
+  if (p.gemini?.model?.startsWith("gemini-1.5")) {
+    return { ...p, gemini: { ...p.gemini, model: DEFAULTS.gemini.model } };
+  }
+  return p;
+}
+
 function load(): Partial<SettingsState> {
   try {
     return JSON.parse(localStorage.getItem(KEY) || "{}");
@@ -94,7 +105,7 @@ const saved = load();
 export const useSettings = create<SettingsState>((set, get) => ({
   active: saved.active ?? "openai",
   glossaryProvider: saved.glossaryProvider ?? saved.active ?? "openai",
-  providers: { ...DEFAULTS, ...(saved.providers ?? {}) },
+  providers: migrateProviders({ ...DEFAULTS, ...(saved.providers ?? {}) }),
   tone: saved.tone ?? "casual",
   systemPrompt: saved.systemPrompt ?? "",
   batchSize: saved.batchSize ?? 40,

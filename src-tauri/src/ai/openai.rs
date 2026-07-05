@@ -128,6 +128,13 @@ impl TranslationProvider for OpenAiCompat {
                 body["think"] = json!(think);
             }
         }
+        // OpenRouter: turn reasoning off when thinking is disabled — a real speed
+        // win on hybrid models, and the default gpt-4o-mini ignores it. (Pure
+        // reasoning models like deepseek-r1 reject this; reasoning is mandatory
+        // there, so those keep reasoning regardless of the toggle.)
+        if self.is_openrouter && req.thinking == Some(false) {
+            body["reasoning"] = json!({ "enabled": false });
+        }
 
         let content = with_retry(4, 800, || async {
             let mut rb = client.post(&url).json(&body);

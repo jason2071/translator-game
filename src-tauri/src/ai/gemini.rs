@@ -39,13 +39,20 @@ impl TranslationProvider for Gemini {
             "{}/v1beta/models/{}:generateContent?key={}",
             self.base, req.model, key
         );
+        let mut generation_config = json!({
+            "temperature": req.temperature,
+            "maxOutputTokens": req.max_tokens,
+        });
+        // Gemini 2.5 models "think" by default — the thoughts count against the
+        // token budget and add latency. A zero budget disables it; 2.0/older
+        // models ignore the field. Only when the user turned thinking off.
+        if req.thinking == Some(false) {
+            generation_config["thinkingConfig"] = json!({ "thinkingBudget": 0 });
+        }
         let body = json!({
             "systemInstruction": { "parts": [ { "text": sys } ] },
             "contents": [ { "role": "user", "parts": [ { "text": user } ] } ],
-            "generationConfig": {
-                "temperature": req.temperature,
-                "maxOutputTokens": req.max_tokens,
-            },
+            "generationConfig": generation_config,
         });
 
         let content = with_retry(4, 800, || async {
