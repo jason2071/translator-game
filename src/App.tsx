@@ -81,7 +81,7 @@ export default function App() {
       />
       <div className="main">
         <UpdateBanner />
-        <TranslateBar openSettings={() => setPanel("settings")} />
+        <TranslateBar />
         <GridView />
       </div>
 

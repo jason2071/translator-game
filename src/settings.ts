@@ -15,6 +15,15 @@ export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   gemini: "Gemini (Google)",
 };
 
+/** All provider kinds, in display order (top selector + settings tabs). */
+export const PROVIDER_KINDS: ProviderKind[] = [
+  "local",
+  "openai",
+  "anthropic",
+  "gemini",
+  "openrouter",
+];
+
 const DEFAULTS: Record<ProviderKind, ProviderConfig> = {
   openai: { kind: "openai", model: "gpt-4o-mini", temperature: 0.3 },
   openrouter: {
@@ -53,7 +62,9 @@ interface SettingsState {
       >
     >
   ) => void;
-  /** The full ProviderConfig for the active provider, merged with shared opts. */
+  /** The full ProviderConfig for a given provider, merged with shared opts. */
+  configFor: (kind: ProviderKind) => ProviderConfig;
+  /** The full ProviderConfig for the active (Run) provider. */
   activeConfig: () => ProviderConfig;
 }
 
@@ -97,10 +108,10 @@ export const useSettings = create<SettingsState>((set, get) => ({
     set(patch as Partial<SettingsState>);
     persist(get());
   },
-  activeConfig: () => {
+  configFor: (kind) => {
     const s = get();
     return {
-      ...s.providers[s.active],
+      ...s.providers[kind],
       tone: s.tone,
       systemPrompt: s.systemPrompt || undefined,
       batchSize: s.batchSize,
@@ -108,4 +119,5 @@ export const useSettings = create<SettingsState>((set, get) => ({
       thinking: s.thinking,
     };
   },
+  activeConfig: () => get().configFor(get().active),
 }));

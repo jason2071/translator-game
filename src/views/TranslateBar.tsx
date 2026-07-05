@@ -2,14 +2,13 @@ import { useEffect, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api, type TranslateScope, type TranslateSummary } from "../ipc";
 import { useStore } from "../store";
-import { useSettings } from "../settings";
-import { PROVIDER_LABELS } from "../settings";
+import { useSettings, PROVIDER_LABELS, PROVIDER_KINDS } from "../settings";
 import { SOURCE_LANGS, TARGET_LANGS } from "../langs";
 import { useTranslation } from "../translation";
 import TransProgress from "../components/TransProgress";
 import { Icon } from "../components/Icon";
 
-export default function TranslateBar({ openSettings }: { openSettings: () => void }) {
+export default function TranslateBar() {
   const filter = useStore((s) => s.filter);
   const stats = useStore((s) => s.stats);
   const reloadUnits = useStore((s) => s.reloadUnits);
@@ -17,6 +16,7 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
   const project = useStore((s) => s.project);
   const setLanguages = useStore((s) => s.setLanguages);
   const active = useSettings((s) => s.active);
+  const setActive = useSettings((s) => s.setActive);
   const activeConfig = useSettings((s) => s.activeConfig);
 
   // Only this Run's own status gates the controls; a glossary job runs in the
@@ -126,14 +126,18 @@ export default function TranslateBar({ openSettings }: { openSettings: () => voi
         Overwrite existing
       </label>
 
-      <button
-        className="chip-btn"
-        onClick={openSettings}
+      <select
+        value={active}
+        onChange={(e) => setActive(e.target.value as typeof active)}
         disabled={running}
-        style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
+        title="AI provider used for Run (configure providers in Settings)"
       >
-        {PROVIDER_LABELS[active]} <Icon name="settings" size={13} />
-      </button>
+        {PROVIDER_KINDS.map((k) => (
+          <option key={k} value={k}>
+            {PROVIDER_LABELS[k]}
+          </option>
+        ))}
+      </select>
 
       {!running ? (
         <button className="primary" onClick={run}>

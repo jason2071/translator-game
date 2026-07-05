@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import { api, type ProviderKind } from "../ipc";
-import { PROVIDER_LABELS, useSettings } from "../settings";
+import { PROVIDER_LABELS, PROVIDER_KINDS, useSettings } from "../settings";
 import { Icon } from "../components/Icon";
-
-const KINDS: ProviderKind[] = ["local", "openai", "anthropic", "gemini", "openrouter"];
 
 export default function SettingsView() {
   const s = useSettings();
-  const active = s.active;
-  const cfg = s.providers[active];
-  const needsKey = active !== "local";
+  // Which provider this modal is *configuring* — independent of the active (Run)
+  // provider, and opened on it. Switching tabs here never changes the Run choice.
+  const [editing, setEditing] = useState<ProviderKind>(s.active);
+  const cfg = s.providers[editing];
+  const needsKey = editing !== "local";
 
   const [keyInput, setKeyInput] = useState("");
   const [hasKey, setHasKey] = useState(false);
@@ -24,15 +24,15 @@ export default function SettingsView() {
     setTest(null);
     setModels([]);
     setModelsErr(null);
-    if (needsKey) api.hasKey(active).then(setHasKey);
+    if (needsKey) api.hasKey(editing).then(setHasKey);
     else setHasKey(false);
-  }, [active, needsKey]);
+  }, [editing, needsKey]);
 
   async function refreshModels() {
     setLoadingModels(true);
     setModelsErr(null);
     try {
-      const list = await api.listModels(s.activeConfig());
+      const list = await api.listModels(s.configFor(editing));
       setModels(list);
       if (list.length === 0) setModelsErr("No models returned.");
     } catch (e) {
@@ -44,19 +44,19 @@ export default function SettingsView() {
 
   async function saveKey() {
     if (!keyInput.trim()) return;
-    await api.setKey(active, keyInput.trim());
+    await api.setKey(editing, keyInput.trim());
     setKeyInput("");
     setHasKey(true);
   }
   async function clearKey() {
-    await api.deleteKey(active);
+    await api.deleteKey(editing);
     setHasKey(false);
   }
   async function runTest() {
     setTesting(true);
     setTest(null);
     try {
-      const out = await api.testProvider(s.activeConfig());
+      const out = await api.testProvider(s.configFor(editing));
       setTest(`✓ ${out}`);
     } catch (e) {
       setTest(`✗ ${String(e)}`);
@@ -68,11 +68,11 @@ export default function SettingsView() {
   return (
     <div className="settings">
       <div className="provider-tabs">
-        {KINDS.map((k) => (
+        {PROVIDER_KINDS.map((k) => (
           <button
             key={k}
-            className={k === active ? "tab active" : "tab"}
-            onClick={() => s.setActive(k)}
+            className={k === editing ? "tab active" : "tab"}
+            onClick={() => setEditing(k)}
           >
             {PROVIDER_LABELS[k]}
           </button>
@@ -85,7 +85,7 @@ export default function SettingsView() {
           <input
             placeholder="model id"
             value={cfg.model}
-            onChange={(e) => s.updateProvider(active, { model: e.target.value })}
+            onChange={(e) => s.updateProvider(editing, { model: e.target.value })}
           />
           <button
             className="ghost"
@@ -104,7 +104,7 @@ export default function SettingsView() {
               className="model-select"
               value={models.includes(cfg.model) ? cfg.model : ""}
               onChange={(e) =>
-                e.target.value && s.updateProvider(active, { model: e.target.value })
+                e.target.value && s.updateProvider(editing, { model: e.target.value })
               }
             >
               <option value="">— pick one of {models.length} installed —</option>
@@ -127,7 +127,7 @@ export default function SettingsView() {
         <input
           placeholder="(default)"
           value={cfg.baseUrl ?? ""}
-          onChange={(e) => s.updateProvider(active, { baseUrl: e.target.value || undefined })}
+          onChange={(e) => s.updateProvider(editing, { baseUrl: e.target.value || undefined })}
         />
 
         <label>Temperature</label>
@@ -137,7 +137,7 @@ export default function SettingsView() {
           min="0"
           max="2"
           value={cfg.temperature ?? 0.3}
-          onChange={(e) => s.updateProvider(active, { temperature: Number(e.target.value) })}
+          onChange={(e) => s.updateProvider(editing, { temperature: Number(e.target.value) })}
         />
 
         {needsKey && (
