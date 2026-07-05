@@ -415,12 +415,21 @@ async fn translate_units(
             }
         }
 
-        // Pre-fill from persisted TM; everything else goes to the AI.
+        // Pre-fill from persisted TM; everything else goes to the AI. An explicit
+        // overwrite (a re-translate) skips the TM: the user wants fresh AI output,
+        // not the cached — possibly wrong — translation the TM already holds for
+        // this source. (Duplicate sources are still de-duped within the run by the
+        // grouping above, so a re-translate is one AI call per unique source.)
         let mut to_ai: Vec<Group> = Vec::new();
         let mut reused = 0usize;
         let mut reused_updates: Vec<UnitUpdate> = Vec::new();
         for g in order {
-            if let Some(tm) = project::db::tm_lookup(&proj.conn, &g.source).ok().flatten() {
+            let tm = if overwrite {
+                None
+            } else {
+                project::db::tm_lookup(&proj.conn, &g.source).ok().flatten()
+            };
+            if let Some(tm) = tm {
                 for id in &g.ids {
                     let _ = project::db::update_unit(
                         &proj.conn,
