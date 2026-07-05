@@ -17,7 +17,11 @@ Project-based workflow — the original game is never touched until you export:
 2. **Translate** by hand (inline editing) or with AI (per-file, all-untranslated,
    or the current filter).
 3. **Export** → the translations are patched back into the game's data files,
-   with an automatic backup of every file that changes.
+   with an automatic backup of every file that changes. **Ren'Py** games export
+   the native way instead — the app drives the game's own bundled Ren'Py to
+   generate `game/tl/<language>/` files and fills them in, so the original scripts
+   are never modified, nothing recompiles, and the translation becomes a
+   selectable in-game language (with a font drop-in so it renders).
 
 Features: virtualized grid for 10k+ strings, translation memory (auto-fills
 duplicate/identical strings), glossary + consistency lint, engine-aware code

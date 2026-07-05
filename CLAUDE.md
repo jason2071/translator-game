@@ -44,6 +44,10 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   ↔ UTF-8 layer; KiriKiri reuses the TyranoScript KAG parser behind it. `godot.rs`
   handles gettext `.po` (`msgstr` in place, `msgid` as context) and Godot
   translation `.csv` (first locale column in place), both via the byte-span pointer.
+  `renpy_tl.rs` + `renpy::export_tl` are the **Ren'Py `tl/<lang>/` export path**
+  (see the export invariant below): rather than splice, run the game's own bundled
+  Ren'Py to generate the translation skeleton, then fill it — source `.rpy` are
+  never touched.
 - **`project/`** — SQLite persistence (`db.rs`) and project lifecycle (`mod.rs`):
   open/create the sidecar store, backup, and export.
 - **`ai/`** — one `TranslationProvider` trait, providers behind it, plus prompt
@@ -104,6 +108,21 @@ localStorage).
   snapshot is seeded from the earliest `.rpgtl/backups/<ts>/` copy when present
   (so a project exported before this scheme still snapshots ORIGINAL bytes and
   self-repairs on its next export). `tests/reexport_idempotent.rs` guards this.
+- **Ren'Py exports as `tl/<lang>/`, not in place.** Splicing a `.rpy` changes it,
+  so Ren'Py recompiles it and re-parses the game's creator-defined statements
+  under the runtime Ren'Py — which surfaces game-vs-version incompatibilities
+  (recompile is decided by an MD5 of the `.rpy` content, `renpy/script.py`) and can
+  crash at load. So for Ren'Py, `project::export` calls `renpy::export_tl` first:
+  it finds the game's bundled Ren'Py launcher (`<name>.exe` beside `<name>.py` +
+  `renpy/`), runs `<exe> <root> translate <lang>` to generate the skeleton (whose
+  identifiers are then guaranteed correct — `renpy_tl.rs` only *validated* this
+  algorithm, it doesn't compute the ids used in production), fills it from the DB
+  via `renpy_tl::fill_tl` (match source string → translation; dialogue = the say
+  line's last quoted string, `strings` block = `old`/`new`), and writes a global
+  `zzz_translator.rpy` (default `config.language` + a language-scoped font remap so
+  Thai isn't "NO GLYPH"). The source `.rpy` are never touched → no recompile, and
+  `<lang>` becomes a selectable in-game language. Falls back to in-place inject
+  when no bundled launcher is found.
 
 ## Adding an engine
 

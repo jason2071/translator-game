@@ -149,10 +149,12 @@ pub fn export(project: &Project, make_backup: bool) -> Result<ExportResult> {
         let lang = db::get_meta(&project.conn, "target_lang")?
             .unwrap_or_else(|| "translated".to_string());
         if let Some(tl) = engine::renpy::export_tl(&project.root, &project.data_dir, &units, &lang)? {
+            // No backup: the source `.rpy` are never touched (translations live in
+            // the generated `tl/<lang>/` tree). `files_written` is the tl count.
             return Ok(ExportResult {
                 files_written: tl.files,
                 units_applied: applied.len(),
-                backup_dir: Some(tl.dir.to_string_lossy().to_string()),
+                backup_dir: None,
             });
         }
     }
