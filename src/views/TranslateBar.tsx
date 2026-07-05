@@ -26,7 +26,6 @@ export default function TranslateBar() {
   const cancel = useTranslation((s) => s.cancel);
   const running = unitsPhase !== "idle"; // queued or running
 
-  const [mode, setMode] = useState<"shown" | "all">("shown");
   const [overwrite, setOverwrite] = useState(false);
   const [summary, setSummary] = useState<TranslateSummary | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -57,12 +56,10 @@ export default function TranslateBar() {
     }
   }
 
+  // Translate the file selected in the sidebar (its untranslated + Failed units),
+  // or the whole project when "All files" is selected (filter.file === undefined).
   function run() {
-    translate(
-      mode === "all"
-        ? { filter: { untranslatedOnly: true }, overwrite }
-        : { filter, overwrite }
-    );
+    translate({ filter: { file: filter.file }, overwrite });
   }
 
   // Re-translate only the units that failed a previous run, no manual filtering.
@@ -104,24 +101,19 @@ export default function TranslateBar() {
         </select>
       </div>
 
-      <select value={mode} onChange={(e) => setMode(e.target.value as "shown" | "all")} disabled={running}>
-        <option value="shown">Shown (current filter)</option>
-        <option value="all">All untranslated</option>
-      </select>
-
-      <label
-        className="chk"
-        title={
-          mode === "all"
-            ? "No effect: 'All untranslated' never touches existing translations"
-            : "Re-translate units that already have a translation"
-        }
+      <span
+        className="tb-scope"
+        title="Run translates this — click a file (or 'All files') in the sidebar to change it"
       >
+        Target: <b>{filter.file ?? "All files"}</b>
+      </span>
+
+      <label className="chk" title="Re-translate units that already have a translation">
         <input
           type="checkbox"
-          checked={overwrite && mode !== "all"}
+          checked={overwrite}
           onChange={(e) => setOverwrite(e.target.checked)}
-          disabled={running || mode === "all"}
+          disabled={running}
         />
         Overwrite existing
       </label>

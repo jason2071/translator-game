@@ -656,6 +656,24 @@ code {
   font-size: var(--fs-sm);
   padding: 0.35rem 0.6rem;
 }
+.tb-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.7rem;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  white-space: nowrap;
+  max-width: 16rem;
+}
+.tb-scope b {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tb-progress {
   display: flex;
   align-items: center;
