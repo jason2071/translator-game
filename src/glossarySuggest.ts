@@ -25,7 +25,9 @@ interface SuggestState {
 
   load: (root: string) => void; // restore this game's saved panel (on open)
   suggest: () => Promise<void>;
-  translateEmpty: (cfg: ProviderConfig) => Promise<void>;
+  // Translate candidates via AI. By default only the empty/failed/skipped ones;
+  // pass all=true to re-translate every candidate, overwriting filled rows.
+  translateEmpty: (cfg: ProviderConfig, all?: boolean) => Promise<void>;
   translateOne: (term: string, cfg: ProviderConfig) => Promise<void>; // retry one
   setRow: (term: string, patch: Partial<Row>) => void;
   addSelected: (onAdded: () => void) => Promise<void>;
@@ -94,10 +96,10 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
       }
     },
 
-    translateEmpty: async (cfg) => {
+    translateEmpty: async (cfg, all = false) => {
       const { cands, rows } = get();
       if (!cands) return;
-      const todo = cands.filter((c) => !(rows[c.term]?.tr ?? "").trim());
+      const todo = all ? cands : cands.filter((c) => !(rows[c.term]?.tr ?? "").trim());
       if (todo.length === 0) return;
       if (useTranslation.getState().glossary.phase !== "idle") {
         set({ msg: "Glossary translate already running" });

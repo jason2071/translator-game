@@ -1,7 +1,8 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { STATUSES, type Status, type TransUnit } from "../ipc";
+import { api, STATUSES, type Status, type TransUnit } from "../ipc";
 import { useStore } from "../store";
 import { useSettings } from "../settings";
+import { useTranslation } from "../translation";
 import { overflowLines } from "../messageWidth";
 import { codesMismatch } from "../codes";
 import { statusColor } from "../status";
@@ -24,10 +25,31 @@ export const UnitRow = memo(function UnitRow({
   const editUnit = useStore((s) => s.editUnit);
   const setStatus = useStore((s) => s.setStatus);
   const engineId = useStore((s) => s.project?.engineId);
+  const refreshMeta = useStore((s) => s.refreshMeta);
   const maxLineWidth = useSettings((s) => s.maxLineWidth);
+  const activeConfig = useSettings((s) => s.activeConfig);
+  const enqueue = useTranslation((s) => s.enqueue);
+  const unitsBusy = useTranslation((s) => s.units.phase !== "idle");
   const [value, setValue] = useState(unit.translation ?? "");
   const [showPreview, setShowPreview] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Re-translate just this line via AI (overwrites the current translation). The
+  // row fills live from the units-update event; refreshMeta updates the counts.
+  async function retranslate() {
+    setRetrying(true);
+    try {
+      await enqueue("units", () =>
+        api.translateUnits({ ids: [unit.id], overwrite: true }, activeConfig())
+      );
+      await refreshMeta();
+    } catch {
+      // Transport errors surface via the global translate-error listener.
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   // Keep local text in sync when the row is replaced (filter reload, AI fill).
   useEffect(() => {
@@ -124,6 +146,16 @@ export const UnitRow = memo(function UnitRow({
             engineId={engineId}
           />
         )}
+        <button
+          type="button"
+          className="row-retranslate"
+          onClick={retranslate}
+          disabled={unitsBusy || retrying}
+          title="Re-translate this line with AI (overwrites the current translation)"
+          aria-label="Re-translate this line with AI"
+        >
+          <Icon name="retry" size={13} className={retrying ? "spin" : undefined} />
+        </button>
       </div>
 
       <div className="cell status">

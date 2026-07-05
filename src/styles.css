@@ -856,6 +856,47 @@ code {
   color: var(--accent);
   border-color: var(--accent);
 }
+/* Per-line "re-translate this via AI" button — revealed on row hover so idle
+   rows stay clean. Sits at the translation cell's top-right. */
+.cell.translation {
+  position: relative;
+}
+.row-retranslate {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.3rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem;
+  color: var(--muted);
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+.unit-row:hover .row-retranslate {
+  opacity: 0.8;
+}
+.row-retranslate:hover:not(:disabled) {
+  opacity: 1;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.row-retranslate:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: spin 0.8s linear infinite;
+}
 /* RPGMaker-ish message-box preview. */
 .msg-preview {
   margin-top: 0.4rem;

@@ -143,21 +143,32 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
             {translating ? "Cancel translate" : "Cancel queued"}
           </button>
         ) : (
-          <button
-            className="ghost"
-            onClick={() => translateEmpty(activeConfig())}
-            disabled={remaining === 0}
-            title={
-              remaining === 0
-                ? "All candidates have a translation"
-                : "Translate every empty/failed/skipped term (queues behind a running Run)"
-            }
-          >
-            <Icon name={filled > 0 ? "retry" : "globe"} size={14} />{" "}
-            {filled > 0
-              ? `Re-translate remaining (${remaining})`
-              : `Translate empty (${remaining})`}
-          </button>
+          <>
+            <button
+              className="ghost"
+              onClick={() => translateEmpty(activeConfig())}
+              disabled={remaining === 0}
+              title={
+                remaining === 0
+                  ? "All candidates have a translation"
+                  : "Translate every empty/failed/skipped term (queues behind a running Run)"
+              }
+            >
+              <Icon name={filled > 0 ? "retry" : "globe"} size={14} />{" "}
+              {filled > 0
+                ? `Re-translate remaining (${remaining})`
+                : `Translate empty (${remaining})`}
+            </button>
+            {filled > 0 && (
+              <button
+                className="ghost"
+                onClick={() => translateEmpty(activeConfig(), true)}
+                title="Re-translate every term with AI, overwriting ones already filled"
+              >
+                <Icon name="retry" size={14} /> Re-translate all ({cands.length})
+              </button>
+            )}
+          </>
         )}
         <button className="primary" onClick={() => addSelected(onAdded)} disabled={glossBusy}>
           Add selected
@@ -192,19 +203,16 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
                 value={rows[c.term]?.tr ?? ""}
                 onChange={(e) => setRow(c.term, { tr: e.target.value })}
               />
-              {done ? (
-                <span className="cand-mark">✓</span>
-              ) : (
-                <button
-                  className="cand-retry iconbtn"
-                  onClick={() => translateOne(c.term, activeConfig())}
-                  disabled={glossBusy}
-                  aria-label={`Translate ${c.term} with AI`}
-                  title="Translate this term with AI"
-                >
-                  <Icon name="retry" size={14} />
-                </button>
-              )}
+              {done && <span className="cand-mark">✓</span>}
+              <button
+                className="cand-retry iconbtn"
+                onClick={() => translateOne(c.term, activeConfig())}
+                disabled={glossBusy}
+                aria-label={`${done ? "Re-translate" : "Translate"} ${c.term} with AI`}
+                title={done ? "Re-translate this term with AI" : "Translate this term with AI"}
+              >
+                <Icon name="retry" size={14} />
+              </button>
             </div>
           );
         })}
