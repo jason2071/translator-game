@@ -21,8 +21,9 @@ use super::{DetectResult, GameEngine};
 use crate::model::{TransUnit, UnitKind};
 use anyhow::{anyhow, Context, Result};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub struct RenpyEngine;
 
@@ -711,6 +712,126 @@ fn parse_suffix(suffix: &str) -> (bool, Option<String>) {
     (interact, with_)
 }
 
+// ---------------------------------------------------------------------------
+// tl/<language>/ export (the game's own Ren'Py generates the skeleton; we fill it)
+// ---------------------------------------------------------------------------
+
+/// Outcome of a `tl/<lang>/` export.
+pub struct TlExport {
+    /// Number of `tl/<lang>/` files written.
+    pub files: usize,
+    /// The `tl/<lang>/` directory that was filled.
+    pub dir: PathBuf,
+}
+
+/// Export translations the Ren'Py-native way: run the game's own bundled Ren'Py
+/// to generate the `game/tl/<lang>/` skeleton (so every translation identifier is
+/// exactly what Ren'Py expects), then fill it from the project's translations.
+/// The source `.rpy` are never touched — Ren'Py won't recompile them, so
+/// version/CDS crashes never happen and `<lang>` becomes a selectable in-game
+/// language.
+///
+/// Returns `Ok(None)` if the game has no bundled Ren'Py launcher (the caller then
+/// falls back to in-place injection).
+pub fn export_tl(
+    root: &Path,
+    data_dir: &Path,
+    units: &[TransUnit],
+    target_lang: &str,
+) -> Result<Option<TlExport>> {
+    let Some(exe) = find_launcher(root) else {
+        return Ok(None);
+    };
+    let lang = normalize_lang(target_lang);
+
+    // Generate the skeleton. The `translate` command is headless (returns without
+    // launching the game window) and writes `game/tl/<lang>/`.
+    let output = Command::new(&exe)
+        .arg(root)
+        .arg("translate")
+        .arg(&lang)
+        .output()
+        .with_context(|| format!("running {} translate {lang}", exe.display()))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "the game's Ren'Py failed to generate translations: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let dir = data_dir.join("tl").join(&lang);
+    if !dir.is_dir() {
+        return Err(anyhow!(
+            "Ren'Py did not generate {} — nothing translatable?",
+            dir.display()
+        ));
+    }
+
+    // Map each source string to its translation (first one wins for duplicates).
+    let mut map: HashMap<&str, &str> = HashMap::new();
+    for u in units {
+        if u.status.is_applied() {
+            if let Some(t) = &u.translation {
+                map.entry(u.source.as_str()).or_insert(t.as_str());
+            }
+        }
+    }
+    let lookup = |s: &str| map.get(s).map(|t| t.to_string());
+
+    let mut files = 0usize;
+    let mut stack = vec![dir.clone()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d)?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|x| x.to_str()) == Some("rpy") {
+                let content = std::fs::read_to_string(&p)?;
+                let filled = renpy_tl::fill_tl(&content, &lookup);
+                if filled != content {
+                    std::fs::write(&p, filled).with_context(|| format!("writing {}", p.display()))?;
+                }
+                files += 1;
+            }
+        }
+    }
+    Ok(Some(TlExport { files, dir }))
+}
+
+/// The game's bundled Ren'Py launcher: a `<name>.exe` at the bundle root next to a
+/// matching `<name>.py`, with a `renpy/` directory present. Running
+/// `<exe> <root> translate <lang>` drives Ren'Py's own translation generation.
+fn find_launcher(root: &Path) -> Option<PathBuf> {
+    if !root.join("renpy").is_dir() {
+        return None;
+    }
+    for e in std::fs::read_dir(root).ok()?.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) == Some("exe") {
+            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                if root.join(format!("{stem}.py")).exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A Ren'Py `tl/` language directory name: lowercase ASCII letters/digits/`_`.
+fn normalize_lang(lang: &str) -> String {
+    let s: String = lang
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect::<String>()
+        .to_lowercase();
+    if s.is_empty() {
+        "translated".to_string()
+    } else {
+        s
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,6 +979,14 @@ label start:
         assert!(!texts.iter().any(|t| t.contains("hair_color")));
         // Normal dialogue after the block still works.
         assert!(texts.contains(&"Nice to meet you."));
+    }
+
+    #[test]
+    fn normalize_lang_is_lowercase_ascii() {
+        assert_eq!(normalize_lang("Thai"), "thai");
+        assert_eq!(normalize_lang("thai"), "thai");
+        assert_eq!(normalize_lang("Brazilian Portuguese"), "brazilianportuguese");
+        assert_eq!(normalize_lang("\u{e44}\u{e17}\u{e22}"), "translated"); // non-ASCII -> fallback
     }
 
     #[test]

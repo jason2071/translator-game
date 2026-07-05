@@ -41,7 +41,8 @@ harness <command> [args]
   export   <game-dir>
   reconcile <game-dir> [--apply]
   tlcheck  <game-dir> <oracle-tl/thai-dir>
-  tlfill   <game-dir> [lang]";
+  tlfill   <game-dir> [lang]
+  tlexport <game-dir>";
 
 #[tokio::main]
 async fn main() {
@@ -58,6 +59,7 @@ async fn main() {
         "reconcile" => cmd_reconcile(rest),
         "tlcheck" => cmd_tlcheck(rest),
         "tlfill" => cmd_tlfill(rest),
+        "tlexport" => cmd_tlexport(rest),
         _ => eprintln!("{USAGE}"),
     }
 }
@@ -525,6 +527,26 @@ fn cmd_tlfill(rest: &[String]) {
         }
     }
     println!("filled {files} tl files under {}", tl.display());
+}
+
+/// Exercise the app's real Ren'Py `tl/<lang>/` export path end-to-end: the same
+/// `renpy::export_tl` that `project::export` calls (find the bundled launcher,
+/// run Ren'Py `translate`, fill from the DB). Source `.rpy` are not touched.
+fn cmd_tlexport(rest: &[String]) {
+    let Some(game) = arg(rest, 0) else {
+        return eprintln!("tlexport <game-dir>");
+    };
+    let root = PathBuf::from(game);
+    let conn = open_db(root.join(".rpgtl/project.db").to_str().unwrap());
+    let lang = db::get_meta(&conn, "target_lang").ok().flatten().unwrap_or_else(|| "thai".into());
+    let units = db::all_units(&conn).unwrap();
+    let data_dir = engine::renpy::game_dir(&root).expect("not a Ren'Py game");
+    println!("target_lang={lang}  units={}", units.len());
+    match engine::renpy::export_tl(&root, &data_dir, &units, &lang) {
+        Ok(Some(tl)) => println!("OK: filled {} tl files under {}", tl.files, tl.dir.display()),
+        Ok(None) => println!("no bundled Ren'Py launcher — would fall back to in-place inject"),
+        Err(e) => println!("ERROR: {e:#}"),
+    }
 }
 
 /// Collect the `translate thai <id>:` identifiers (excluding the `strings` block)

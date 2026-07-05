@@ -140,6 +140,23 @@ pub fn export(project: &Project, make_backup: bool) -> Result<ExportResult> {
     let units = db::all_units(&project.conn)?;
     let applied: Vec<_> = units.iter().filter(|u| u.status.is_applied()).collect();
 
+    // Ren'Py: prefer the native `tl/<lang>/` export. The game's own bundled Ren'Py
+    // generates the translation skeleton (identifiers exactly as Ren'Py expects),
+    // then we fill it from the DB. The source `.rpy` are never touched, so nothing
+    // recompiles (no version/CDS crashes) and <lang> becomes a selectable in-game
+    // language. Falls back to in-place injection if there's no bundled launcher.
+    if eng.id() == "renpy" {
+        let lang = db::get_meta(&project.conn, "target_lang")?
+            .unwrap_or_else(|| "translated".to_string());
+        if let Some(tl) = engine::renpy::export_tl(&project.root, &project.data_dir, &units, &lang)? {
+            return Ok(ExportResult {
+                files_written: tl.files,
+                units_applied: applied.len(),
+                backup_dir: Some(tl.dir.to_string_lossy().to_string()),
+            });
+        }
+    }
+
     // Distinct files that injection will overwrite.
     let mut touched: Vec<String> = applied.iter().map(|u| u.file.clone()).collect();
     touched.sort();
