@@ -23,12 +23,18 @@ Project-based workflow — the original game is never touched until you export:
    are never modified, nothing recompiles, and the translation becomes a
    selectable in-game language (with a font drop-in so it renders).
 
-Features: virtualized grid for 10k+ strings, translation memory (auto-fills
+Features: a **windowed** grid that stays light on huge projects (holds only the
+visible slice — scales to ~1M strings), translation memory (auto-fills
 duplicate/identical strings), glossary + consistency lint, engine-aware code
-protection (RPGMaker `\C[n]`, Ren'Py `[tag]`/`{tag}`, KAG `[tag]`) so AI can't
-corrupt markup, batch translation with rate-limit + retry, a grid that fills
-row-by-row live as results land, and API keys stored in the OS keychain (never on
-disk).
+protection (RPGMaker `\C[n]`, `%1`, Ren'Py `[tag]`/`{tag}`, KAG `[tag]`) so AI
+can't corrupt markup, batch translation with rate-limit + retry, a grid that fills
+row-by-row live as results land, re-translate at any scope (whole project / file /
+single line / overwrite existing), auto-copy of untranslatable sources (numbers,
+punctuation-only) so they don't count as failures, an **Errors** panel that lists
+which units failed and why, independent AI providers for Run vs glossary
+suggestion, a **Thinking / reasoning** toggle you can switch off per provider
+(Ollama / OpenRouter / Gemini) so reasoning models don't burn the token budget,
+and API keys stored in the OS keychain (never on disk).
 
 ## Architecture
 
@@ -91,9 +97,11 @@ Tests run against a synthetic MZ fixture in `src-tauri/tests/fixtures/mz-sample`
    the API key (stored in the OS keychain — Local/Ollama needs no key).
 2. Optionally set tone, an extra prompt, batch size, and a rate limit.
 3. Add **Glossary** terms (proper nouns, stats) for consistency.
-4. In the **AI translate** bar choose a scope and **Run** (cancellable; the grid
-   fills row-by-row as batches land, and a connection/rate-limit error is shown
-   the moment it happens). **Apply TM** fills duplicates for free.
+4. In the **AI translate** bar pick the provider + scope and **Run** (cancellable;
+   the grid fills row-by-row as batches land). Toggle **Overwrite existing** to
+   re-translate rows that already have a translation; **Retry failed** re-runs only
+   the failures, and the **Errors (N)** button opens a panel listing each failed
+   unit's file, source, and reason. **Apply TM** fills duplicates for free.
 5. **Export → game** when done (auto-backup to `.rpgtl/backups/<timestamp>/`).
 
 ### Providers
@@ -109,6 +117,13 @@ Tests run against a synthetic MZ fixture in `src-tauri/tests/fixtures/mz-sample`
 The Local / OpenAI / OpenRouter kinds take a custom **Base URL**, so any
 OpenAI-compatible gateway works — e.g. OpenCode Zen (`opencode.ai/zen/v1`),
 Ollama Cloud, or LM Studio. Use **Refresh** to pull the endpoint's model list.
+
+For reasoning models, switching **Thinking / reasoning** off stops the model
+burning its token budget on hidden thoughts before answering — it maps to the
+right knob per provider (Ollama's native `/api/chat` `think:false`, OpenRouter
+`reasoning.enabled=false`, Gemini `thinkingBudget=0`). Run and glossary suggestion
+each have their own provider selector, so you can pair a cheap local model for
+glossary with a stronger one for the full Run.
 
 ## Project data
 

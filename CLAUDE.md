@@ -53,9 +53,13 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
 - **`ai/`** — one `TranslationProvider` trait, providers behind it, plus prompt
   building and retry.
 
-The frontend mirrors the command surface in `src/ipc.ts`; UI state is Zustand
-(`src/store.ts` = project data, `src/settings.ts` = provider config in
-localStorage).
+The frontend mirrors the command surface in `src/ipc.ts`; UI state is Zustand,
+split by concern: `src/store.ts` = project data + the grid **window** (see the
+windowed-loading invariant), `src/settings.ts` = provider config in localStorage,
+`src/translation.ts` = the shared Run/glossary job queue + live progress,
+`src/errors.ts` = per-unit failure reasons (fed by `translate://failed`),
+`src/glossarySuggest.ts` = glossary candidate rows, `src/recents.ts` = recent
+projects.
 
 ## Invariants that span files (read before changing)
 
@@ -84,6 +88,16 @@ localStorage).
   `translate_units` gathers work under the lock, drops it, does all HTTP with no
   lock held, then re-locks briefly per batch to persist. Follow this pattern for
   any new async command that touches both the DB and the network.
+- **The grid is windowed — the frontend never holds the whole unit list.** A
+  project can be ~1M units, so `store.ts` keeps only `total` (the virtualizer's
+  row count, from `count_units`) plus one `window` — a `{ offset, rows }` slice of
+  ~400 units around the scroll position. `ensureWindow(start,end)` refetches (via
+  `list_units` offset/limit) once the visible range comes within `MARGIN` of the
+  slice edge; a module-level `winReq` counter drops stale fetches so an old
+  filter/scroll never overwrites a newer window. Live Run updates
+  (`translate://units`) patch `window.rows` in place — never a full reload (which
+  would jump the scroll). The backend was already 1M-ready (indexed, `ORDER BY
+  id`, offset/limit); a full RAM-streaming translate loop is the deferred piece.
 - **serde field-name contract.** Several structs use
   `#[serde(rename_all = "camelCase")]` (e.g. `ProjectInfo`, `Stats`,
   `DetectResult`, `ProviderConfig`, `Progress`, glossary/lint results); their
@@ -144,6 +158,31 @@ numbered JSON array so `prompt::parse_batch_response` can re-align by index;
 `ai::translate_batch_or_split` falls back to per-item requests when a batch
 response can't be aligned. `list_models` powers the model picker (notably
 Ollama's installed models via its OpenAI-compatible `/models`).
+
+**Disabling thinking/reasoning is per-provider** (the **Thinking / reasoning**
+toggle in Settings, off ⇒ `req.thinking = Some(false)`; each provider must
+translate that to its own wire knob — there is no portable flag):
+- **Local (Ollama):** the OpenAI-compatible `/v1` endpoint ignores `think:false`
+  (reasoning still eats the `max_tokens` budget → empty content), so `openai.rs`
+  appends `/no_think` to the user turn and prefers a native `/api/chat` call
+  (`ollama_chat`: rewrites `/v1`→`/api/chat`, sends `think:false` +
+  `options.num_predict`, reads `message.content`), falling back to `/v1` only if
+  that fails.
+- **OpenRouter:** `body["reasoning"] = {"enabled": false}` (works on hybrid
+  models; mandatory-reasoning models like `deepseek-r1` 400 — leave the toggle
+  off for those).
+- **Gemini:** `generationConfig.thinkingConfig.thinkingBudget = 0`.
+- **Anthropic / OpenAI:** no change sent (non-thinking by default for the models
+  used).
+Because a reasoning model with too small a budget returns empty content (looks
+like "no JSON array found"), `test_provider` sizes its probe with
+`config.max_tokens()`, not a fixed 256.
+
+The **Run provider** (`settings.active`) and the **glossary provider**
+(`settings.glossaryProvider`) are independent selectors — glossary suggestion can
+use a different/cheaper model than a full Run. Each `ProviderConfig` is stored
+per-kind (`configFor(kind)`); the Settings modal edits any kind via its own local
+`editing` state without changing which one Run uses.
 
 ## Tests
 
