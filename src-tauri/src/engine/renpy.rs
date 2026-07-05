@@ -795,7 +795,137 @@ pub fn export_tl(
             }
         }
     }
+
+    // Make the language selectable (default to it) and remap the game's fonts to a
+    // glyph-capable one so the translation isn't rendered as "NO GLYPH" boxes.
+    setup_language(data_dir, &lang)?;
+
     Ok(Some(TlExport { files, dir }))
+}
+
+/// Write a small global `.rpy` that (1) defaults the game to `lang` if it has no
+/// language of its own and (2) — when a target-language font is available —
+/// remaps every font the game uses to it, scoped to `lang` via a
+/// `translate <lang> python:` block so English is unaffected.
+fn setup_language(data_dir: &Path, lang: &str) -> Result<()> {
+    let font_rel = "fonts/tl_font.ttf";
+    let font_ok = copy_target_font(&data_dir.join(font_rel))?;
+
+    let mut s = String::new();
+    s.push_str("# Added by RPGMaker Translator — makes the translation selectable + readable.\n");
+    s.push_str("# Delete this file to remove it.\n\n");
+    // Default to the translation only if the game defines no language of its own.
+    s.push_str(&format!(
+        "init 1000 python:\n    if config.language is None:\n        config.language = \"{lang}\"\n\n"
+    ));
+
+    if font_ok {
+        let refs = collect_font_refs(data_dir);
+        s.push_str(&format!("translate {lang} python:\n"));
+        s.push_str(&format!("    _tl_font = \"{font_rel}\"\n"));
+        s.push_str("    _tl_fonts = [\n");
+        for r in &refs {
+            s.push_str(&format!("        {r:?},\n"));
+        }
+        s.push_str("    ]\n");
+        s.push_str("    for _f in _tl_fonts:\n");
+        s.push_str("        for _b in (False, True):\n");
+        s.push_str("            for _i in (False, True):\n");
+        s.push_str("                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
+    }
+
+    std::fs::write(data_dir.join("zzz_translator.rpy"), s)
+        .with_context(|| "writing zzz_translator.rpy")?;
+    Ok(())
+}
+
+/// Copy a Thai-capable font into the game. Stopgap: uses a Windows system font
+/// (Leelawadee UI / Tahoma cover Thai + Latin). TODO: bundle Noto Sans Thai (OFL)
+/// with the app so exported games are redistributable and this works cross-platform.
+fn copy_target_font(dst: &Path) -> Result<bool> {
+    const CANDIDATES: &[&str] = &[
+        "C:/Windows/Fonts/LeelawUI.ttf",
+        "C:/Windows/Fonts/leelawad.ttf",
+        "C:/Windows/Fonts/tahoma.ttf",
+    ];
+    for c in CANDIDATES {
+        let src = Path::new(c);
+        if src.exists() {
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(src, dst).with_context(|| format!("copying font {c}"))?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Every font the game references, so they can all be remapped to the target-language
+/// font: both the `.ttf`/`.otf`/`.ttc` files present (path relative to the data dir)
+/// and any font paths quoted in `.rpy` scripts. The `tl/` tree is skipped.
+fn collect_font_refs(data_dir: &Path) -> Vec<String> {
+    let mut refs = std::collections::BTreeSet::new();
+    let mut stack = vec![data_dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().and_then(|n| n.to_str()) != Some("tl") {
+                    stack.push(p);
+                }
+                continue;
+            }
+            match p.extension().and_then(|x| x.to_str()) {
+                Some("ttf") | Some("otf") | Some("ttc") => {
+                    if let Ok(rel) = p.strip_prefix(data_dir) {
+                        refs.insert(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+                Some("rpy") => {
+                    if let Ok(txt) = std::fs::read_to_string(&p) {
+                        for r in font_strings(&txt) {
+                            refs.insert(r);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // Don't remap our own font onto itself.
+    refs.remove("fonts/tl_font.ttf");
+    refs.into_iter().collect()
+}
+
+/// Quoted font paths (`"…​.ttf"` / `.otf` / `.ttc`) referenced in a `.rpy` script.
+fn font_strings(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let b = text.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'"' || b[i] == b'\'' {
+            let q = b[i];
+            let start = i + 1;
+            let mut j = start;
+            while j < b.len() && b[j] != q && b[j] != b'\n' {
+                j += 1;
+            }
+            if j < b.len() && b[j] == q {
+                let inner = &text[start..j];
+                let low = inner.to_ascii_lowercase();
+                if low.ends_with(".ttf") || low.ends_with(".otf") || low.ends_with(".ttc") {
+                    // Ren'Py font paths are relative to the game dir; drop a leading `/`.
+                    out.push(inner.trim_start_matches('/').to_string());
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 /// The game's bundled Ren'Py launcher: a `<name>.exe` at the bundle root next to a
@@ -979,6 +1109,24 @@ label start:
         assert!(!texts.iter().any(|t| t.contains("hair_color")));
         // Normal dialogue after the block still works.
         assert!(texts.contains(&"Nice to meet you."));
+    }
+
+    #[test]
+    fn font_strings_finds_quoted_font_paths() {
+        let src = "define gui.text_font = \"gui/fonts/Dialog Regular.ttf\"\n\
+                   define x = \"/gui/fonts/Title.otf\"\n\
+                   text \"not a font\"\n\
+                   font \"phone/JetBrains.TTC\"\n";
+        let mut got = font_strings(src);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "gui/fonts/Dialog Regular.ttf".to_string(),
+                "gui/fonts/Title.otf".to_string(), // leading slash dropped
+                "phone/JetBrains.TTC".to_string(), // case-insensitive extension
+            ]
+        );
     }
 
     #[test]
