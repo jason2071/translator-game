@@ -57,6 +57,11 @@ impl GameEngine for MvMzEngine {
         let mut units = Vec::new();
         for path in files {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
+            // Only touch files we understand; skip stray copies/backups so they
+            // can't fail the import (extract_file would no-op on them anyway).
+            if !is_data_file(&name) {
+                continue;
+            }
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {name}"))?;
             let val: Value = serde_json::from_str(&text)
@@ -137,6 +142,18 @@ fn is_map_file(name: &str) -> bool {
     } else {
         false
     }
+}
+
+/// True for the RPGMaker data files this engine understands. Anything else in the
+/// data dir — a stray Windows copy like `Map016 - Copy.json`, an editor backup, or
+/// unrelated JSON — is skipped, so one odd or unparseable file doesn't fail the
+/// whole import. (A recognized file that is genuinely corrupt still errors.)
+fn is_data_file(name: &str) -> bool {
+    matches!(
+        name,
+        "System.json" | "MapInfos.json" | "CommonEvents.json" | "Troops.json"
+    ) || is_map_file(name)
+        || db_fields(name).is_some()
 }
 
 fn extract_file(name: &str, val: &Value, opts: &ExtractOpts, out: &mut Vec<TransUnit>) {
@@ -493,4 +510,27 @@ fn push_if(
     ctx: Option<String>,
 ) {
     out.push(TransUnit::new(file, ptr, kind, s).with_context(ctx));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_data_file_recognizes_rpgmaker_files_only() {
+        // Real data files.
+        assert!(is_data_file("System.json"));
+        assert!(is_data_file("MapInfos.json"));
+        assert!(is_data_file("Map001.json"));
+        assert!(is_data_file("Map016.json"));
+        assert!(is_data_file("Actors.json"));
+        assert!(is_data_file("Troops.json"));
+        // Stray copies / backups / unrelated json are NOT parsed.
+        assert!(!is_data_file("Map016 - Copy.json"));
+        assert!(!is_data_file("Map001 (1).json"));
+        assert!(!is_data_file("MapInfos - backup.json"));
+        assert!(!is_data_file("package.json"));
+        assert!(!is_data_file("Map.json"));
+        assert!(!is_data_file("MapABC.json"));
+    }
 }
