@@ -424,7 +424,12 @@ async fn translate_units(
         let mut reused = 0usize;
         let mut reused_updates: Vec<UnitUpdate> = Vec::new();
         for g in order {
-            let tm = if overwrite {
+            let tm = if !g.source.chars().any(char::is_alphabetic) {
+                // No letters (e.g. "!!!", "…", "?!", numbers, symbols/emoji) → no
+                // translation needed; copy the source as-is instead of feeding the
+                // model a tiny input it fails on. Applies even under overwrite.
+                Some(g.source.clone())
+            } else if overwrite {
                 None
             } else {
                 project::db::tm_lookup(&proj.conn, &g.source).ok().flatten()
