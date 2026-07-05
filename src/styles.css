@@ -743,6 +743,12 @@ code {
   align-items: center;
   gap: 0.3rem;
 }
+/* Run and Cancel swap in place; a fixed min-width keeps the button from
+   resizing (and shifting the row) when the label changes. */
+.tb-run {
+  min-width: 6rem;
+  justify-content: center;
+}
 /* Dedicated status strip under the toolbar: a full-width progress bar + summary,
    shown only while a Run/glossary job runs or a result/error is present. */
 .tb-status {

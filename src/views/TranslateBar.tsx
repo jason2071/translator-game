@@ -151,11 +151,11 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
           <span className="tb-sep" />
 
           {!running ? (
-            <button className="primary" onClick={run}>
+            <button className="primary tb-run" onClick={run}>
               Run
             </button>
           ) : (
-            <button className="ghost" onClick={() => cancel("units")}>
+            <button className="ghost tb-run" onClick={() => cancel("units")}>
               Cancel
             </button>
           )}
