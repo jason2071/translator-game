@@ -316,6 +316,15 @@ struct UnitUpdate {
     status: String,
 }
 
+/// A unit that failed to translate, with why — emitted per batch on
+/// `translate://failed` so the UI can list "which line, and the reason".
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FailedUnit {
+    id: i64,
+    reason: String,
+}
+
 /// A distinct source string plus every unit id that shares it. Translating the
 /// group once and applying to all ids avoids re-translating duplicate lines.
 struct Group {
@@ -564,13 +573,17 @@ async fn translate_units(
 
         // Batch in one call; on misalignment fall back to per-item — cancellable,
         // with progress after every item so the UI never looks frozen.
+        // The batch's own error (e.g. "no JSON array found") becomes the reason
+        // for any of its items that stay unrecovered after the per-item fallback.
+        let mut batch_error: Option<String> = None;
         let results: Vec<Option<String>> =
             match provider.translate_batch(&client, key.as_deref(), &req).await {
                 Ok(v) => {
                     done += batch_units;
                     v.into_iter().map(Some).collect()
                 }
-                Err(_) => {
+                Err(e) => {
+                    batch_error = Some(e.to_string());
                     let mut out: Vec<Option<String>> = Vec::with_capacity(chunk.len());
                     for (j, g) in chunk.iter().enumerate() {
                         if state.cancel.load(Ordering::SeqCst) {
@@ -620,24 +633,29 @@ async fn translate_units(
         // Groups that produced no usable text are flagged Failed so they can be
         // filtered and retried later.
         let mut writes: Vec<(Vec<i64>, String, String)> = Vec::new();
-        let mut failed_ids: Vec<i64> = Vec::new();
+        let mut failures: Vec<FailedUnit> = Vec::new();
         for (j, (g, res)) in chunk.iter().zip(results.into_iter()).enumerate() {
-            match res {
+            let reason = match res {
                 Some(m) => match protect::restore(&m, &masks[base + j].tokens) {
-                    Ok(t) => writes.push((g.ids.clone(), g.source.clone(), t)),
-                    Err(_) => {
-                        summary.failed += g.ids.len(); // placeholder mangled
-                        failed_ids.extend(g.ids.iter().copied());
+                    Ok(t) => {
+                        writes.push((g.ids.clone(), g.source.clone(), t));
+                        continue;
                     }
+                    // The model returned text but a masked ⟦…⟧ placeholder came back
+                    // altered, so we can't safely reinsert the game's codes.
+                    Err(_) => "Inline codes changed — a ⟦…⟧ placeholder was altered".to_string(),
                 },
-                None => {
-                    summary.failed += g.ids.len();
-                    failed_ids.extend(g.ids.iter().copied());
-                }
+                None => batch_error
+                    .clone()
+                    .unwrap_or_else(|| "No translation returned by the model".to_string()),
+            };
+            for id in &g.ids {
+                failures.push(FailedUnit { id: *id, reason: reason.clone() });
             }
         }
+        summary.failed += failures.len();
 
-        if !writes.is_empty() || !failed_ids.is_empty() {
+        if !writes.is_empty() || !failures.is_empty() {
             let guard = state.project.lock().unwrap();
             if let Some(proj) = guard.as_ref() {
                 for (ids, source, text) in &writes {
@@ -652,8 +670,8 @@ async fn translate_units(
                     let _ = project::db::tm_upsert(&proj.conn, source, text);
                     summary.translated += ids.len();
                 }
-                for id in &failed_ids {
-                    let _ = project::db::set_status(&proj.conn, *id, Status::Failed.as_str());
+                for f in &failures {
+                    let _ = project::db::set_status(&proj.conn, f.id, Status::Failed.as_str());
                 }
             }
         }
@@ -670,15 +688,19 @@ async fn translate_units(
                 });
             }
         }
-        for id in &failed_ids {
+        for f in &failures {
             updates.push(UnitUpdate {
-                id: *id,
+                id: f.id,
                 translation: None,
                 status: Status::Failed.as_str().to_string(),
             });
         }
         if !updates.is_empty() {
             let _ = app.emit("translate://units", updates);
+        }
+        // Surface which units failed, and why, for the errors modal.
+        if !failures.is_empty() {
+            let _ = app.emit("translate://failed", &failures);
         }
 
         let _ = app.emit(

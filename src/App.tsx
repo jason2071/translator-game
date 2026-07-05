@@ -10,12 +10,14 @@ import GridView from "./views/GridView";
 import GlossaryView from "./views/GlossaryView";
 import LintPanel from "./views/LintPanel";
 import SettingsView from "./views/SettingsView";
+import ErrorsPanel from "./views/ErrorsPanel";
 import TranslateBar from "./views/TranslateBar";
+import { useErrors } from "./errors";
 import { Sidebar } from "./components/Sidebar";
 import { Modal } from "./components/Modal";
 import { UpdateBanner } from "./components/UpdateBanner";
 
-type Panel = "none" | "glossary" | "lint" | "settings";
+type Panel = "none" | "glossary" | "lint" | "settings" | "errors";
 
 // The window close guard is registered exactly once for the app's lifetime.
 // See the effect below — unlistening an onCloseRequested handler must be avoided.
@@ -34,6 +36,15 @@ export default function App() {
     api.onUnitsUpdate(applyUnitUpdates).then((fn) => (unlisten = fn));
     return () => unlisten?.();
   }, [applyUnitUpdates]);
+
+  // Collect per-unit failure reasons (which line, why) for the errors modal.
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    api
+      .onTranslateFailed((items) => useErrors.getState().record(items))
+      .then((fn) => (unlisten = fn));
+    return () => unlisten?.();
+  }, []);
 
   // Warn before quitting while a translation is still running. Finished batches
   // are already persisted; the confirm just stops the user losing the rest.
@@ -81,7 +92,7 @@ export default function App() {
       />
       <div className="main">
         <UpdateBanner />
-        <TranslateBar />
+        <TranslateBar onOpenErrors={() => setPanel("errors")} />
         <GridView />
       </div>
 
@@ -98,6 +109,11 @@ export default function App() {
       {panel === "settings" && (
         <Modal title="AI providers & settings" onClose={() => setPanel("none")}>
           <SettingsView />
+        </Modal>
+      )}
+      {panel === "errors" && (
+        <Modal title="Translation errors" onClose={() => setPanel("none")}>
+          <ErrorsPanel onClose={() => setPanel("none")} />
         </Modal>
       )}
     </div>

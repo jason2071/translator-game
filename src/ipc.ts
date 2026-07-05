@@ -141,6 +141,12 @@ export interface UnitUpdate {
   status: Status;
 }
 
+/** A unit that failed during a Run, with the reason, for the errors modal. */
+export interface FailedUnit {
+  id: number;
+  reason: string;
+}
+
 export interface GlossCandidate {
   term: string;
   translation: string | null;
@@ -246,6 +252,10 @@ export const api = {
   // Units filled during a Run, emitted per batch so the grid fills live.
   onUnitsUpdate: (cb: (updates: UnitUpdate[]) => void): Promise<UnlistenFn> =>
     listen<UnitUpdate[]>("translate://units", (e) => cb(e.payload)),
+
+  // Units that failed during a Run (with the reason), emitted per batch.
+  onTranslateFailed: (cb: (items: FailedUnit[]) => void): Promise<UnlistenFn> =>
+    listen<FailedUnit[]>("translate://failed", (e) => cb(e.payload)),
 
   // First transport-level error during a Run (AI unreachable / rate-limited).
   onTranslateError: (cb: (message: string) => void): Promise<UnlistenFn> =>

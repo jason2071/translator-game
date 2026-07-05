@@ -11,6 +11,7 @@ import {
 } from "./ipc";
 import { useGlossarySuggest } from "./glossarySuggest";
 import { useRecents } from "./recents";
+import { useErrors } from "./errors";
 
 /** A contiguous slice of the filtered unit list, starting at absolute `offset`. */
 interface UnitWindow {
@@ -88,6 +89,7 @@ export const useStore = create<AppStore>((set, get) => ({
   closeProject: async () => {
     await api.closeProject();
     useGlossarySuggest.getState().reset();
+    useErrors.getState().reset();
     set({ project: null, files: [], stats: null, total: 0, window: EMPTY_WINDOW });
   },
 

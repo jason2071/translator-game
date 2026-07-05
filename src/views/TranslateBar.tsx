@@ -8,7 +8,7 @@ import { useTranslation } from "../translation";
 import TransProgress from "../components/TransProgress";
 import { Icon } from "../components/Icon";
 
-export default function TranslateBar() {
+export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => void }) {
   const filter = useStore((s) => s.filter);
   const setFilter = useStore((s) => s.setFilter);
   const stats = useStore((s) => s.stats);
@@ -143,6 +143,16 @@ export default function TranslateBar() {
           Cancel
         </button>
       )}
+
+      <button
+        className="ghost"
+        onClick={onOpenErrors}
+        disabled={failed === 0}
+        title="See which units failed and why"
+        style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
+      >
+        <Icon name="warn" size={14} /> Errors ({failed})
+      </button>
 
       {failed > 0 && !running && (
         <button
