@@ -490,6 +490,26 @@ pub fn suggest_glossary(conn: &Connection) -> Result<Vec<GlossCandidate>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Sample distinct narrative source lines for AI glossary mining: the most
+/// frequent dialogue / choice / description / map-name text, capped at
+/// `max_lines`. Frequency-ranked so recurring proper nouns surface, with longer
+/// lines breaking ties for richer context. The structured Name/Term fields are
+/// already covered by [`suggest_glossary`]; this feeds the model the free text
+/// where that heuristic is blind (names spoken in dialogue, place names, …).
+pub fn sample_text_for_mining(conn: &Connection, max_lines: i64) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT source, COUNT(*) AS c
+           FROM unit
+          WHERE source <> ''
+            AND kind IN ('Dialogue','ScrollText','Choice','Description','Profile','MapName')
+          GROUP BY source
+          ORDER BY c DESC, LENGTH(source) DESC
+          LIMIT ?",
+    )?;
+    let rows = stmt.query_map([max_lines], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// A glossary violation: a translated unit whose source uses a glossary term
 /// but whose translation lacks the mapped wording.
 #[derive(Debug, Serialize)]

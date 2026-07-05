@@ -34,6 +34,18 @@ impl TranslationProvider for MockProvider {
         }
         Ok(out)
     }
+
+    async fn complete(
+        &self,
+        _client: &reqwest::Client,
+        _key: Option<&str>,
+        _system: &str,
+        user: &str,
+        _model: &str,
+        _max_tokens: u32,
+    ) -> Result<String> {
+        Ok(format!("C[{user}]"))
+    }
 }
 
 fn req(texts: &[&str]) -> BatchReq {

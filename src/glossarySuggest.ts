@@ -28,6 +28,9 @@ interface SuggestState {
 
   load: (root: string) => void; // restore this game's saved panel (on open)
   suggest: () => Promise<void>;
+  // AI-mine candidates from the game's dialogue/text (catches proper nouns the
+  // heuristic misses). Merges into any candidates already present.
+  suggestAi: (cfg: ProviderConfig) => Promise<void>;
   // Translate candidates via AI. By default only the empty/failed/skipped ones;
   // pass all=true to re-translate every candidate, overwriting filled rows.
   translateEmpty: (cfg: ProviderConfig, all?: boolean) => Promise<void>;
@@ -92,6 +95,33 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
           return { cands: c, rows };
         });
         persist();
+      } catch (e) {
+        set({ msg: String(e) });
+      } finally {
+        set({ loading: false });
+      }
+    },
+
+    suggestAi: async (cfg) => {
+      set({ loading: true, msg: null });
+      try {
+        const ai = await api.suggestGlossaryAi(cfg);
+        // Merge with any candidates already present (a prior heuristic run),
+        // dedup by term; fill empty rows from the AI's suggested translation.
+        set((s) => {
+          const byTerm = new Map<string, GlossCandidate>();
+          for (const c of s.cands ?? []) byTerm.set(c.term, c);
+          for (const c of ai) if (!byTerm.has(c.term)) byTerm.set(c.term, c);
+          const rows = { ...s.rows };
+          for (const x of ai) {
+            if (!rows[x.term]) rows[x.term] = { on: true, tr: x.translation ?? "" };
+            else if (!(rows[x.term].tr ?? "").trim() && x.translation)
+              rows[x.term] = { ...rows[x.term], tr: x.translation };
+          }
+          return { cands: [...byTerm.values()], rows };
+        });
+        persist();
+        set({ msg: ai.length ? `AI found ${ai.length} term(s)` : "AI found no new terms" });
       } catch (e) {
         set({ msg: String(e) });
       } finally {

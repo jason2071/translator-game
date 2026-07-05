@@ -86,4 +86,61 @@ impl TranslationProvider for Anthropic {
 
         parse_batch_response(&content, req.items.len())
     }
+
+    async fn complete(
+        &self,
+        client: &reqwest::Client,
+        key: Option<&str>,
+        system: &str,
+        user: &str,
+        model: &str,
+        max_tokens: u32,
+    ) -> Result<String> {
+        let url = format!("{}/v1/messages", self.base);
+        let key = key.ok_or_else(|| anyhow!("Anthropic requires an API key"))?;
+        let body = json!({
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+            "system": system,
+            "messages": [ { "role": "user", "content": user } ],
+        });
+
+        with_retry(4, 800, || async {
+            let resp = client
+                .post(&url)
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| CallError::Retryable(e.into()))?;
+            let status = resp.status();
+            let text = resp.text().await.map_err(|e| CallError::Retryable(e.into()))?;
+            if status.is_success() {
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| CallError::Fatal(e.into()))?;
+                let joined: String = v["content"]
+                    .as_array()
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter_map(|b| b["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                    .unwrap_or_default();
+                if joined.is_empty() {
+                    Err(CallError::Fatal(anyhow!("empty response: {text}")))
+                } else {
+                    Ok(joined)
+                }
+            } else if status_is_retryable(status.as_u16()) {
+                Err(CallError::Retryable(anyhow!("{status}: {text}")))
+            } else {
+                Err(CallError::Fatal(anyhow!("{status}: {text}")))
+            }
+        })
+        .await
+    }
 }

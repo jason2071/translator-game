@@ -155,6 +155,75 @@ pub fn parse_batch_response(text: &str, n: usize) -> Result<Vec<String>> {
     Ok(out.into_iter().map(|o| o.unwrap()).collect())
 }
 
+/// A glossary term mined from game text by the model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MinedTerm {
+    pub term: String,
+    pub kind: String,
+    pub translation: String,
+}
+
+/// Build the (system, user) prompt that asks the model to mine recurring proper
+/// nouns / special terms from sampled game text and suggest translations. The
+/// user turn is the raw sampled corpus.
+pub fn build_glossary_mining(source_lang: &str, target_lang: &str, corpus: &str) -> (String, String) {
+    let src = if source_lang.trim().eq_ignore_ascii_case("auto") || source_lang.trim().is_empty() {
+        "the source language (auto-detect it, commonly Japanese or English)".to_string()
+    } else {
+        format!("{source_lang} text")
+    };
+    let sys = format!(
+        "You build a translation glossary for a video game. From the {src} the user \
+         provides, extract recurring PROPER NOUNS and special terms that must be \
+         translated consistently: character names, place names, organization names, \
+         item/skill/status names, and coined world-specific terms. Ignore ordinary \
+         words, whole sentences, and one-off common nouns.\n\
+         For each term give a suggested {tgt} translation (transliterate names).\n\
+         Respond with ONLY a JSON array, no prose, of objects \
+         {{\"term\": \"<source term>\", \"kind\": \"<name|place|item|skill|term>\", \
+         \"tr\": \"<{tgt} translation>\"}}. At most 60 items, most important first. \
+         Do not emit any reasoning or commentary.",
+        src = src,
+        tgt = target_lang,
+    );
+    (sys, corpus.to_string())
+}
+
+/// Parse a glossary-mining response into terms. Tolerant of ```json fences,
+/// `<think>` blocks, and an object-wrapped array; skips entries with no `term`.
+pub fn parse_glossary_mining(text: &str) -> Vec<MinedTerm> {
+    let cleaned = strip_fences(&strip_reasoning(text));
+    let Some(arr) = extract_array(&cleaned) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in arr {
+        let term = e.get("term").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if term.is_empty() {
+            continue;
+        }
+        let kind = e
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("term")
+            .trim()
+            .to_string();
+        let translation = e
+            .get("tr")
+            .or_else(|| e.get("translation"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        out.push(MinedTerm {
+            term: term.to_string(),
+            kind: if kind.is_empty() { "term".into() } else { kind },
+            translation,
+        });
+    }
+    out
+}
+
 /// Remove `<think>…</think>` / `<thinking>…</thinking>` reasoning blocks that
 /// reasoning models (e.g. via Ollama) emit before the actual answer.
 fn strip_reasoning(text: &str) -> String {
@@ -399,5 +468,37 @@ mod tests {
     fn single_item_rejects_unparseable_json_object() {
         // A JSON object with no usable string must NOT leak as raw text.
         assert!(parse_batch_response(r#"{"error":{"code":500}}"#, 1).is_err());
+    }
+
+    #[test]
+    fn glossary_mining_prompt_names_the_task() {
+        let (sys, user) = build_glossary_mining("Japanese", "Thai", "本文サンプル");
+        assert!(sys.contains("glossary"));
+        assert!(sys.contains("PROPER NOUNS"));
+        assert!(sys.contains("Thai"));
+        assert!(sys.contains("\"term\""));
+        assert_eq!(user, "本文サンプル"); // corpus passed through verbatim
+    }
+
+    #[test]
+    fn parses_mined_terms_tolerantly() {
+        // Fenced, with a <think> block, alternate `translation` key, and a junk
+        // entry (no term) that must be skipped.
+        let raw = "<think>scanning…</think>\n```json\n[\
+            {\"term\":\"Callum\",\"kind\":\"name\",\"tr\":\"คัลลัม\"},\
+            {\"term\":\"Stamina\",\"kind\":\"term\",\"translation\":\"พลังกาย\"},\
+            {\"kind\":\"term\",\"tr\":\"ignored\"}\
+        ]\n```";
+        let got = parse_glossary_mining(raw);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0], MinedTerm { term: "Callum".into(), kind: "name".into(), translation: "คัลลัม".into() });
+        assert_eq!(got[1].term, "Stamina");
+        assert_eq!(got[1].translation, "พลังกาย"); // alternate key honored
+    }
+
+    #[test]
+    fn mining_parse_empty_on_garbage() {
+        assert!(parse_glossary_mining("no json here").is_empty());
+        assert!(parse_glossary_mining("").is_empty());
     }
 }

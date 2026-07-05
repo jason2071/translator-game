@@ -222,6 +222,8 @@ export const api = {
   glossaryDelete: (id: number) => invoke<void>("glossary_delete", { id }),
   glossaryLint: () => invoke<LintWarning[]>("glossary_lint"),
   suggestGlossary: () => invoke<GlossCandidate[]>("suggest_glossary"),
+  suggestGlossaryAi: (config: ProviderConfig) =>
+    invoke<GlossCandidate[]>("suggest_glossary_ai", { config }),
   glossaryAddBulk: (items: [string, string][]) =>
     invoke<number>("glossary_add_bulk", { items }),
 

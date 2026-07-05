@@ -108,6 +108,20 @@ pub trait TranslationProvider: Send + Sync {
         key: Option<&str>,
         req: &BatchReq,
     ) -> Result<Vec<String>>;
+
+    /// Free-form single-shot completion: send one system+user prompt and return
+    /// the raw model text (no per-item alignment). Used for auxiliary tasks such
+    /// as mining glossary terms from sampled game text. Reasoning is requested
+    /// off, and a low temperature used, for a fast deterministic extraction.
+    async fn complete(
+        &self,
+        client: &reqwest::Client,
+        key: Option<&str>,
+        system: &str,
+        user: &str,
+        model: &str,
+        max_tokens: u32,
+    ) -> Result<String>;
 }
 
 /// Translate a batch; on any batch-level failure, fall back to translating each

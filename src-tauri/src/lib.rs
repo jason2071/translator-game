@@ -230,6 +230,69 @@ fn suggest_glossary(state: tauri::State<AppState>) -> Result<Vec<GlossCandidate>
     with_project(&state, |p| project::db::suggest_glossary(&p.conn))
 }
 
+/// AI-mine glossary candidates from the game's own text. The structured
+/// `suggest_glossary` heuristic only sees Name/Term fields; this samples the most
+/// frequent dialogue/description lines and asks the model to extract recurring
+/// proper nouns and special terms it finds there — catching character/place names
+/// spoken in dialogue that the heuristic can't. Returns candidates (with a
+/// suggested translation), minus anything already in the glossary. Gathers the
+/// corpus under the project lock, then does the network call with no lock held.
+#[tauri::command]
+async fn suggest_glossary_ai(
+    config: ProviderConfig,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<GlossCandidate>, String> {
+    let (corpus, existing, source_lang, target_lang) = {
+        let guard = state.project.lock().unwrap();
+        let p = guard.as_ref().ok_or("no project open")?;
+        let lines = project::db::sample_text_for_mining(&p.conn, 300).map_err(|e| e.to_string())?;
+        let existing: std::collections::HashSet<String> = project::db::glossary_list(&p.conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|g| g.term.to_lowercase())
+            .collect();
+        let source_lang = project::db::get_meta(&p.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
+        let target_lang = project::db::get_meta(&p.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into());
+        (lines.join("\n"), existing, source_lang, target_lang)
+    };
+    if corpus.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let key: Option<String> = if config.needs_key() {
+        Some(
+            keys::get_key(&config.kind)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("no API key stored for provider '{}'", config.kind))?,
+        )
+    } else {
+        None
+    };
+
+    let (sys, user) = ai::prompt::build_glossary_mining(&source_lang, &target_lang, &corpus);
+    let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
+    let raw = provider
+        .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut out: Vec<GlossCandidate> = ai::prompt::parse_glossary_mining(&raw)
+        .into_iter()
+        .filter(|m| !existing.contains(&m.term.to_lowercase()))
+        .map(|m| {
+            let count = corpus.matches(&m.term).count() as i64;
+            GlossCandidate {
+                term: m.term,
+                translation: (!m.translation.is_empty()).then_some(m.translation),
+                kind: m.kind,
+                count,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| b.count.cmp(&a.count));
+    Ok(out)
+}
+
 /// Add several glossary entries at once; returns how many were inserted.
 #[tauri::command]
 fn glossary_add_bulk(
@@ -978,6 +1041,7 @@ pub fn run() {
             glossary_delete,
             glossary_lint,
             suggest_glossary,
+            suggest_glossary_ai,
             glossary_add_bulk,
             translate_units,
             translate_texts,

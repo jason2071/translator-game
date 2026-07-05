@@ -97,6 +97,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
     loading,
     msg,
     suggest,
+    suggestAi,
     translateEmpty,
     translateOne,
     setRow,
@@ -130,8 +131,16 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
         <button className="ghost" onClick={suggest} disabled={loading}>
           <Icon name="sparkle" size={14} /> {loading ? "Scanning…" : "Auto-suggest from game"}
         </button>
+        <button
+          className="ghost"
+          onClick={() => suggestAi(glossaryConfig())}
+          disabled={loading}
+          title="Use AI to mine proper nouns/terms from the game's dialogue (catches names the heuristic misses)"
+        >
+          <Icon name="sparkle" size={14} /> AI suggest
+        </button>
         {translating && <span className="hint">Translating in background…</span>}
-        {msg && <span className="ok-msg">{msg}</span>}
+        {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
       </div>
     );
   }
@@ -173,6 +182,15 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
               </option>
             ))}
           </select>
+
+          <button
+            className="ghost"
+            onClick={() => suggestAi(glossaryConfig())}
+            disabled={loading || glossBusy}
+            title="Mine more terms from the game's dialogue with AI"
+          >
+            <Icon name="sparkle" size={14} /> {loading ? "AI scanning…" : "AI suggest"}
+          </button>
 
           {glossBusy ? (
             <button className="ghost" onClick={() => cancel("glossary")}>

@@ -95,4 +95,65 @@ impl TranslationProvider for Gemini {
 
         parse_batch_response(&content, req.items.len())
     }
+
+    async fn complete(
+        &self,
+        client: &reqwest::Client,
+        key: Option<&str>,
+        system: &str,
+        user: &str,
+        model: &str,
+        max_tokens: u32,
+    ) -> Result<String> {
+        let key = key.ok_or_else(|| anyhow!("Gemini requires an API key"))?;
+        let url = format!(
+            "{}/v1beta/models/{}:generateContent?key={}",
+            self.base, model, key
+        );
+        let body = json!({
+            "systemInstruction": { "parts": [ { "text": system } ] },
+            "contents": [ { "role": "user", "parts": [ { "text": user } ] } ],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": max_tokens,
+                // No thinking budget: keep the whole budget for the term list.
+                "thinkingConfig": { "thinkingBudget": 0 },
+            },
+        });
+
+        with_retry(4, 800, || async {
+            let resp = client
+                .post(&url)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| CallError::Retryable(e.into()))?;
+            let status = resp.status();
+            let text = resp.text().await.map_err(|e| CallError::Retryable(e.into()))?;
+            if status.is_success() {
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| CallError::Fatal(e.into()))?;
+                let joined: String = v["candidates"][0]["content"]["parts"]
+                    .as_array()
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|p| p["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                    .unwrap_or_default();
+                if joined.is_empty() {
+                    Err(CallError::Fatal(anyhow!("empty response: {text}")))
+                } else {
+                    Ok(joined)
+                }
+            } else if status_is_retryable(status.as_u16()) {
+                Err(CallError::Retryable(anyhow!("{status}: {text}")))
+            } else {
+                Err(CallError::Fatal(anyhow!("{status}: {text}")))
+            }
+        })
+        .await
+    }
 }
