@@ -130,6 +130,9 @@ pub struct ExportResult {
     pub files_written: usize,
     pub units_applied: usize,
     pub backup_dir: Option<String>,
+    /// A human-readable note about how the export was done (e.g. the Ren'Py
+    /// `tl/<lang>/` path). `None` for a plain in-place export.
+    pub note: Option<String>,
 }
 
 /// Back up the game files that are about to change, then patch translations
@@ -155,6 +158,10 @@ pub fn export(project: &Project, make_backup: bool) -> Result<ExportResult> {
                 files_written: tl.files,
                 units_applied: applied.len(),
                 backup_dir: None,
+                note: Some(format!(
+                    "Wrote {} Ren'Py translation file(s) to tl/{lang}/ (source untouched). Pick “{lang}” as the language in-game to see it.",
+                    tl.files
+                )),
             });
         }
     }
@@ -251,5 +258,6 @@ pub fn export(project: &Project, make_backup: bool) -> Result<ExportResult> {
         files_written: touched.len(),
         units_applied: applied.len(),
         backup_dir,
+        note: None,
     })
 }

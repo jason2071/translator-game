@@ -70,6 +70,8 @@ export interface ExportResult {
   filesWritten: number;
   unitsApplied: number;
   backupDir: string | null;
+  /** How the export was done (e.g. the Ren'Py tl/<lang>/ path); null for in-place. */
+  note?: string | null;
 }
 
 export interface UnitFilter {

@@ -56,7 +56,7 @@ export function Sidebar({
     try {
       const r = await api.exportProject(true);
       setResult(r);
-      setMsg(`Exported ${r.unitsApplied} units → ${r.filesWritten} files`);
+      setMsg(r.note ?? `Exported ${r.unitsApplied} units → ${r.filesWritten} files`);
       await refreshMeta();
     } catch (e) {
       setErr(String(e));
