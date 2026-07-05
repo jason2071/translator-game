@@ -798,16 +798,78 @@ pub fn export_tl(
 
     // Make the language selectable (default to it) and remap the game's fonts to a
     // glyph-capable one so the translation isn't rendered as "NO GLYPH" boxes.
-    setup_language(data_dir, &lang)?;
+    setup_language(data_dir, &lang, &language_label(target_lang, &lang))?;
 
     Ok(Some(TlExport { files, dir }))
+}
+
+/// The button label for the language menu: the native name for known languages,
+/// else the project's target-language string.
+fn language_label(target_lang: &str, lang: &str) -> String {
+    match lang {
+        "thai" => "\u{e44}\u{e17}\u{e22}".to_string(), // ไทย
+        _ => target_lang.to_string(),
+    }
+}
+
+/// Add a `<label>` button to the game's language-selection screen (a
+/// `textbutton "…" action Language(…)` block) so the translation can be chosen
+/// from Settings. Idempotent, and touches only screen files (no version-sensitive
+/// statements). No-op if the game has no such menu.
+fn add_language_option(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
+    let already = format!("Language(\"{lang}\")");
+    let mut stack = vec![data_dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().and_then(|n| n.to_str()) != Some("tl") {
+                    stack.push(p);
+                }
+                continue;
+            }
+            if p.extension().and_then(|x| x.to_str()) != Some("rpy") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&p) else { continue };
+            if !content.contains("action Language(") || content.contains(&already) {
+                continue;
+            }
+            let lines: Vec<&str> = content.split_inclusive('\n').collect();
+            let Some(idx) = lines.iter().rposition(|l| l.contains("action Language(")) else {
+                continue;
+            };
+            let indent: String = lines[idx]
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .collect();
+            let button = format!("{indent}textbutton \"{label}\" action Language(\"{lang}\")\n");
+
+            let mut out = String::with_capacity(content.len() + button.len());
+            for (i, l) in lines.iter().enumerate() {
+                out.push_str(l);
+                if i == idx {
+                    if !l.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push_str(&button);
+                }
+            }
+            std::fs::write(&p, out).with_context(|| format!("adding language button to {}", p.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Write a small global `.rpy` that (1) defaults the game to `lang` if it has no
 /// language of its own and (2) — when a target-language font is available —
 /// remaps every font the game uses to it, scoped to `lang` via a
 /// `translate <lang> python:` block so English is unaffected.
-fn setup_language(data_dir: &Path, lang: &str) -> Result<()> {
+fn setup_language(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
+    // Add the language to the game's own Settings language menu, if it has one.
+    add_language_option(data_dir, lang, label)?;
+
     let mut s = String::new();
     s.push_str("# Added by RPGMaker Translator — makes the translation selectable + readable.\n");
     s.push_str("# Delete this file (and fonts/tl_font.ttf) to remove it.\n\n");
@@ -1122,6 +1184,27 @@ label start:
                 "phone/JetBrains.TTC".to_string(), // case-insensitive extension
             ]
         );
+    }
+
+    #[test]
+    fn add_language_button_after_last_and_idempotent() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::write(
+            root.join("screens.rpy"),
+            "    vbox:\n        textbutton \"English\" action Language(None)\n        textbutton \"Espanol\" action Language(\"spanish\")\n",
+        )
+        .unwrap();
+
+        add_language_option(root, "thai", "\u{e44}\u{e17}\u{e22}").unwrap();
+        let c = std::fs::read_to_string(root.join("screens.rpy")).unwrap();
+        // Added after the last existing button, with the same 8-space indent.
+        assert!(c.contains("        textbutton \"\u{e44}\u{e17}\u{e22}\" action Language(\"thai\")"));
+
+        // Re-running does not duplicate it.
+        add_language_option(root, "thai", "\u{e44}\u{e17}\u{e22}").unwrap();
+        let c2 = std::fs::read_to_string(root.join("screens.rpy")).unwrap();
+        assert_eq!(c2.matches("Language(\"thai\")").count(), 1);
     }
 
     #[test]
