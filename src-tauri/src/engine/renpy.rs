@@ -808,10 +808,6 @@ pub fn export_tl(
 /// remaps every font the game uses to it, scoped to `lang` via a
 /// `translate <lang> python:` block so English is unaffected.
 fn setup_language(data_dir: &Path, lang: &str) -> Result<()> {
-    let font_rel = "fonts/tl_font.ttf";
-    copy_target_font(&data_dir.join(font_rel))?;
-    let refs = collect_font_refs(data_dir);
-
     let mut s = String::new();
     s.push_str("# Added by RPGMaker Translator — makes the translation selectable + readable.\n");
     s.push_str("# Delete this file (and fonts/tl_font.ttf) to remove it.\n\n");
@@ -819,18 +815,25 @@ fn setup_language(data_dir: &Path, lang: &str) -> Result<()> {
     s.push_str(&format!(
         "init 1000 python:\n    if config.language is None:\n        config.language = \"{lang}\"\n\n"
     ));
-    // Remap every game font to the bundled Thai+Latin font, scoped to `lang`.
-    s.push_str(&format!("translate {lang} python:\n"));
-    s.push_str(&format!("    _tl_font = \"{font_rel}\"\n"));
-    s.push_str("    _tl_fonts = [\n");
-    for r in &refs {
-        s.push_str(&format!("        {r:?},\n"));
+
+    // The bundled font (Sarabun) covers Thai + Latin, so only remap fonts for a
+    // Thai target — other scripts (CJK, etc.) would render as NO GLYPH in it.
+    if lang == "thai" {
+        let font_rel = "fonts/tl_font.ttf";
+        copy_target_font(&data_dir.join(font_rel))?;
+        let refs = collect_font_refs(data_dir);
+        s.push_str(&format!("translate {lang} python:\n"));
+        s.push_str(&format!("    _tl_font = \"{font_rel}\"\n"));
+        s.push_str("    _tl_fonts = [\n");
+        for r in &refs {
+            s.push_str(&format!("        {r:?},\n"));
+        }
+        s.push_str("    ]\n");
+        s.push_str("    for _f in _tl_fonts:\n");
+        s.push_str("        for _b in (False, True):\n");
+        s.push_str("            for _i in (False, True):\n");
+        s.push_str("                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
     }
-    s.push_str("    ]\n");
-    s.push_str("    for _f in _tl_fonts:\n");
-    s.push_str("        for _b in (False, True):\n");
-    s.push_str("            for _i in (False, True):\n");
-    s.push_str("                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
 
     std::fs::write(data_dir.join("zzz_translator.rpy"), s)
         .with_context(|| "writing zzz_translator.rpy")?;
