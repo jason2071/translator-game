@@ -3,7 +3,7 @@
 // drops, duplicates, or alters the codes present in the source.
 
 // RPGMaker: \C[2], \V[7], \FS[24], \N[1], \., \!, \\ …
-const RPGMAKER_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]/g;
+const RPGMAKER_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|%\d+/g;
 // Ren'Py: [interpolation], {text tags}, and backslash escapes (\", \n). Escaped
 // [[ / {{ are literal text, so a bare doubled bracket contributes no code.
 const RENPY_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}/g;

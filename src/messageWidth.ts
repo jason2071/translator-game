@@ -11,7 +11,7 @@
 // Inline codes draw nothing, so they are stripped before counting width. Each
 // engine has its own grammar; masked ⟦n⟧ sentinels are stripped for all.
 // RPGMaker: \C[2], \V[7], \FS[24], \N[1], \., \!, \\ …
-const CODE_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|⟦\d+⟧/g;
+const CODE_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|%\d+|⟦\d+⟧/g;
 // Ren'Py: [interpolation], {text tags}, backslash escapes.
 const RENPY_CODE_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}|⟦\d+⟧/g;
 // TyranoScript / KiriKiri KAG: [tags], backslash escapes.

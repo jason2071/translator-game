@@ -43,6 +43,23 @@ pub fn mask(input: &str) -> Masked {
                 continue;
             }
         }
+        // RPGMaker message parameters `%1`, `%2`, … — printf-style substitutions
+        // in System terms and skill/state messages (e.g. "%1 gained %2 %3!"). Mask
+        // so a model can't drop or renumber them; a bare `%` (as in "50% off") is
+        // left alone.
+        if bytes[i] == b'%' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+            let mut j = i + 1;
+            while j < input.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            let idx = tokens.len();
+            tokens.push(input[i..j].to_string());
+            text.push(OPEN);
+            text.push_str(&idx.to_string());
+            text.push(CLOSE);
+            i = j;
+            continue;
+        }
         // Not a control code: copy one UTF-8 char.
         let ch = input[i..].chars().next().unwrap();
         text.push(ch);
@@ -367,6 +384,18 @@ mod tests {
         assert_eq!(m.tokens, vec!["\\C[2]", "\\C[0]"]);
         assert_eq!(m.text, "Hi \u{27E6}0\u{27E7}there\u{27E6}1\u{27E7}");
         assert!(!m.text.contains('\\'));
+    }
+
+    #[test]
+    fn masks_rpgmaker_message_params() {
+        // "%1 %2 %3" printf-style substitutions must be masked and round-trip; a
+        // bare '%' (as in "50% off") is left untouched.
+        let m = mask("%1 was drained of %2 %3!");
+        assert_eq!(m.tokens, vec!["%1", "%2", "%3"]);
+        assert!(!m.text.contains('%'));
+        assert_eq!(restore(&m.text, &m.tokens).unwrap(), "%1 was drained of %2 %3!");
+
+        assert!(mask("50% off today").is_plain(), "a bare % must not be masked");
     }
 
     #[test]
