@@ -193,11 +193,15 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
           </button>
         </div>
       </div>
-      {/* Modal shows only the glossary status. */}
-      <TransProgress kind="glossary" />
-      {translating && (
-        <div className="hint suggest-note">
-          Running in background — safe to close this dialog; results are kept.
+      {/* One tidy progress block: the bar + count, then the background note. */}
+      {glossBusy && (
+        <div className="suggest-progress">
+          <TransProgress kind="glossary" />
+          {translating && (
+            <p className="suggest-note">
+              Running in background — safe to close this dialog; results are kept.
+            </p>
+          )}
         </div>
       )}
       <div className="suggest-list">

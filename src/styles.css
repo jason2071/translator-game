@@ -1091,11 +1091,27 @@ code {
   padding: 0.25rem 0.4rem;
   max-width: 12rem;
 }
-.suggest-note {
-  margin: 0;
-  padding: 0.3rem 0.7rem;
+/* One progress block in the glossary modal: full-width bar + count, note below. */
+.suggest-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.5rem 0.7rem;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+}
+.suggest-progress .tb-progress {
+  max-width: none;
+  min-width: 0;
+  width: 100%;
+}
+.suggest-progress .tb-progress .bar {
+  height: 8px;
+}
+.suggest-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
 }
 .suggest-list {
   max-height: 340px;
