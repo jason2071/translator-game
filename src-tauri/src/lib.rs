@@ -823,7 +823,11 @@ async fn test_provider(
         extra_system: None,
         model: config.model.clone(),
         temperature: config.temperature(),
-        max_tokens: 256,
+        // Use the real translation budget: a reasoning model (e.g. Ollama qwen3)
+        // still spends tokens on reasoning even with thinking off, so a tiny cap
+        // gets consumed before it emits the answer — the test would then fail with
+        // an empty/truncated response even though normal translation works.
+        max_tokens: config.max_tokens(),
         thinking: config.thinking,
     };
     let out = provider

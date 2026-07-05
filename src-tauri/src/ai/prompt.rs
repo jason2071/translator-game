@@ -93,6 +93,12 @@ pub fn build_messages(req: &BatchReq) -> (String, String) {
 /// back to single-item requests).
 pub fn parse_batch_response(text: &str, n: usize) -> Result<Vec<String>> {
     let cleaned = strip_fences(&strip_reasoning(text));
+    if cleaned.trim().is_empty() {
+        return Err(anyhow!(
+            "empty model response — it likely hit the token limit (raise Max tokens) \
+             or a reasoning model used them all before answering"
+        ));
+    }
     let arr = match extract_array(&cleaned) {
         Some(a) => a,
         None => {
@@ -318,6 +324,16 @@ mod tests {
         let text = "[{\"i\":0,\"t\":\"A\"}] trailing <think> partial reasoning...";
         let r = parse_batch_response(text, 1).unwrap();
         assert_eq!(r, vec!["A"]);
+    }
+
+    #[test]
+    fn empty_response_gives_token_limit_hint() {
+        // A reasoning model that spends the whole token budget thinking leaves an
+        // empty answer — the error should point at the token limit, not "no JSON".
+        for text in ["", "   \n", "<think>reasoning that never finished"] {
+            let err = parse_batch_response(text, 1).unwrap_err().to_string();
+            assert!(err.contains("token limit"), "unexpected error: {err}");
+        }
     }
 
     #[test]
