@@ -23,6 +23,7 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
   // Only this Run's own status gates the controls; a glossary job runs in the
   // shared queue and does not lock the Run button (it just queues).
   const unitsPhase = useTranslation((s) => s.units.phase);
+  const glossaryBusy = useTranslation((s) => s.glossary.phase !== "idle");
   const enqueue = useTranslation((s) => s.enqueue);
   const cancel = useTranslation((s) => s.cancel);
   const running = unitsPhase !== "idle"; // queued or running
@@ -73,122 +74,124 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
   const failed = stats?.failed ?? 0;
 
   return (
-    <div className="toolbar">
-      <span className="tb-label">AI translate</span>
+    <>
+      <div className="toolbar">
+        <div className="tb-config">
+          <span className="tb-label">AI translate</span>
 
-      <div className="lang-switch">
-        <select
-          value={project?.sourceLang ?? "Auto"}
-          onChange={(e) => setLanguages(e.target.value, project?.targetLang ?? "Thai")}
-          disabled={running}
-          title="Source language"
-        >
-          {SOURCE_LANGS.map((l) => (
-            <option key={l} value={l}>
-              {l}
-            </option>
-          ))}
-        </select>
-        <span className="arrow">→</span>
-        <select
-          value={project?.targetLang ?? "Thai"}
-          onChange={(e) => setLanguages(project?.sourceLang ?? "Auto", e.target.value)}
-          disabled={running}
-          title="Target language"
-        >
-          {TARGET_LANGS.map((l) => (
-            <option key={l} value={l}>
-              {l}
-            </option>
-          ))}
-        </select>
+          <div className="lang-switch">
+            <select
+              value={project?.sourceLang ?? "Auto"}
+              onChange={(e) => setLanguages(e.target.value, project?.targetLang ?? "Thai")}
+              disabled={running}
+              title="Source language"
+            >
+              {SOURCE_LANGS.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+            <span className="arrow">→</span>
+            <select
+              value={project?.targetLang ?? "Thai"}
+              onChange={(e) => setLanguages(project?.sourceLang ?? "Auto", e.target.value)}
+              disabled={running}
+              title="Target language"
+            >
+              {TARGET_LANGS.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <span
+            className="tb-scope"
+            title="Run translates this — click a file (or 'All files') in the sidebar to change it"
+          >
+            Target: <b>{filter.file ?? "All files"}</b>
+          </span>
+
+          <label className="chk" title="Re-translate units that already have a translation">
+            <input
+              type="checkbox"
+              checked={overwrite}
+              onChange={(e) => setOverwrite(e.target.checked)}
+              disabled={running}
+            />
+            Overwrite existing
+          </label>
+
+          <select
+            value={active}
+            onChange={(e) => setActive(e.target.value as typeof active)}
+            disabled={running}
+            title="AI provider used for Run (configure providers in Settings)"
+          >
+            {PROVIDER_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {PROVIDER_LABELS[k]}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="tb-actions">
+          {!running ? (
+            <button className="primary" onClick={run}>
+              Run
+            </button>
+          ) : (
+            <button className="ghost" onClick={() => cancel("units")}>
+              Cancel
+            </button>
+          )}
+
+          {failed > 0 && !running && (
+            <button className="ghost tb-icon-btn" onClick={retryFailed} title="Re-translate every unit that failed a previous run">
+              <Icon name="retry" size={14} /> Retry failed ({failed})
+            </button>
+          )}
+
+          <button
+            className="ghost tb-icon-btn"
+            onClick={onOpenErrors}
+            disabled={failed === 0}
+            title="See which units failed and why"
+          >
+            <Icon name="warn" size={14} /> Errors ({failed})
+          </button>
+        </div>
       </div>
 
-      <span
-        className="tb-scope"
-        title="Run translates this — click a file (or 'All files') in the sidebar to change it"
-      >
-        Target: <b>{filter.file ?? "All files"}</b>
-      </span>
-
-      <label className="chk" title="Re-translate units that already have a translation">
-        <input
-          type="checkbox"
-          checked={overwrite}
-          onChange={(e) => setOverwrite(e.target.checked)}
-          disabled={running}
-        />
-        Overwrite existing
-      </label>
-
-      <select
-        value={active}
-        onChange={(e) => setActive(e.target.value as typeof active)}
-        disabled={running}
-        title="AI provider used for Run (configure providers in Settings)"
-      >
-        {PROVIDER_KINDS.map((k) => (
-          <option key={k} value={k}>
-            {PROVIDER_LABELS[k]}
-          </option>
-        ))}
-      </select>
-
-      {!running ? (
-        <button className="primary" onClick={run}>
-          Run
-        </button>
-      ) : (
-        <button className="ghost" onClick={() => cancel("units")}>
-          Cancel
-        </button>
-      )}
-
-      <button
-        className="ghost"
-        onClick={onOpenErrors}
-        disabled={failed === 0}
-        title="See which units failed and why"
-        style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
-      >
-        <Icon name="warn" size={14} /> Errors ({failed})
-      </button>
-
-      {failed > 0 && !running && (
-        <button
-          className="ghost"
-          onClick={retryFailed}
-          title="Re-translate every unit that failed a previous run"
-          style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
-        >
-          <Icon name="retry" size={14} /> Retry failed ({failed})
-        </button>
-      )}
-
-      {/* Separate status per kind: the Run over units and the glossary job. */}
-      <TransProgress kind="units" />
-      <TransProgress kind="glossary" />
-
-      {summary && (
-        <span className="export-ok">
-          {summary.cancelled ? "Cancelled — " : "Done — "}
-          {summary.translated} translated
-          {summary.reused > 0 ? `, ${summary.reused} reused` : ""}
-          {summary.failed > 0 && (
-            <>
-              {", "}
-              <button
-                className="linklike failed-link"
-                onClick={() => setFilter({ status: "Failed", untranslatedOnly: false })}
-                title="Show the units that failed so you can retry or fix them"
-              >
-                {summary.failed} failed
-              </button>
-            </>
+      {(running || glossaryBusy || summary || err) && (
+        <div className="tb-status">
+          <TransProgress kind="units" />
+          <TransProgress kind="glossary" />
+          {summary && (
+            <span className="export-ok">
+              {summary.cancelled ? "Cancelled — " : "Done — "}
+              {summary.translated} translated
+              {summary.reused > 0 ? `, ${summary.reused} reused` : ""}
+              {summary.failed > 0 && (
+                <>
+                  {", "}
+                  <button
+                    className="linklike failed-link"
+                    onClick={() => setFilter({ status: "Failed", untranslatedOnly: false })}
+                    title="Show the units that failed so you can retry or fix them"
+                  >
+                    {summary.failed} failed
+                  </button>
+                </>
+              )}
+            </span>
           )}
-        </span>
+          {err && <span className="error">{err}</span>}
+        </div>
       )}
-      {err && <span className="error">{err}</span>}
-    </div>
+    </>
   );
 }

@@ -656,6 +656,45 @@ code {
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
+/* Left cluster: the Run configuration (langs, target, overwrite, provider). */
+.tb-config {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+/* Right cluster: the Run/Cancel action + failure buttons, kept together. */
+.tb-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+.tb-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+/* Dedicated status strip under the toolbar: a full-width progress bar + summary,
+   shown only while a Run/glossary job runs or a result/error is present. */
+.tb-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--panel2);
+  border-bottom: 1px solid var(--border);
+}
+.tb-status .tb-progress {
+  max-width: none;
+  min-width: 0;
+  flex: 1;
+}
+.tb-status .tb-progress .bar {
+  height: 8px;
+}
 .tb-label {
   font-weight: 700;
   color: var(--accent);
