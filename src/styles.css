@@ -1057,14 +1057,34 @@ code {
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
-.suggest-head .hint {
+.suggest-head-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   flex: 1;
+  min-width: 10rem;
+  flex-wrap: wrap;
+}
+.suggest-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.suggest-head-sep {
+  width: 1px;
+  align-self: stretch;
+  min-height: 1.4rem;
+  background: var(--border);
+  margin: 0 0.25rem;
 }
 .suggest-bar button,
 .suggest-head button {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  white-space: nowrap;
 }
 .gloss-provider {
   font-size: var(--fs-sm);

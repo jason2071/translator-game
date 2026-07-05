@@ -131,66 +131,67 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
   return (
     <div className="suggest-panel">
       <div className="suggest-head">
-        <strong>
-          {cands.length} candidates
-          <span className="hint"> · {filled} filled</span>
-        </strong>
-        {msg && (
-          <span className={/fail|error|running|no api/i.test(msg) ? "error" : "ok-msg"}>
-            {msg}
-          </span>
-        )}
-        <select
-          className="gloss-provider"
-          value={glossaryProvider}
-          onChange={(e) => setGlossaryProvider(e.target.value as ProviderKind)}
-          disabled={glossBusy}
-          title="AI provider used for glossary translation (independent of the Run provider)"
-        >
-          {PROVIDER_KINDS.map((k) => (
-            <option key={k} value={k}>
-              {PROVIDER_LABELS[k]}
-            </option>
-          ))}
-        </select>
-        {glossBusy ? (
-          <button className="ghost" onClick={() => cancel("glossary")}>
-            {translating ? "Cancel translate" : "Cancel queued"}
-          </button>
-        ) : (
-          <>
-            <button
-              className="ghost"
-              onClick={() => translateEmpty(glossaryConfig())}
-              disabled={remaining === 0}
-              title={
-                remaining === 0
-                  ? "All candidates have a translation"
-                  : "Translate every empty/failed/skipped term (queues behind a running Run)"
-              }
-            >
-              <Icon name={filled > 0 ? "retry" : "globe"} size={14} />{" "}
-              {filled > 0
-                ? `Re-translate remaining (${remaining})`
-                : `Translate empty (${remaining})`}
+        <div className="suggest-head-info">
+          <strong>{cands.length} candidates</strong>
+          <span className="hint">· {filled} filled</span>
+          {msg && (
+            <span className={/fail|error|running|no api/i.test(msg) ? "error" : "ok-msg"}>
+              {msg}
+            </span>
+          )}
+        </div>
+
+        <div className="suggest-head-actions">
+          <select
+            className="gloss-provider"
+            value={glossaryProvider}
+            onChange={(e) => setGlossaryProvider(e.target.value as ProviderKind)}
+            disabled={glossBusy}
+            title="AI provider used for glossary translation (independent of the Run provider)"
+          >
+            {PROVIDER_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {PROVIDER_LABELS[k]}
+              </option>
+            ))}
+          </select>
+
+          {glossBusy ? (
+            <button className="ghost" onClick={() => cancel("glossary")}>
+              {translating ? "Cancel translate" : "Cancel queued"}
             </button>
-            {filled > 0 && (
-              <button
-                className="ghost"
-                onClick={() => translateEmpty(glossaryConfig(), true)}
-                title="Re-translate every term with AI, overwriting ones already filled"
-              >
-                <Icon name="retry" size={14} /> Re-translate all ({cands.length})
-              </button>
-            )}
-          </>
-        )}
-        <button className="primary" onClick={() => addSelected(onAdded)} disabled={glossBusy}>
-          Add selected
-        </button>
-        <button className="ghost" onClick={clear} disabled={glossBusy}>
-          Cancel
-        </button>
+          ) : (
+            <>
+              {remaining > 0 && (
+                <button
+                  className="ghost"
+                  onClick={() => translateEmpty(glossaryConfig())}
+                  title="Translate every empty/failed/skipped term (queues behind a running Run)"
+                >
+                  <Icon name={filled > 0 ? "retry" : "globe"} size={14} />{" "}
+                  {filled > 0 ? `Remaining (${remaining})` : `Translate empty (${remaining})`}
+                </button>
+              )}
+              {filled > 0 && (
+                <button
+                  className="ghost"
+                  onClick={() => translateEmpty(glossaryConfig(), true)}
+                  title="Re-translate every term with AI, overwriting ones already filled"
+                >
+                  <Icon name="retry" size={14} /> Re-translate all ({cands.length})
+                </button>
+              )}
+            </>
+          )}
+
+          <span className="suggest-head-sep" />
+          <button className="primary" onClick={() => addSelected(onAdded)} disabled={glossBusy}>
+            Add selected
+          </button>
+          <button className="ghost" onClick={clear} disabled={glossBusy}>
+            Cancel
+          </button>
+        </div>
       </div>
       {/* Modal shows only the glossary status. */}
       <TransProgress kind="glossary" />
