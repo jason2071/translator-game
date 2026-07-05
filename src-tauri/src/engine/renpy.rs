@@ -447,12 +447,22 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
         }
         let source = &raw[inner_rel..inner_rel + inner_len];
 
-        // A trailing `:` (possibly after an `if <cond>`) marks a menu choice.
+        // A trailing `:` marks a menu choice.
         let after = raw[after_close..].trim();
         let is_choice = after.trim_end().ends_with(':');
 
         // The text before the opening quote is the speaker, when present.
         let prefix = raw[indent..inner_rel - 1].trim();
+
+        // A real menu choice starts with the quote (empty prefix). A trailing `:`
+        // after a NON-empty prefix is a control-flow header whose string is Python
+        // code, not dialogue — `if`/`elif`/`while`/`for … "code":` (e.g.
+        // `elif selected in areas["House"]:`). Translating it corrupts dict keys /
+        // comparisons and crashes the game at runtime, so skip it.
+        if is_choice && !prefix.is_empty() {
+            continue;
+        }
+
         let speaker = if is_choice || prefix.is_empty() {
             None
         } else {
@@ -859,6 +869,35 @@ label start:
             vec!["scripts/ch1.rpyc".to_string()]
         );
         assert!(eng.stale_companions("notes.txt").is_empty());
+    }
+
+    #[test]
+    fn control_flow_condition_strings_are_not_choices() {
+        // Regression: strings inside `if`/`elif`/`while` conditions (which end in
+        // `:`) were extracted as menu choices and translated, corrupting dict keys
+        // and comparisons (KeyError at runtime).
+        let src = "\
+label bgm:
+    if selected_dest == \"office\" and current_time in [\"morning\", \"noon\"]:
+        play music \"a.ogg\"
+    elif selected_dest in areas[\"House\"]:
+        play music \"b.ogg\"
+    menu:
+        \"Go home\":
+            jump home
+";
+        let units = extract(src);
+        let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+        // Code strings in conditions are NOT extracted.
+        assert!(!texts.contains(&"office"));
+        assert!(!texts.contains(&"House"));
+        assert!(!texts.contains(&"morning"));
+        // A real menu choice (string at the start of the line) still is.
+        assert!(texts.contains(&"Go home"));
+        assert_eq!(
+            units.iter().find(|u| u.source == "Go home").unwrap().kind,
+            UnitKind::Choice
+        );
     }
 
     #[test]
