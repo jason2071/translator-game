@@ -176,6 +176,8 @@ export const api = {
 
   listUnits: (filter: UnitFilter) =>
     invoke<TransUnit[]>("list_units", { filter }),
+  countUnits: (filter: UnitFilter) =>
+    invoke<number>("count_units", { filter }),
 
   updateUnit: (id: number, translation: string | null, status: Status) =>
     invoke<void>("update_unit", { id, translation, status }),

@@ -126,6 +126,12 @@ fn list_units(
     with_project(&state, |p| project::db::list_units(&p.conn, &filter))
 }
 
+/// Count units matching a filter — the windowed grid's total size.
+#[tauri::command]
+fn count_units(filter: UnitFilter, state: tauri::State<AppState>) -> Result<i64, String> {
+    with_project(&state, |p| project::db::count_units(&p.conn, &filter))
+}
+
 #[tauri::command]
 fn update_unit(
     id: i64,
@@ -363,9 +369,26 @@ async fn translate_units(
         let candidates = if let Some(ids) = &scope.ids {
             project::db::units_by_ids(&proj.conn, ids).map_err(|e| e.to_string())?
         } else {
-            let mut f = scope.filter.unwrap_or_default();
-            f.limit = Some(200_000); // translate the whole matching set, not a page
-            project::db::list_units(&proj.conn, &f).map_err(|e| e.to_string())?
+            // Page the read (no 200k ceiling) so a large project's whole matching
+            // set is gathered without one giant query and nothing past 200k is
+            // silently dropped. The grid is windowed, but a Run must cover every
+            // matching unit.
+            let base = scope.filter.clone().unwrap_or_default();
+            let mut all = Vec::new();
+            let mut off = 0i64;
+            loop {
+                let mut f = base.clone();
+                f.offset = Some(off);
+                f.limit = Some(20_000);
+                let page = project::db::list_units(&proj.conn, &f).map_err(|e| e.to_string())?;
+                let n = page.len() as i64;
+                all.extend(page);
+                if n < 20_000 {
+                    break;
+                }
+                off += 20_000;
+            }
+            all
         };
 
         // Reconstruct each message box from its lines (in extraction order) so a
@@ -909,6 +932,7 @@ pub fn run() {
             close_project,
             set_languages,
             list_units,
+            count_units,
             update_unit,
             get_stats,
             list_files,

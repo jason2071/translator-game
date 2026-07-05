@@ -105,7 +105,7 @@ pub fn insert_units(conn: &mut Connection, units: &[TransUnit]) -> Result<usize>
 
 
 /// Filter/paginate the unit grid. All fields optional.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnitFilter {
     pub file: Option<String>,
@@ -130,10 +130,10 @@ fn row_to_unit(r: &rusqlite::Row) -> rusqlite::Result<TransUnit> {
     })
 }
 
-pub fn list_units(conn: &Connection, filter: &UnitFilter) -> Result<Vec<TransUnit>> {
-    let mut sql = String::from(
-        "SELECT id, file, pointer, kind, context, grp, source, translation, status FROM unit WHERE 1=1",
-    );
+/// Build the shared `WHERE …` clause + bound args for the unit-grid filters.
+/// Reused by `list_units` and `count_units` so they always agree.
+fn unit_where(filter: &UnitFilter) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let mut sql = String::from(" WHERE 1=1");
     let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     if let Some(f) = &filter.file {
@@ -160,9 +160,18 @@ pub fn list_units(conn: &Connection, filter: &UnitFilter) -> Result<Vec<TransUni
             args.push(Box::new(like));
         }
     }
+    (sql, args)
+}
+
+pub fn list_units(conn: &Connection, filter: &UnitFilter) -> Result<Vec<TransUnit>> {
+    let (where_sql, mut args) = unit_where(filter);
+    let mut sql = String::from(
+        "SELECT id, file, pointer, kind, context, grp, source, translation, status FROM unit",
+    );
+    sql.push_str(&where_sql);
     sql.push_str(" ORDER BY id");
-    // Grid pages are small; the ceiling is high so a whole-project translate
-    // (which passes an explicit large limit) is never silently truncated.
+    // Grid pages are windowed; the ceiling is high so a whole-project translate
+    // chunk that passes an explicit large limit is never silently truncated.
     let limit = filter.limit.unwrap_or(500).clamp(1, 200_000);
     let offset = filter.offset.unwrap_or(0).max(0);
     sql.push_str(" LIMIT ? OFFSET ?");
@@ -173,6 +182,15 @@ pub fn list_units(conn: &Connection, filter: &UnitFilter) -> Result<Vec<TransUni
     let params: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
     let rows = stmt.query_map(params.as_slice(), row_to_unit)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Count units matching a filter — the windowed grid's total (scrollbar) size.
+/// Same WHERE as `list_units`, no ORDER/LIMIT/OFFSET.
+pub fn count_units(conn: &Connection, filter: &UnitFilter) -> Result<i64> {
+    let (where_sql, args) = unit_where(filter);
+    let sql = format!("SELECT COUNT(*) FROM unit{where_sql}");
+    let params: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+    Ok(conn.query_row(&sql, params.as_slice(), |r| r.get(0))?)
 }
 
 /// Load specific units by id (used to translate a selection).
@@ -523,5 +541,84 @@ pub fn glossary_lint(conn: &Connection) -> Result<Vec<LintWarning>> {
         }
     }
     Ok(warnings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Status, TransUnit, UnitKind};
+
+    fn mem_db(units: &[TransUnit]) -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        insert_units(&mut conn, units).unwrap();
+        conn
+    }
+
+    fn unit(file: &str, ptr: &str, source: &str, status: Status) -> TransUnit {
+        let mut u = TransUnit::new(file, ptr, UnitKind::Dialogue, source);
+        u.status = status;
+        u
+    }
+
+    #[test]
+    fn count_units_matches_filters_and_list() {
+        let units: Vec<_> = (0..250)
+            .map(|i| {
+                let status = if i % 5 == 0 { Status::Failed } else { Status::Untranslated };
+                let file = if i < 100 { "A.json" } else { "B.json" };
+                unit(file, &format!("/p/{i}"), &format!("line {i}"), status)
+            })
+            .collect();
+        let conn = mem_db(&units);
+        let big = |f: UnitFilter| UnitFilter { limit: Some(10_000), ..f };
+
+        // Whole-table count.
+        assert_eq!(count_units(&conn, &UnitFilter::default()).unwrap(), 250);
+        // Status / file counts, and each agrees with list_units.
+        for f in [
+            UnitFilter { status: Some("Failed".into()), ..Default::default() },
+            UnitFilter { file: Some("A.json".into()), ..Default::default() },
+            UnitFilter { search: Some("line 1".into()), ..Default::default() },
+        ] {
+            let c = count_units(&conn, &f).unwrap();
+            let n = list_units(&conn, &big(f)).unwrap().len() as i64;
+            assert_eq!(c, n, "count_units must match list_units row count");
+        }
+        assert_eq!(
+            count_units(&conn, &UnitFilter { status: Some("Failed".into()), ..Default::default() }).unwrap(),
+            50
+        );
+        assert_eq!(
+            count_units(&conn, &UnitFilter { file: Some("A.json".into()), ..Default::default() }).unwrap(),
+            100
+        );
+    }
+
+    #[test]
+    fn list_units_windows_are_ordered_and_cover_everything() {
+        let units: Vec<_> = (0..500)
+            .map(|i| unit("A.json", &format!("/p/{i}"), &format!("s{i}"), Status::Untranslated))
+            .collect();
+        let conn = mem_db(&units);
+        assert_eq!(count_units(&conn, &UnitFilter::default()).unwrap(), 500);
+
+        // Reassemble the list from offset/limit windows.
+        let mut seen: Vec<i64> = Vec::new();
+        let mut off = 0i64;
+        loop {
+            let f = UnitFilter { limit: Some(120), offset: Some(off), ..Default::default() };
+            let page = list_units(&conn, &f).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            assert!(page.windows(2).all(|w| w[0].id < w[1].id), "page must be id-ordered");
+            seen.extend(page.iter().map(|u| u.id));
+            off += 120;
+        }
+        // Every row exactly once, strictly increasing (no overlap, no gap).
+        assert_eq!(seen.len(), 500);
+        assert!(seen.windows(2).all(|w| w[0] < w[1]));
+    }
 }
 

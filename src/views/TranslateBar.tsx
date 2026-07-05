@@ -12,7 +12,7 @@ export default function TranslateBar() {
   const filter = useStore((s) => s.filter);
   const setFilter = useStore((s) => s.setFilter);
   const stats = useStore((s) => s.stats);
-  const reloadUnits = useStore((s) => s.reloadUnits);
+  const refreshTotal = useStore((s) => s.refreshTotal);
   const refreshMeta = useStore((s) => s.refreshMeta);
   const project = useStore((s) => s.project);
   const setLanguages = useStore((s) => s.setLanguages);
@@ -50,8 +50,10 @@ export default function TranslateBar() {
       // A transport error may have occurred even though the command resolved
       // (the Run keeps going and marks the rest Failed).
       if (res.error) setErr(`AI error: ${res.error}`);
+      // The visible rows were live-patched during the Run; just refresh the
+      // sidebar counts and the total (no full reload → no scroll jump).
       await refreshMeta();
-      await reloadUnits();
+      await refreshTotal();
     } catch (e) {
       setErr(String(e));
     }
