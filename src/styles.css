@@ -1089,6 +1089,12 @@ code {
   width: 1ch;
   text-align: center;
 }
+.cand-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
 .cand-retry {
   padding: 0.15rem 0.35rem;
 }

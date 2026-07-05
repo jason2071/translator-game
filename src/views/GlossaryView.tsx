@@ -203,16 +203,18 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
                 value={rows[c.term]?.tr ?? ""}
                 onChange={(e) => setRow(c.term, { tr: e.target.value })}
               />
-              {done && <span className="cand-mark">✓</span>}
-              <button
-                className="cand-retry iconbtn"
-                onClick={() => translateOne(c.term, activeConfig())}
-                disabled={glossBusy}
-                aria-label={`${done ? "Re-translate" : "Translate"} ${c.term} with AI`}
-                title={done ? "Re-translate this term with AI" : "Translate this term with AI"}
-              >
-                <Icon name="retry" size={14} />
-              </button>
+              <span className="cand-actions">
+                {done && <span className="cand-mark">✓</span>}
+                <button
+                  className="cand-retry iconbtn"
+                  onClick={() => translateOne(c.term, activeConfig())}
+                  disabled={glossBusy}
+                  aria-label={`${done ? "Re-translate" : "Translate"} ${c.term} with AI`}
+                  title={done ? "Re-translate this term with AI" : "Translate this term with AI"}
+                >
+                  <Icon name="retry" size={14} />
+                </button>
+              </span>
             </div>
           );
         })}
