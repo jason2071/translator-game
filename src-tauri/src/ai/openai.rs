@@ -56,7 +56,15 @@ impl TranslationProvider for OpenAiCompat {
         key: Option<&str>,
         req: &BatchReq,
     ) -> Result<Vec<String>> {
-        let (sys, user) = build_messages(req);
+        let (sys, mut user) = build_messages(req);
+        // Reasoning local models (e.g. Ollama qwen3) keep "thinking" even with
+        // thinking off over the OpenAI-compat endpoint — the reasoning is counted
+        // against max_tokens and can consume the whole budget before the answer,
+        // giving an empty/truncated response. The `/no_think` soft switch curbs it
+        // and is harmless to non-reasoning models / LM Studio (just extra text).
+        if self.is_local && req.thinking == Some(false) {
+            user.push_str(" /no_think");
+        }
         let url = format!("{}/chat/completions", self.base);
         let mut body = json!({
             "model": req.model,
