@@ -501,13 +501,50 @@ code {
 .sb-sub {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.3rem;
   font-size: var(--fs-sm);
   color: var(--muted);
   min-width: 0;
 }
-.sb-sub b {
+.sb-stat {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.sb-stat .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-full);
+  flex-shrink: 0;
+}
+.sb-stat b {
   color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.sb-stat.done .dot {
+  background: var(--status-translated);
+}
+.sb-stat.todo .dot {
+  background: var(--muted);
+}
+.sb-stat.failed {
+  cursor: pointer;
+}
+.sb-stat.failed .dot {
+  background: var(--err);
+}
+.sb-stat.failed b {
+  color: var(--err);
+}
+.sb-stat.failed:hover b {
+  text-decoration: underline;
 }
 
 /* scrollable middle (files + status) */

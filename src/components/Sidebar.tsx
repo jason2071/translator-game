@@ -75,6 +75,9 @@ export function Sidebar({
     stats && stats.total > 0
       ? Math.round(((stats.total - stats.untranslated) / stats.total) * 100)
       : 0;
+  const done = stats ? stats.translated + stats.reviewed : 0;
+  const todo = stats?.untranslated ?? 0;
+  const failed = stats?.failed ?? 0;
 
   const statusRows: { status?: Status; label: string; count: number; color: string }[] = stats
     ? [
@@ -114,17 +117,24 @@ export function Sidebar({
           <span className="ring-pct">{pct}%</span>
         </div>
         <div className="sb-sub">
-          <span>
-            <b>{stats?.untranslated ?? 0}</b> todo
+          <span className="sb-stat done">
+            <i className="dot" />
+            <b>{done.toLocaleString()}</b> done
           </span>
-          {(stats?.failed ?? 0) > 0 && (
-            <span>
-              <b>{stats!.failed}</b> failed
-            </span>
+          <span className="sb-stat todo">
+            <i className="dot" />
+            <b>{todo.toLocaleString()}</b> todo
+          </span>
+          {failed > 0 && (
+            <button
+              className="sb-stat failed"
+              onClick={() => setFilter({ status: "Failed", untranslatedOnly: false })}
+              title="Show the failed units"
+            >
+              <i className="dot" />
+              <b>{failed.toLocaleString()}</b> failed
+            </button>
           )}
-          <span>
-            <b>{stats ? stats.translated + stats.reviewed : 0}</b> done
-          </span>
         </div>
       </div>
 
