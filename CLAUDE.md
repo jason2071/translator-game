@@ -36,8 +36,13 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
 `#[tauri::command]` surface in `lib.rs`:
 
 - **`engine/`** — the plugin seam. `GameEngine` trait (`detect`/`describe`/
-  `extract`/`inject`), one impl per format: `mvmz.rs`, `renpy.rs`, `tyrano.rs`,
-  `kirikiri.rs`, `godot.rs` (registered in `engines()`, tried in order). `codes.rs`
+  `extract`/`inject`, plus optional `stale_companions`/`embed_font`), one impl per
+  format: `mvmz.rs`, `renpy.rs`, `tyrano.rs`, `kirikiri.rs`, `godot.rs` (registered
+  in `engines()`, tried in order). `embed_font` (opt-in at export, RPGMaker only so
+  far) drops the shared bundled Thai font `engine::TARGET_FONT` (Sarabun, OFL) into
+  the game and repoints its fonts at it — MV rewrites `fonts/gamefont.css`, MZ sets
+  `System.json` `advanced.mainFontFilename` — so translated Thai isn't tofu; Ren'Py
+  does the equivalent remap inside its own `tl/` path. `codes.rs`
   maps RPGMaker event command codes (401 text, 102 choices, 320 name-change, …) to
   translatable parameter slots. `protect.rs` masks control/markup codes per
   engine (`mask_for(engine_id, …)`). `encoding.rs` is KiriKiri's Shift-JIS/UTF-16

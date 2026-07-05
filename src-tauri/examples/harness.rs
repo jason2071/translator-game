@@ -311,14 +311,14 @@ fn cmd_export(rest: &[String]) {
         .collect();
     println!("applied files: {}", touched.len());
 
-    let r1 = app_lib::project::export(&project, true).expect("export #1");
+    let r1 = app_lib::project::export(&project, true, false).expect("export #1");
     println!("export #1: files_written={} units_applied={}", r1.files_written, r1.units_applied);
     let after1: BTreeMap<String, Vec<u8>> = touched
         .iter()
         .map(|f| (f.clone(), std::fs::read(data.join(f)).unwrap_or_default()))
         .collect();
 
-    let r2 = app_lib::project::export(&project, false).expect("export #2");
+    let r2 = app_lib::project::export(&project, false, false).expect("export #2");
     println!("export #2: files_written={}", r2.files_written);
     let after2: BTreeMap<String, Vec<u8>> = touched
         .iter()
@@ -409,7 +409,7 @@ fn cmd_reconcile(rest: &[String]) {
         db::update_unit(&project.conn, u.id, None, Status::Untranslated.as_str()).unwrap();
     }
     println!("\nreverted {} bogus units to Untranslated", bogus.len());
-    let r = app_lib::project::export(&project, true).expect("re-export");
+    let r = app_lib::project::export(&project, true, false).expect("re-export");
     println!("re-exported: files_written={} units_applied={}", r.files_written, r.units_applied);
 }
 

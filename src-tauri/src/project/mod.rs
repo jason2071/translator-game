@@ -136,8 +136,10 @@ pub struct ExportResult {
 }
 
 /// Back up the game files that are about to change, then patch translations
-/// straight into the game's data directory.
-pub fn export(project: &Project, make_backup: bool) -> Result<ExportResult> {
+/// straight into the game's data directory. When `embed_font` is set, also drop
+/// the bundled Thai font into the game and repoint its fonts at it (RPGMaker
+/// only; Ren'Py handles its own font remap in the `tl/<lang>/` path).
+pub fn export(project: &Project, make_backup: bool, embed_font: bool) -> Result<ExportResult> {
     let eng = engine::detect(&project.root)
         .ok_or_else(|| anyhow!("engine no longer detected for this project"))?;
     let units = db::all_units(&project.conn)?;
@@ -254,10 +256,28 @@ pub fn export(project: &Project, make_backup: bool) -> Result<ExportResult> {
         let _ = std::fs::remove_file(project.data_dir.join(c));
     }
 
+    // Optionally embed the bundled Thai font and repoint the game's fonts at it,
+    // so translated text renders. Runs after inject so it patches injected data
+    // files (e.g. MZ's System.json). Best-effort: a font error must not fail the
+    // export, which already wrote the translations.
+    let note = if embed_font {
+        match eng.embed_font(
+            &project.root,
+            &project.data_dir,
+            engine::TARGET_FONT,
+            backup_dir.as_deref().map(Path::new),
+        ) {
+            Ok(n) => n,
+            Err(e) => Some(format!("Translations exported, but embedding the font failed: {e}")),
+        }
+    } else {
+        None
+    };
+
     Ok(ExportResult {
         files_written: touched.len(),
         units_applied: applied.len(),
         backup_dir,
-        note: None,
+        note,
     })
 }

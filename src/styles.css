@@ -635,6 +635,20 @@ code {
   gap: var(--sp-2);
   justify-content: flex-end;
 }
+.sb-actions .row .embed-font-chk {
+  /* Sits at the left of the theme/close row; margin-right:auto pushes the
+     icon buttons to the right (the row is justify-content: flex-end). */
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  cursor: pointer;
+}
+.sb-actions .row .embed-font-chk input {
+  cursor: pointer;
+}
 .sb-msg {
   padding: 0 var(--sp-3) var(--sp-2);
   font-size: var(--fs-xs);

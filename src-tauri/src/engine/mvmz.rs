@@ -116,6 +116,86 @@ impl GameEngine for MvMzEngine {
         }
         Ok(())
     }
+
+    /// Embed the bundled Thai font and repoint the game's font at it. The stock
+    /// MV/MZ fonts (M+ / VL Gothic / Trebuchet) have no Thai glyphs, so translated
+    /// Thai renders as "tofu" boxes without this.
+    ///
+    /// - **MV** keeps its font in `fonts/gamefont.css` (`@font-face` for the
+    ///   `GameFont`/`GameFontFallback` families the engine uses). We rewrite that
+    ///   file to point both families at our TTF — a fixed template, so re-export is
+    ///   idempotent — after backing up the original.
+    /// - **MZ** names its font in `data/System.json` `advanced.mainFontFilename`
+    ///   (loaded by `FontManager`). We set that to our TTF. System.json is a data
+    ///   file, so the export's snapshot/restore already makes this idempotent;
+    ///   because this runs *after* [`inject`](Self::inject), it patches the
+    ///   freshly-injected file.
+    ///
+    /// A game that overrides the font from a plugin (YEP/VisuMZ MessageCore, a
+    /// hardcoded family) will ignore this — it is best-effort.
+    fn embed_font(
+        &self,
+        _root: &Path,
+        data_dir: &Path,
+        font: &[u8],
+        backup_dir: Option<&Path>,
+    ) -> Result<Option<String>> {
+        const FONT_FILE: &str = "Sarabun-Regular.ttf";
+        // `fonts/` sits beside the data dir: `<root>/fonts` for MZ, `<root>/www/fonts`
+        // for a deployed MV game.
+        let fonts_dir = data_dir
+            .parent()
+            .unwrap_or(data_dir)
+            .join("fonts");
+        std::fs::create_dir_all(&fonts_dir).context("creating fonts/ dir")?;
+        std::fs::write(fonts_dir.join(FONT_FILE), font)
+            .with_context(|| format!("writing fonts/{FONT_FILE}"))?;
+
+        // MV: rewrite gamefont.css.
+        let css = fonts_dir.join("gamefont.css");
+        if css.is_file() {
+            if let Some(bdir) = backup_dir {
+                let dst = bdir.join("fonts").join("gamefont.css");
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let _ = std::fs::copy(&css, &dst);
+            }
+            // Fixed template overriding both families MV uses; later @font-face for
+            // a family wins in NW.js/Chromium, and writing a constant keeps
+            // re-export idempotent.
+            let patched = format!(
+                "/* Repointed by RPGMaker Translator to embed a Thai-capable font. */\n\
+                 @font-face {{ font-family: GameFont; src: url(\"{FONT_FILE}\"); }}\n\
+                 @font-face {{ font-family: GameFontFallback; src: url(\"{FONT_FILE}\"); }}\n"
+            );
+            std::fs::write(&css, patched).context("writing fonts/gamefont.css")?;
+            return Ok(Some(format!(
+                "Embedded {FONT_FILE} and repointed fonts/gamefont.css (MV)."
+            )));
+        }
+
+        // MZ: set advanced.mainFontFilename in System.json.
+        let sys_path = data_dir.join("System.json");
+        if sys_path.is_file() {
+            let text = std::fs::read_to_string(&sys_path).context("reading System.json")?;
+            let mut val: Value = serde_json::from_str(&text).context("parsing System.json")?;
+            if let Some(adv) = val.get_mut("advanced").and_then(Value::as_object_mut) {
+                adv.insert("mainFontFilename".into(), Value::String(FONT_FILE.into()));
+                // Compact + key-order-preserving, matching RPGMaker's own format.
+                let out = serde_json::to_string(&val)?;
+                std::fs::write(&sys_path, out).context("writing System.json")?;
+                return Ok(Some(format!(
+                    "Embedded {FONT_FILE} and set System.json mainFontFilename (MZ)."
+                )));
+            }
+        }
+
+        Ok(Some(format!(
+            "Embedded {FONT_FILE} into fonts/, but found no font hook to repoint \
+             (no gamefont.css / System.json advanced block)."
+        )))
+    }
 }
 
 /// Locate the data directory: MZ uses `data/`, deployed MV uses `www/data/`.
@@ -532,5 +612,71 @@ mod tests {
         assert!(!is_data_file("package.json"));
         assert!(!is_data_file("Map.json"));
         assert!(!is_data_file("MapABC.json"));
+    }
+
+    #[test]
+    fn embed_font_patches_mz_system_json() {
+        // MZ layout: <root>/data/System.json (with an `advanced` block) and a
+        // sibling <root>/fonts. embed_font must drop the TTF and set the main font.
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(
+            data.join("System.json"),
+            r#"{"gameTitle":"x","advanced":{"fontSize":26,"mainFontFilename":"mz.woff"}}"#,
+        )
+        .unwrap();
+
+        let note = MvMzEngine
+            .embed_font(tmp.path(), &data, super::super::TARGET_FONT, None)
+            .unwrap()
+            .expect("a note");
+        assert!(note.contains("MZ"), "{note}");
+
+        // TTF landed beside the data dir…
+        assert!(tmp.path().join("fonts/Sarabun-Regular.ttf").is_file());
+        // …and the main font now points at it (order preserved, valid JSON).
+        let sys: Value =
+            serde_json::from_str(&std::fs::read_to_string(data.join("System.json")).unwrap())
+                .unwrap();
+        assert_eq!(sys["advanced"]["mainFontFilename"], "Sarabun-Regular.ttf");
+        assert_eq!(sys["advanced"]["fontSize"], 26); // untouched
+        assert_eq!(sys["gameTitle"], "x");
+    }
+
+    #[test]
+    fn embed_font_repoints_mv_gamefont_css_and_backs_it_up() {
+        // Deployed MV layout: <root>/www/data + <root>/www/fonts/gamefont.css.
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("www").join("data");
+        let fonts = tmp.path().join("www").join("fonts");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&fonts).unwrap();
+        let original = "@font-face { font-family: GameFont; src: url(\"mplus-1m-regular.ttf\"); }";
+        std::fs::write(fonts.join("gamefont.css"), original).unwrap();
+
+        let backup = tmp.path().join("backup");
+        let note = MvMzEngine
+            .embed_font(tmp.path(), &data, super::super::TARGET_FONT, Some(&backup))
+            .unwrap()
+            .expect("a note");
+        assert!(note.contains("MV"), "{note}");
+
+        assert!(fonts.join("Sarabun-Regular.ttf").is_file());
+        let css = std::fs::read_to_string(fonts.join("gamefont.css")).unwrap();
+        assert!(css.contains("GameFont"));
+        assert!(css.contains("Sarabun-Regular.ttf"));
+        // Original preserved in the backup dir.
+        assert_eq!(
+            std::fs::read_to_string(backup.join("fonts/gamefont.css")).unwrap(),
+            original
+        );
+
+        // Re-running is idempotent (writes the same fixed template).
+        let css2_note = MvMzEngine
+            .embed_font(tmp.path(), &data, super::super::TARGET_FONT, None)
+            .unwrap();
+        assert!(css2_note.is_some());
+        assert_eq!(std::fs::read_to_string(fonts.join("gamefont.css")).unwrap(), css);
     }
 }

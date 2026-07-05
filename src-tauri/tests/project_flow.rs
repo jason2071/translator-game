@@ -66,7 +66,7 @@ fn open_edit_export_reopen() {
     assert_eq!(stats.translated, 1);
 
     // Export: backup + patch in place.
-    let res = project::export(&proj, true).unwrap();
+    let res = project::export(&proj, true, false).unwrap();
     assert_eq!(res.units_applied, 1);
     assert_eq!(res.files_written, 1);
     let backup_dir = res.backup_dir.expect("backup created");

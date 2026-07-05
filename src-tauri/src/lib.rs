@@ -254,9 +254,12 @@ fn list_files(state: tauri::State<AppState>) -> Result<Vec<FileCount>, String> {
 #[tauri::command]
 fn export_project(
     backup: Option<bool>,
+    embed_font: Option<bool>,
     state: tauri::State<AppState>,
 ) -> Result<ExportResult, String> {
-    with_project(&state, |p| project::export(p, backup.unwrap_or(true)))
+    with_project(&state, |p| {
+        project::export(p, backup.unwrap_or(true), embed_font.unwrap_or(false))
+    })
 }
 
 // --- AI translation -------------------------------------------------------

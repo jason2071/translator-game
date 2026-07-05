@@ -46,7 +46,7 @@ fn second_export_is_idempotent_and_valid() {
     let game_file = root.join("game/script.rpy");
 
     // First export: patches the game file in place and snapshots the original.
-    project::export(&project, true).unwrap();
+    project::export(&project, true, false).unwrap();
     let after1 = std::fs::read(&game_file).unwrap();
     std::str::from_utf8(&after1).expect("first export must be valid UTF-8");
     assert!(
@@ -56,13 +56,13 @@ fn second_export_is_idempotent_and_valid() {
     assert!(root.join(".rpgtl/source/script.rpy").exists(), "original snapshotted");
 
     // Second export must reproduce the file byte-for-byte — not corrupt it.
-    project::export(&project, true).unwrap();
+    project::export(&project, true, false).unwrap();
     let after2 = std::fs::read(&game_file).unwrap();
     std::str::from_utf8(&after2).expect("second export must be valid UTF-8 (no mid-char splice)");
     assert_eq!(after1, after2, "re-export must be idempotent");
 
     // And stays stable across further exports.
-    project::export(&project, false).unwrap();
+    project::export(&project, false, false).unwrap();
     let after3 = std::fs::read(&game_file).unwrap();
     assert_eq!(after1, after3, "further exports stay idempotent");
 }
@@ -89,14 +89,14 @@ fn export_repairs_a_pre_fix_translated_file_from_earliest_backup() {
 
     // Export must seed the snapshot from the earliest backup (= original), repair
     // the live file, and produce valid, idempotent output — not corrupt it.
-    project::export(&project, true).unwrap();
+    project::export(&project, true, false).unwrap();
     let after1 = std::fs::read(root.join("game/script.rpy")).unwrap();
     std::str::from_utf8(&after1).expect("repaired export is valid UTF-8");
     assert!(String::from_utf8_lossy(&after1).contains("\u{e41}\u{e1b}\u{e25} \u{2014}"));
     let snap = std::fs::read(root.join(".rpgtl/source/script.rpy")).unwrap();
     assert_eq!(snap, original, "snapshot seeded from the earliest backup = original");
 
-    project::export(&project, true).unwrap();
+    project::export(&project, true, false).unwrap();
     let after2 = std::fs::read(root.join("game/script.rpy")).unwrap();
     assert_eq!(after1, after2, "idempotent after repair");
 }

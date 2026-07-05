@@ -35,6 +35,12 @@ export function Sidebar({
   const [err, setErr] = useState<string | null>(null);
   const [version, setVersion] = useState("");
 
+  // RPGMaker's stock fonts have no Thai glyphs, so offer to embed a Thai-capable
+  // font on export. Default on when translating to Thai. (Ren'Py embeds its own
+  // font in the tl/<lang>/ path, so the option is RPGMaker-only here.)
+  const isMvMz = project.engineId === "rpgmaker-mvmz";
+  const [embedFont, setEmbedFont] = useState(() => /thai/i.test(project.targetLang ?? ""));
+
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
   }, []);
@@ -60,7 +66,7 @@ export function Sidebar({
     setErr(null);
     setResult(null);
     try {
-      const r = await api.exportProject(true);
+      const r = await api.exportProject(true, isMvMz && embedFont);
       setResult(r);
       setMsg(r.note ?? `Exported ${r.unitsApplied} units → ${r.filesWritten} files`);
       await refreshMeta();
@@ -206,6 +212,17 @@ export function Sidebar({
           <span className="lbl">{exporting ? "Exporting…" : "Export → game"}</span>
         </button>
         <div className="row">
+          {isMvMz && !collapsed && (
+            <label className="chk embed-font-chk" title="Drop a Thai-capable font into the game and repoint its fonts at it, so translated Thai renders instead of missing-glyph boxes">
+              <input
+                type="checkbox"
+                checked={embedFont}
+                onChange={(e) => setEmbedFont(e.target.checked)}
+                disabled={exporting}
+              />
+              Embed Thai font
+            </label>
+          )}
           <button className="iconbtn" onClick={toggleTheme} aria-label="Toggle light/dark theme" title="Toggle theme">
             <Icon name={theme === "dark" ? "sun" : "moon"} />
           </button>

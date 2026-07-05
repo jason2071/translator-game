@@ -26,6 +26,13 @@ use std::path::Path;
 
 pub use codes::ExtractOpts;
 
+/// The bundled target-language font: Sarabun Regular (SIL Open Font License — see
+/// `resources/Sarabun-OFL.txt`). It covers Thai *and* Latin, so an engine can drop
+/// it into a game and repoint the game's fonts at it to render translated Thai
+/// (the stock RPGMaker/Ren'Py fonts have no Thai glyphs → "tofu" boxes). Shared by
+/// [`GameEngine::embed_font`] and Ren'Py's `tl/<lang>/` font remap.
+pub const TARGET_FONT: &[u8] = include_bytes!("../../resources/Sarabun-Regular.ttf");
+
 /// Result of fingerprinting a folder.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +65,23 @@ pub trait GameEngine: Send + Sync {
     /// compiled `.rpyc`). Export backs these up before deleting. Default: none.
     fn stale_companions(&self, _file: &str) -> Vec<String> {
         Vec::new()
+    }
+
+    /// Drop the bundled target-language font (`font`, i.e. [`TARGET_FONT`]) into
+    /// the game and repoint the game's fonts at it, so translated text renders
+    /// (the stock fonts often lack Thai/CJK glyphs). Called at export time, after
+    /// [`inject`](Self::inject), only when the user opts in. `backup_dir`, when
+    /// given, is the export's timestamped backup folder — copy any font-hook file
+    /// there before overwriting it. Returns a human-readable note on what was
+    /// patched, or `None` when the engine has no font hook. Default: no-op.
+    fn embed_font(
+        &self,
+        _root: &Path,
+        _data_dir: &Path,
+        _font: &[u8],
+        _backup_dir: Option<&Path>,
+    ) -> anyhow::Result<Option<String>> {
+        Ok(None)
     }
 }
 

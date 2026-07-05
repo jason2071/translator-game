@@ -192,8 +192,8 @@ export const api = {
 
   listFiles: () => invoke<FileCount[]>("list_files"),
 
-  exportProject: (backup = true) =>
-    invoke<ExportResult>("export_project", { backup }),
+  exportProject: (backup = true, embedFont = false) =>
+    invoke<ExportResult>("export_project", { backup, embedFont }),
 
   applyTm: () => invoke<number>("apply_tm"),
 

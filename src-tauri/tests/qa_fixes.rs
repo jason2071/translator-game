@@ -80,7 +80,7 @@ fn export_without_backup_still_patches() {
     project::db::update_unit(&proj.conn, title.id, Some("แปลแล้ว"), Status::Translated.as_str())
         .unwrap();
 
-    let res = project::export(&proj, false).unwrap();
+    let res = project::export(&proj, false, false).unwrap();
     assert!(res.backup_dir.is_none(), "backup=false must skip backup");
     assert_eq!(res.units_applied, 1);
     let patched: serde_json::Value =

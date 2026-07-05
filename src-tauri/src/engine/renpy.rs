@@ -902,12 +902,9 @@ fn setup_language(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
-/// The bundled target-language font: Sarabun Regular (SIL Open Font License —
-/// see `src-tauri/resources/Sarabun-OFL.txt`). It covers both Thai and Latin, so
-/// remapping the game's fonts to it renders translated Thai *and* any Latin still
-/// mixed in. Embedded in the binary, so the app is self-contained and the result
-/// is redistributable and cross-platform.
-const TL_FONT: &[u8] = include_bytes!("../../resources/Sarabun-Regular.ttf");
+/// The bundled target-language font (Sarabun Regular), shared with the other
+/// engines' font embedding — see [`super::TARGET_FONT`].
+const TL_FONT: &[u8] = super::TARGET_FONT;
 
 /// Write the bundled font into the game.
 fn copy_target_font(dst: &Path) -> Result<()> {
