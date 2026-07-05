@@ -809,56 +809,48 @@ pub fn export_tl(
 /// `translate <lang> python:` block so English is unaffected.
 fn setup_language(data_dir: &Path, lang: &str) -> Result<()> {
     let font_rel = "fonts/tl_font.ttf";
-    let font_ok = copy_target_font(&data_dir.join(font_rel))?;
+    copy_target_font(&data_dir.join(font_rel))?;
+    let refs = collect_font_refs(data_dir);
 
     let mut s = String::new();
     s.push_str("# Added by RPGMaker Translator — makes the translation selectable + readable.\n");
-    s.push_str("# Delete this file to remove it.\n\n");
+    s.push_str("# Delete this file (and fonts/tl_font.ttf) to remove it.\n\n");
     // Default to the translation only if the game defines no language of its own.
     s.push_str(&format!(
         "init 1000 python:\n    if config.language is None:\n        config.language = \"{lang}\"\n\n"
     ));
-
-    if font_ok {
-        let refs = collect_font_refs(data_dir);
-        s.push_str(&format!("translate {lang} python:\n"));
-        s.push_str(&format!("    _tl_font = \"{font_rel}\"\n"));
-        s.push_str("    _tl_fonts = [\n");
-        for r in &refs {
-            s.push_str(&format!("        {r:?},\n"));
-        }
-        s.push_str("    ]\n");
-        s.push_str("    for _f in _tl_fonts:\n");
-        s.push_str("        for _b in (False, True):\n");
-        s.push_str("            for _i in (False, True):\n");
-        s.push_str("                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
+    // Remap every game font to the bundled Thai+Latin font, scoped to `lang`.
+    s.push_str(&format!("translate {lang} python:\n"));
+    s.push_str(&format!("    _tl_font = \"{font_rel}\"\n"));
+    s.push_str("    _tl_fonts = [\n");
+    for r in &refs {
+        s.push_str(&format!("        {r:?},\n"));
     }
+    s.push_str("    ]\n");
+    s.push_str("    for _f in _tl_fonts:\n");
+    s.push_str("        for _b in (False, True):\n");
+    s.push_str("            for _i in (False, True):\n");
+    s.push_str("                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
 
     std::fs::write(data_dir.join("zzz_translator.rpy"), s)
         .with_context(|| "writing zzz_translator.rpy")?;
     Ok(())
 }
 
-/// Copy a Thai-capable font into the game. Stopgap: uses a Windows system font
-/// (Leelawadee UI / Tahoma cover Thai + Latin). TODO: bundle Noto Sans Thai (OFL)
-/// with the app so exported games are redistributable and this works cross-platform.
-fn copy_target_font(dst: &Path) -> Result<bool> {
-    const CANDIDATES: &[&str] = &[
-        "C:/Windows/Fonts/LeelawUI.ttf",
-        "C:/Windows/Fonts/leelawad.ttf",
-        "C:/Windows/Fonts/tahoma.ttf",
-    ];
-    for c in CANDIDATES {
-        let src = Path::new(c);
-        if src.exists() {
-            if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(src, dst).with_context(|| format!("copying font {c}"))?;
-            return Ok(true);
-        }
+/// The bundled target-language font: Sarabun Regular (SIL Open Font License —
+/// see `src-tauri/resources/Sarabun-OFL.txt`). It covers both Thai and Latin, so
+/// remapping the game's fonts to it renders translated Thai *and* any Latin still
+/// mixed in. Embedded in the binary, so the app is self-contained and the result
+/// is redistributable and cross-platform.
+const TL_FONT: &[u8] = include_bytes!("../../resources/Sarabun-Regular.ttf");
+
+/// Write the bundled font into the game.
+fn copy_target_font(dst: &Path) -> Result<()> {
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
     }
-    Ok(false)
+    std::fs::write(dst, TL_FONT).with_context(|| format!("writing font {}", dst.display()))?;
+    Ok(())
 }
 
 /// Every font the game references, so they can all be remapped to the target-language
