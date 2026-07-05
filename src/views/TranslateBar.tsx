@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import type { UnlistenFn } from "@tauri-apps/api/event";
+import { useState } from "react";
 import { api, type TranslateScope, type TranslateSummary } from "../ipc";
 import { useStore } from "../store";
 import { useSettings, PROVIDER_LABELS, PROVIDER_KINDS } from "../settings";
@@ -30,17 +29,9 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
 
   const [overwrite, setOverwrite] = useState(false);
   const [summary, setSummary] = useState<TranslateSummary | null>(null);
+  // Only command-level failures (no API key / no project) surface here; per-unit
+  // AI failures live in the Errors modal, so a Run no longer paints a red banner.
   const [err, setErr] = useState<string | null>(null);
-
-  // Surface the first transport-level error (AI unreachable / rate-limited) the
-  // moment it happens, so a Run doesn't silently mark everything Failed.
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-    api
-      .onTranslateError((msg) => setErr(`AI error: ${msg}`))
-      .then((fn) => (unlisten = fn));
-    return () => unlisten?.();
-  }, []);
 
   async function translate(scope: TranslateScope) {
     setErr(null);
@@ -48,9 +39,6 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
     try {
       const res = await enqueue("units", () => api.translateUnits(scope, activeConfig()));
       setSummary(res);
-      // A transport error may have occurred even though the command resolved
-      // (the Run keeps going and marks the rest Failed).
-      if (res.error) setErr(`AI error: ${res.error}`);
       // The visible rows were live-patched during the Run; just refresh the
       // sidebar counts and the total (no full reload → no scroll jump).
       await refreshMeta();
