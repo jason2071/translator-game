@@ -10,6 +10,7 @@ import { Icon } from "../components/Icon";
 
 export default function TranslateBar() {
   const filter = useStore((s) => s.filter);
+  const setFilter = useStore((s) => s.setFilter);
   const stats = useStore((s) => s.stats);
   const reloadUnits = useStore((s) => s.reloadUnits);
   const refreshMeta = useStore((s) => s.refreshMeta);
@@ -161,7 +162,18 @@ export default function TranslateBar() {
           {summary.cancelled ? "Cancelled — " : "Done — "}
           {summary.translated} translated
           {summary.reused > 0 ? `, ${summary.reused} reused` : ""}
-          {summary.failed > 0 ? `, ${summary.failed} failed` : ""}
+          {summary.failed > 0 && (
+            <>
+              {", "}
+              <button
+                className="linklike failed-link"
+                onClick={() => setFilter({ status: "Failed", untranslatedOnly: false })}
+                title="Show the units that failed so you can retry or fix them"
+              >
+                {summary.failed} failed
+              </button>
+            </>
+          )}
         </span>
       )}
       {err && <span className="error">{err}</span>}

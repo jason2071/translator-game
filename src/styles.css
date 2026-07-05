@@ -232,6 +232,16 @@ code {
   opacity: 0.5;
   cursor: default;
 }
+/* The "N failed" count in a Run summary — clickable, jumps to the Failed filter. */
+.failed-link {
+  color: var(--warn);
+  font: inherit;
+  text-decoration: underline;
+}
+.failed-link:hover {
+  color: var(--warn);
+  opacity: 0.8;
+}
 .recent-list {
   list-style: none;
   margin: 0;
