@@ -141,19 +141,18 @@ impl GameEngine for MvMzEngine {
         backup_dir: Option<&Path>,
     ) -> Result<Option<String>> {
         const FONT_FILE: &str = "Sarabun-Regular.ttf";
-        // `fonts/` sits beside the data dir: `<root>/fonts` for MZ, `<root>/www/fonts`
+        // `fonts/` and `js/` sit beside the data dir: `<root>` for MZ, `<root>/www`
         // for a deployed MV game.
-        let fonts_dir = data_dir
-            .parent()
-            .unwrap_or(data_dir)
-            .join("fonts");
+        let base = data_dir.parent().unwrap_or(data_dir);
+        let fonts_dir = base.join("fonts");
         std::fs::create_dir_all(&fonts_dir).context("creating fonts/ dir")?;
         std::fs::write(fonts_dir.join(FONT_FILE), font)
             .with_context(|| format!("writing fonts/{FONT_FILE}"))?;
 
-        // MV: rewrite gamefont.css.
+        // Repoint the game's font at ours — MV via gamefont.css, MZ via System.json.
         let css = fonts_dir.join("gamefont.css");
-        if css.is_file() {
+        let sys_path = data_dir.join("System.json");
+        let font_note = if css.is_file() {
             if let Some(bdir) = backup_dir {
                 let dst = bdir.join("fonts").join("gamefont.css");
                 if let Some(parent) = dst.parent() {
@@ -170,32 +169,109 @@ impl GameEngine for MvMzEngine {
                  @font-face {{ font-family: GameFontFallback; src: url(\"{FONT_FILE}\"); }}\n"
             );
             std::fs::write(&css, patched).context("writing fonts/gamefont.css")?;
-            return Ok(Some(format!(
-                "Embedded {FONT_FILE} and repointed fonts/gamefont.css (MV)."
-            )));
-        }
-
-        // MZ: set advanced.mainFontFilename in System.json.
-        let sys_path = data_dir.join("System.json");
-        if sys_path.is_file() {
+            format!("Embedded {FONT_FILE}, repointed fonts/gamefont.css (MV).")
+        } else if sys_path.is_file() {
             let text = std::fs::read_to_string(&sys_path).context("reading System.json")?;
             let mut val: Value = serde_json::from_str(&text).context("parsing System.json")?;
-            if let Some(adv) = val.get_mut("advanced").and_then(Value::as_object_mut) {
-                adv.insert("mainFontFilename".into(), Value::String(FONT_FILE.into()));
-                // Compact + key-order-preserving, matching RPGMaker's own format.
-                let out = serde_json::to_string(&val)?;
-                std::fs::write(&sys_path, out).context("writing System.json")?;
-                return Ok(Some(format!(
-                    "Embedded {FONT_FILE} and set System.json mainFontFilename (MZ)."
-                )));
+            match val.get_mut("advanced").and_then(Value::as_object_mut) {
+                Some(adv) => {
+                    adv.insert("mainFontFilename".into(), Value::String(FONT_FILE.into()));
+                    // Compact + key-order-preserving, matching RPGMaker's own format.
+                    let out = serde_json::to_string(&val)?;
+                    std::fs::write(&sys_path, out).context("writing System.json")?;
+                    format!("Embedded {FONT_FILE}, set System.json mainFontFilename (MZ).")
+                }
+                None => format!("Embedded {FONT_FILE} into fonts/, but System.json has no advanced block."),
             }
-        }
+        } else {
+            format!("Embedded {FONT_FILE} into fonts/, but found no font hook to repoint.")
+        };
 
-        Ok(Some(format!(
-            "Embedded {FONT_FILE} into fonts/, but found no font hook to repoint \
-             (no gamefont.css / System.json advanced block)."
-        )))
+        // Also thin the game's text outline. RPGMaker strokes text with a thick
+        // outline (MV 4px / MZ 3px); around Thai's stacked tone+vowel marks that
+        // outline blobs them together (a mai-ek over a sara-ii). A tiny plugin
+        // drops the outline width so the marks stay distinct. Best-effort: a
+        // failure here must not fail the font embed.
+        let outline_note = match install_thin_outline_plugin(base, backup_dir) {
+            Ok(note) => note,
+            Err(e) => Some(format!("(text-outline plugin skipped: {e})")),
+        };
+
+        Ok(Some(match outline_note {
+            Some(o) => format!("{font_note} {o}"),
+            None => font_note,
+        }))
     }
+}
+
+/// A tiny RPGMaker MV/MZ plugin that shrinks the default text outline so Thai's
+/// stacked marks don't merge under it. Loaded last so it wins over other plugins.
+const THIN_OUTLINE_PLUGIN: &str = r#"/*:
+ * @target MZ
+ * @plugindesc Thinner text outline so stacked Thai tone/vowel marks stay legible. Added by RPGMaker Translator.
+ * @help RPGMaker strokes text with a thick outline (MV 4px / MZ 3px). Around Thai
+ * clusters that stack a vowel and a tone mark (e.g. a mai-ek over a sara-ii), the
+ * outline fills the gap and blobs them together. This drops the outline width.
+ */
+(function () {
+  "use strict";
+  var OUTLINE_WIDTH = 2; // default MV 4 / MZ 3
+  var _initialize = Bitmap.prototype.initialize;
+  Bitmap.prototype.initialize = function () {
+    _initialize.apply(this, arguments);
+    this.outlineWidth = OUTLINE_WIDTH;
+  };
+})();
+"#;
+
+/// Install [`THIN_OUTLINE_PLUGIN`] into an MV/MZ game: write the plugin file and
+/// register it (last, so it wins) in `js/plugins.js`. Idempotent — re-running
+/// after it is already registered is a no-op. Returns a short status note, or
+/// `None` when the game has no `js/plugins.js` (nothing we can safely hook).
+fn install_thin_outline_plugin(base: &Path, backup_dir: Option<&Path>) -> Result<Option<String>> {
+    const PLUGIN_NAME: &str = "RPGTL_ThaiText";
+    let plugins_js = base.join("js").join("plugins.js");
+    if !plugins_js.is_file() {
+        return Ok(None);
+    }
+
+    // 1) Drop the plugin file (idempotent overwrite).
+    let plugins_dir = base.join("js").join("plugins");
+    std::fs::create_dir_all(&plugins_dir).context("creating js/plugins/ dir")?;
+    std::fs::write(plugins_dir.join(format!("{PLUGIN_NAME}.js")), THIN_OUTLINE_PLUGIN)
+        .context("writing the thin-outline plugin")?;
+
+    // 2) Register it in the $plugins array unless it is already there.
+    let text = std::fs::read_to_string(&plugins_js).context("reading js/plugins.js")?;
+    if text.contains(&format!("\"{PLUGIN_NAME}\"")) {
+        return Ok(Some("(text outline already thinned)".into()));
+    }
+    if let Some(bdir) = backup_dir {
+        let dst = bdir.join("js").join("plugins.js");
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::copy(&plugins_js, &dst);
+    }
+    // plugins.js is `var $plugins =\n[ {...}, ... ];` — parse the JSON array
+    // between the first '[' and the last ']', append our entry, and rewrite,
+    // preserving the surrounding `var $plugins =` prefix and trailing `;`.
+    let start = text.find('[').context("js/plugins.js: no $plugins array")?;
+    let end = text.rfind(']').context("js/plugins.js: unterminated $plugins array")?;
+    if end < start {
+        return Err(anyhow!("js/plugins.js: malformed $plugins array"));
+    }
+    let mut arr: Vec<Value> =
+        serde_json::from_str(&text[start..=end]).context("parsing the $plugins array")?;
+    arr.push(serde_json::json!({
+        "name": PLUGIN_NAME,
+        "status": true,
+        "description": "Thinner text outline so stacked Thai marks stay legible (RPGMaker Translator).",
+        "parameters": {}
+    }));
+    let rebuilt = format!("{}{}{}", &text[..start], serde_json::to_string(&arr)?, &text[end + 1..]);
+    std::fs::write(&plugins_js, rebuilt).context("writing js/plugins.js")?;
+    Ok(Some("thinned the text outline (RPGTL_ThaiText plugin).".into()))
 }
 
 /// Locate the data directory: MZ uses `data/`, deployed MV uses `www/data/`.
@@ -678,5 +754,51 @@ mod tests {
             .unwrap();
         assert!(css2_note.is_some());
         assert_eq!(std::fs::read_to_string(fonts.join("gamefont.css")).unwrap(), css);
+    }
+
+    #[test]
+    fn embed_font_installs_thin_outline_plugin_once() {
+        // MZ layout with an existing js/plugins.js.
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let js = tmp.path().join("js");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&js).unwrap();
+        std::fs::write(
+            data.join("System.json"),
+            r#"{"advanced":{"mainFontFilename":"mz.woff"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            js.join("plugins.js"),
+            "// Generated by RPG Maker.\nvar $plugins =\n[\n\
+             {\"name\":\"Existing\",\"status\":true,\"description\":\"\",\"parameters\":{}}\n];\n",
+        )
+        .unwrap();
+
+        MvMzEngine
+            .embed_font(tmp.path(), &data, super::super::TARGET_FONT, None)
+            .unwrap();
+
+        // Plugin file dropped, and registered LAST so it wins over other plugins.
+        assert!(js.join("plugins/RPGTL_ThaiText.js").is_file());
+        let read_names = || -> Vec<String> {
+            let pj = std::fs::read_to_string(js.join("plugins.js")).unwrap();
+            let s = pj.find('[').unwrap();
+            let e = pj.rfind(']').unwrap();
+            let arr: Value = serde_json::from_str(&pj[s..=e]).unwrap();
+            arr.as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(read_names(), vec!["Existing", "RPGTL_ThaiText"]);
+
+        // Re-embedding must not register it a second time.
+        MvMzEngine
+            .embed_font(tmp.path(), &data, super::super::TARGET_FONT, None)
+            .unwrap();
+        assert_eq!(read_names(), vec!["Existing", "RPGTL_ThaiText"]);
     }
 }

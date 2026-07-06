@@ -42,7 +42,10 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   far) drops the shared bundled Thai font `engine::TARGET_FONT` (Sarabun, OFL) into
   the game and repoints its fonts at it — MV rewrites `fonts/gamefont.css`, MZ sets
   `System.json` `advanced.mainFontFilename` — so translated Thai isn't tofu; Ren'Py
-  does the equivalent remap inside its own `tl/` path. `codes.rs`
+  does the equivalent remap inside its own `tl/` path. For RPGMaker it also installs
+  a tiny `RPGTL_ThaiText` plugin (registered last in `js/plugins.js`) that thins the
+  text outline, so Thai's stacked tone/vowel marks don't blob under RPGMaker's thick
+  default stroke. `codes.rs`
   maps RPGMaker event command codes (401 text, 102 choices, 320 name-change, …) to
   translatable parameter slots. `protect.rs` masks control/markup codes per
   engine (`mask_for(engine_id, …)`). `encoding.rs` is KiriKiri's Shift-JIS/UTF-16
