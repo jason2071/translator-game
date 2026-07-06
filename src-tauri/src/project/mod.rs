@@ -31,6 +31,8 @@ pub struct ProjectInfo {
     pub data_dir: String,
     pub source_lang: String,
     pub target_lang: String,
+    /// Per-project lore/setting notes fed to the model on every Run.
+    pub game_context: String,
     pub stats: Stats,
     /// True if this open just extracted the game (fresh project).
     pub freshly_extracted: bool,
@@ -117,6 +119,7 @@ impl Project {
                 .unwrap_or_else(|| "auto".into()),
             target_lang: db::get_meta(&self.conn, "target_lang")?
                 .unwrap_or_else(|| "Thai".into()),
+            game_context: db::get_meta(&self.conn, "game_context")?.unwrap_or_default(),
             stats: db::stats(&self.conn)?,
             freshly_extracted,
         })

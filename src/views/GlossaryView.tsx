@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { api, type GlossaryEntry, type ProviderKind } from "../ipc";
 import { PROVIDER_LABELS, PROVIDER_KINDS, useSettings } from "../settings";
+import { useStore } from "../store";
 import { useGlossarySuggest } from "../glossarySuggest";
 import { useTranslation } from "../translation";
 import TransProgress from "../components/TransProgress";
@@ -32,6 +34,8 @@ export default function GlossaryView() {
 
   return (
     <div className="glossary">
+      <GameContextPanel />
+
       <p className="hint">
         Terms are fed to the AI and used to lint translations for consistency
         (proper nouns, stats, item names).
@@ -87,10 +91,92 @@ export default function GlossaryView() {
   );
 }
 
-function SuggestPanel({ onAdded }: { onAdded: () => void }) {
+// Per-project game context (lore/setting) — stored in the project DB and fed to
+// the model on every Run. Lives here (per-project, like the glossary) rather than
+// in Settings (which is global/per-provider). "AI draft" fills it from the game.
+function GameContextPanel() {
+  const project = useStore((s) => s.project);
+  const setGameContext = useStore((s) => s.setGameContext);
   const glossaryConfig = useSettings((s) => s.glossaryConfig);
+  // The AI provider here governs BOTH "AI draft" (context) and the glossary's
+  // "AI suggest" — surfaced at the top so it's visible before either is run.
   const glossaryProvider = useSettings((s) => s.glossaryProvider);
   const setGlossaryProvider = useSettings((s) => s.setGlossaryProvider);
+  const [drafting, setDrafting] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  if (!project) return null;
+
+  async function draft() {
+    const p = useStore.getState().project;
+    if (!p) return;
+    if (p.gameContext.trim()) {
+      const ok = await ask("Replace the current game context with an AI draft from the game's text?", {
+        title: "AI draft game context?",
+        kind: "warning",
+      });
+      if (!ok) return;
+    }
+    setDrafting(true);
+    setMsg(null);
+    try {
+      const text = (await api.suggestGameContext(glossaryConfig())).trim();
+      if (text) {
+        setGameContext(text);
+        setMsg("Drafted from the game's text — edit as needed.");
+      } else {
+        setMsg("No context could be drafted (no sampled text).");
+      }
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  return (
+    <div className="gloss-context">
+      <div className="gloss-context-head">
+        <label>
+          Game context <span className="hint">(this project)</span>
+        </label>
+        <div className="gloss-context-actions">
+          <select
+            className="gloss-provider"
+            value={glossaryProvider}
+            onChange={(e) => setGlossaryProvider(e.target.value as ProviderKind)}
+            disabled={drafting}
+            title="AI provider for glossary + game-context help (independent of the Run provider)"
+          >
+            {PROVIDER_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {PROVIDER_LABELS[k]}
+              </option>
+            ))}
+          </select>
+          <button
+            className="ghost"
+            onClick={draft}
+            disabled={drafting}
+            title="Draft a setting/character brief from this game's own text with AI"
+          >
+            <Icon name="sparkle" size={14} /> {drafting ? "Drafting…" : "AI draft"}
+          </button>
+        </div>
+      </div>
+      <textarea
+        rows={3}
+        placeholder="Lore/setting for THIS game — era, characters, relationships, tone, world rules. Fed to the AI on every Run. e.g. Modern-day Thailand; Callum and Daisy are siblings; casual speech."
+        value={project.gameContext}
+        onChange={(e) => setGameContext(e.target.value)}
+      />
+      {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
+    </div>
+  );
+}
+
+function SuggestPanel({ onAdded }: { onAdded: () => void }) {
+  const glossaryConfig = useSettings((s) => s.glossaryConfig);
   const {
     cands,
     rows,
@@ -170,25 +256,11 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
         </div>
 
         <div className="suggest-head-actions">
-          <select
-            className="gloss-provider"
-            value={glossaryProvider}
-            onChange={(e) => setGlossaryProvider(e.target.value as ProviderKind)}
-            disabled={glossBusy}
-            title="AI provider used for glossary translation (independent of the Run provider)"
-          >
-            {PROVIDER_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {PROVIDER_LABELS[k]}
-              </option>
-            ))}
-          </select>
-
           <button
             className="ghost"
             onClick={() => suggestAi(glossaryConfig())}
             disabled={loading || glossBusy}
-            title="Mine more terms from the game's dialogue with AI"
+            title="Mine more terms from the game's dialogue with AI (provider chosen at the top)"
           >
             <Icon name="sparkle" size={14} /> {loading ? "AI scanning…" : "AI suggest"}
           </button>

@@ -205,10 +205,12 @@ export default function SettingsView() {
           {s.thinking ? "On — slower, may improve quality" : "Off — faster, recommended for translation"}
         </label>
 
-        <label>Extra prompt</label>
+        <label>
+          Extra prompt <span className="hint">(all projects)</span>
+        </label>
         <textarea
           rows={3}
-          placeholder="e.g. keep honorifics; the protagonist is female…"
+          placeholder="Applies to every game. e.g. keep honorifics; the protagonist is a boy…"
           value={s.systemPrompt}
           onChange={(e) => s.setShared({ systemPrompt: e.target.value })}
         />

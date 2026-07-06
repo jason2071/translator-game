@@ -34,6 +34,7 @@ interface AppStore {
   openProject: (path: string, sourceLang?: string, targetLang?: string) => Promise<void>;
   closeProject: () => Promise<void>;
   setLanguages: (source: string, target: string) => Promise<void>;
+  setGameContext: (text: string) => Promise<void>;
   setFilter: (patch: Partial<UnitFilter>) => Promise<void>;
   reloadUnits: () => Promise<void>;
   refreshMeta: () => Promise<void>;
@@ -57,6 +58,11 @@ const MARGIN = 100;
 // fetch and only apply their result if still the latest — so a stale fetch (old
 // filter or superseded scroll) never overwrites a newer window.
 let winReq = 0;
+
+// Debounce persisting the game context: the store is updated on every keystroke
+// (so the textarea stays responsive), but the DB write fires only after typing
+// pauses — avoiding a write per keystroke and out-of-order IPC clobbering.
+let gameCtxTimer: ReturnType<typeof setTimeout> | undefined;
 
 const EMPTY_WINDOW: UnitWindow = { offset: 0, rows: [] };
 
@@ -87,6 +93,8 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   closeProject: async () => {
+    // Cancel any pending game-context write so it can't land on the next project.
+    if (gameCtxTimer) clearTimeout(gameCtxTimer);
     await api.closeProject();
     useGlossarySuggest.getState().reset();
     useErrors.getState().reset();
@@ -97,6 +105,19 @@ export const useStore = create<AppStore>((set, get) => ({
     await api.setLanguages(source, target);
     const p = get().project;
     if (p) set({ project: { ...p, sourceLang: source, targetLang: target } });
+  },
+
+  setGameContext: async (text) => {
+    // Update the store FIRST (synchronously) so the controlled textarea reflects
+    // each keystroke immediately; awaiting the IPC round-trip before setting made
+    // the input lag and drop fast keystrokes (notably spaces).
+    const p = get().project;
+    if (p) set({ project: { ...p, gameContext: text } });
+    // Persist after a short pause so we don't write per keystroke.
+    if (gameCtxTimer) clearTimeout(gameCtxTimer);
+    gameCtxTimer = setTimeout(() => {
+      api.setGameContext(text).catch(() => {});
+    }, 400);
   },
 
   setFilter: async (patch) => {

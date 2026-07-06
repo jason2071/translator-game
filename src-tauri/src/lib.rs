@@ -116,6 +116,15 @@ fn set_languages(
     })
 }
 
+/// Set this project's game context — free-text lore/setting notes (characters,
+/// era, world rules) fed to the model on every Run, on top of the global Extra
+/// prompt. Persisted per-project in the sidecar DB, so it never leaks between
+/// games.
+#[tauri::command]
+fn set_game_context(text: String, state: tauri::State<AppState>) -> Result<(), String> {
+    with_project(&state, |p| project::db::set_meta(&p.conn, "game_context", &text))
+}
+
 // --- grid browse & edit ---------------------------------------------------
 
 #[tauri::command]
@@ -293,6 +302,46 @@ async fn suggest_glossary_ai(
     Ok(out)
 }
 
+/// AI-draft this project's game context from its own text: sample the game's
+/// dialogue/description and ask the model for a short translation brief (setting,
+/// characters + relationships, tone, world rules). Returns the drafted note; the
+/// caller decides whether to store it. Gathers the corpus under the project lock,
+/// then does the network call with no lock held.
+#[tauri::command]
+async fn suggest_game_context(
+    config: ProviderConfig,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let (corpus, source_lang) = {
+        let guard = state.project.lock().unwrap();
+        let p = guard.as_ref().ok_or("no project open")?;
+        let lines = project::db::sample_text_for_mining(&p.conn, 400).map_err(|e| e.to_string())?;
+        let source_lang = project::db::get_meta(&p.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
+        (lines.join("\n"), source_lang)
+    };
+    if corpus.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    let key: Option<String> = if config.needs_key() {
+        Some(
+            keys::get_key(&config.kind)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("no API key stored for provider '{}'", config.kind))?,
+        )
+    } else {
+        None
+    };
+
+    let (sys, user) = ai::prompt::build_context_prompt(&source_lang, &corpus);
+    let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
+    let raw = provider
+        .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ai::prompt::plain_completion(&raw))
+}
+
 /// Add several glossary entries at once; returns how many were inserted.
 #[tauri::command]
 fn glossary_add_bulk(
@@ -435,7 +484,7 @@ async fn translate_units(
     // source (dedup), and pre-fill any group whose source is already in TM. Only
     // genuinely-new distinct sources reach the AI, so repeated lines and
     // previously-translated strings are never re-billed.
-    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id) = {
+    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context) = {
         let guard = state.project.lock().unwrap();
         let proj = guard.as_ref().ok_or("no project is open")?;
         let overwrite = scope.overwrite.unwrap_or(false);
@@ -562,8 +611,11 @@ async fn translate_units(
             .collect::<Vec<_>>();
         let source_lang = project::db::get_meta(&proj.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
         let target_lang = project::db::get_meta(&proj.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into());
+        // Per-project lore/setting notes, fed to the model on top of the global
+        // Extra prompt (config.system_prompt).
+        let game_context = project::db::get_meta(&proj.conn, "game_context").ok().flatten().unwrap_or_default();
 
-        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id)
+        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context)
     };
 
     let mut summary = TranslateSummary {
@@ -595,7 +647,19 @@ async fn translate_units(
     let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
     let client = state.http.clone();
     let tone = config.tone.clone().unwrap_or_else(|| "casual".into());
-    let extra_system = config.system_prompt.clone();
+    // System-prompt extras: this project's game context first (lore/setting), then
+    // the global Extra prompt. Either may be empty; None when both are.
+    let extra_system = {
+        let mut parts: Vec<&str> = Vec::new();
+        if !game_context.trim().is_empty() {
+            parts.push(game_context.trim());
+        }
+        let global = config.system_prompt.as_deref().unwrap_or("").trim();
+        if !global.is_empty() {
+            parts.push(global);
+        }
+        if parts.is_empty() { None } else { Some(parts.join("\n")) }
+    };
     let batch_size = config.batch_size();
     let interval = config.min_interval_ms();
 
@@ -1028,6 +1092,7 @@ pub fn run() {
             open_project,
             close_project,
             set_languages,
+            set_game_context,
             list_units,
             count_units,
             update_unit,
@@ -1042,6 +1107,7 @@ pub fn run() {
             glossary_lint,
             suggest_glossary,
             suggest_glossary_ai,
+            suggest_game_context,
             glossary_add_bulk,
             translate_units,
             translate_texts,

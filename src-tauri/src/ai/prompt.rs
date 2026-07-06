@@ -189,6 +189,34 @@ pub fn build_glossary_mining(source_lang: &str, target_lang: &str, corpus: &str)
     (sys, corpus.to_string())
 }
 
+/// Build the (system, user) prompt asking the model to draft a short game-context
+/// note from sampled game text — the setting/era, main characters and their
+/// relationships, tone, and world rules a translator needs for consistency.
+pub fn build_context_prompt(source_lang: &str, corpus: &str) -> (String, String) {
+    let src = if source_lang.trim().eq_ignore_ascii_case("auto") || source_lang.trim().is_empty() {
+        "the source language (auto-detect it, commonly Japanese or English)".to_string()
+    } else {
+        format!("{source_lang} text")
+    };
+    let sys = format!(
+        "You are preparing a translation brief for a video game. From the {src} the \
+         user provides, write a SHORT context note (3-6 sentences, plain prose, no \
+         headings or lists) capturing: the setting and era, the main characters and \
+         their relationships, the overall tone/register, and any world-specific \
+         terms or rules a translator must keep consistent. Be concise and factual — \
+         do not invent details that aren't supported by the text. Write the note in \
+         English. Output only the note, no preamble."
+    );
+    (sys, corpus.to_string())
+}
+
+/// Strip a free-form completion down to its plain text: drop `<think>` reasoning
+/// blocks and ```` ``` ```` fences, then trim. For non-JSON responses (e.g. the
+/// game-context brief).
+pub fn plain_completion(text: &str) -> String {
+    strip_fences(&strip_reasoning(text)).trim().to_string()
+}
+
 /// Parse a glossary-mining response into terms. Tolerant of ```json fences,
 /// `<think>` blocks, and an object-wrapped array; skips entries with no `term`.
 pub fn parse_glossary_mining(text: &str) -> Vec<MinedTerm> {
@@ -500,5 +528,20 @@ mod tests {
     fn mining_parse_empty_on_garbage() {
         assert!(parse_glossary_mining("no json here").is_empty());
         assert!(parse_glossary_mining("").is_empty());
+    }
+
+    #[test]
+    fn context_prompt_and_plain_cleaner() {
+        let (sys, user) = build_context_prompt("Japanese", "本文");
+        assert!(sys.contains("translation brief"));
+        assert!(sys.contains("characters"));
+        assert_eq!(user, "本文");
+
+        // plain_completion drops reasoning + fences and trims.
+        assert_eq!(
+            plain_completion("<think>hmm</think>\n```\nModern-day town. Two siblings.\n```"),
+            "Modern-day town. Two siblings."
+        );
+        assert_eq!(plain_completion("  A short brief.  "), "A short brief.");
     }
 }

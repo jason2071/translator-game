@@ -57,6 +57,7 @@ export interface ProjectInfo {
   dataDir: string;
   sourceLang: string;
   targetLang: string;
+  gameContext: string;
   stats: Stats;
   freshlyExtracted: boolean;
 }
@@ -179,6 +180,7 @@ export const api = {
 
   setLanguages: (source: string, target: string) =>
     invoke<void>("set_languages", { source, target }),
+  setGameContext: (text: string) => invoke<void>("set_game_context", { text }),
 
   listUnits: (filter: UnitFilter) =>
     invoke<TransUnit[]>("list_units", { filter }),
@@ -224,6 +226,8 @@ export const api = {
   suggestGlossary: () => invoke<GlossCandidate[]>("suggest_glossary"),
   suggestGlossaryAi: (config: ProviderConfig) =>
     invoke<GlossCandidate[]>("suggest_glossary_ai", { config }),
+  suggestGameContext: (config: ProviderConfig) =>
+    invoke<string>("suggest_game_context", { config }),
   glossaryAddBulk: (items: [string, string][]) =>
     invoke<number>("glossary_add_bulk", { items }),
 
