@@ -64,6 +64,7 @@ impl GameEngine for HendrixEngine {
             engine_name: self.name().to_string(),
             data_dir: base.to_string_lossy().to_string(),
             file_count: 1,
+            ..Default::default()
         })
     }
 
