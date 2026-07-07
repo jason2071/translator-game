@@ -155,7 +155,86 @@ fn archived_game_resolves_to_game_dir_and_reports_packed() {
     let d = eng.describe(root).unwrap();
     assert!(d.data_dir.replace('\\', "/").ends_with("/game"), "data_dir = {}", d.data_dir);
 
-    // Extraction fails with an actionable message rather than importing the SDK UI.
+    // The archive here isn't a readable RPA, so auto-unpack recovers no source and
+    // extraction fails with an actionable message (decompile the .rpyc) rather than
+    // importing the SDK UI.
     let err = eng.extract(root, &ExtractOpts::default()).unwrap_err().to_string();
-    assert!(err.contains("packed/compiled") && err.contains("unrpa"), "got: {err}");
+    assert!(err.contains("compiled") && err.contains("unrpyc"), "got: {err}");
+}
+
+/// Assemble a real RPA-3.0 archive: `RPA-3.0 <hex index off> <hex key>\n`, each
+/// file's bytes, then the zlib-compressed pickled index `{path: [(off^key,
+/// len^key, b"")]}`. The header is fixed-width so file data starts at a known
+/// offset. Mirrors what a real Ren'Py `.rpa` looks like.
+fn build_rpa(key: u64, files: &[(&str, &[u8])]) -> Vec<u8> {
+    use flate2::{write::ZlibEncoder, Compression};
+    use serde_pickle::{HashableValue, Value};
+    use std::collections::BTreeMap;
+    use std::io::Write;
+
+    let header_len = format!("RPA-3.0 {:016x} {:08x}\n", 0u64, key).len();
+    let mut body = Vec::new();
+    let mut index = BTreeMap::new();
+    for (name, bytes) in files {
+        let offset = (header_len + body.len()) as u64;
+        body.extend_from_slice(bytes);
+        index.insert(
+            HashableValue::String((*name).to_string()),
+            Value::List(vec![Value::Tuple(vec![
+                Value::I64((offset ^ key) as i64),
+                Value::I64((bytes.len() as u64 ^ key) as i64),
+                Value::Bytes(Vec::new()),
+            ])]),
+        );
+    }
+    let index_offset = (header_len + body.len()) as u64;
+    let pickled =
+        serde_pickle::value_to_vec(&Value::Dict(index), serde_pickle::SerOptions::new()).unwrap();
+    let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(&pickled).unwrap();
+    let compressed = enc.finish().unwrap();
+
+    let mut archive = format!("RPA-3.0 {index_offset:016x} {key:08x}\n").into_bytes();
+    assert_eq!(archive.len(), header_len);
+    archive.extend_from_slice(&body);
+    archive.extend_from_slice(&compressed);
+    archive
+}
+
+#[test]
+fn packed_game_with_source_rpy_auto_unpacks() {
+    // A packed game that ships its source .rpy *inside* the .rpa (as many do).
+    // The app must recover the source automatically at import — no external tools.
+    let script = "label start:\n    e \"Into the woods we go.\"\n    \"Back to town.\"\n";
+    let archive = build_rpa(0x4242_4242, &[("story.rpy", script.as_bytes())]);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("game")).unwrap();
+    std::fs::write(root.join("game/archive.rpa"), &archive).unwrap();
+    std::fs::write(root.join("game/script_version.txt"), b"8.4.0").unwrap();
+
+    let eng = engine::detect(root).expect("packed Ren'Py game detects");
+    assert_eq!(eng.id(), "renpy");
+
+    // describe() peeks the archive index (read-only) and reports the packed source
+    // count — without unpacking yet.
+    let d = eng.describe(root).unwrap();
+    assert_eq!(d.file_count, 1, "peeked .rpy count from the archive");
+    assert!(!root.join("game/story.rpy").exists(), "describe must not write");
+
+    // extract() unpacks the source out of the archive, then reads it normally.
+    let units = eng.extract(root, &ExtractOpts::default()).unwrap();
+    assert!(root.join("game/story.rpy").exists(), "extract unpacked the source");
+    let sources: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+    assert!(sources.contains(&"Into the woods we go."));
+    assert!(sources.contains(&"Back to town."));
+    assert_eq!(
+        units.iter().find(|u| u.source == "Into the woods we go.").unwrap().kind,
+        UnitKind::Dialogue
+    );
+
+    // Re-extract is idempotent: the loose .rpy now wins, the archive isn't re-read.
+    let again = eng.extract(root, &ExtractOpts::default()).unwrap();
+    assert_eq!(again.len(), units.len());
 }
