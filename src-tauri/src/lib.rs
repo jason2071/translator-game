@@ -249,8 +249,17 @@ fn suggest_glossary(state: tauri::State<AppState>) -> Result<Vec<GlossCandidate>
 #[tauri::command]
 async fn suggest_glossary_ai(
     config: ProviderConfig,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<GlossCandidate>, String> {
+    // Report progress to the glossary panel: the local scan, then the AI wait (the
+    // slow part), so the button isn't a silent spinner. `count` on "asking" is how
+    // many candidates the model is judging.
+    let stage = |s: &str, count: usize| {
+        let _ = app.emit("glossary://suggest", serde_json::json!({ "stage": s, "count": count }));
+    };
+    stage("mining", 0);
+
     // Mine candidate terms from the WHOLE game locally (cheap, no AI). For a
     // language with capitalization this returns a proper-noun shortlist; for one
     // without (Japanese/Chinese) it returns nothing and we fall back to letting the
@@ -302,6 +311,7 @@ async fn suggest_glossary_ai(
         let counts: std::collections::HashMap<String, i64> =
             mined.iter().map(|c| (c.term.to_lowercase(), c.count)).collect();
         let (sys, user) = ai::prompt::build_glossary_classify(&source_lang, &target_lang, &pairs);
+        stage("asking", pairs.len());
         let raw = provider
             .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
             .await
@@ -325,6 +335,7 @@ async fn suggest_glossary_ai(
 
     // Fallback (no capitalization signal): let the model mine the text sample.
     let (sys, user) = ai::prompt::build_glossary_mining(&source_lang, &target_lang, &fallback_corpus);
+    stage("asking", 0);
     let raw = provider
         .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
         .await
