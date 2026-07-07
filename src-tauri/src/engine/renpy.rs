@@ -179,8 +179,17 @@ fn has_rpy(dir: &Path) -> bool {
     false
 }
 
+/// The global `.rpy` this tool writes into a game on export (default language +
+/// font remap — see [`setup_language`]). It is our own artifact, never game
+/// source, so it must never be re-imported.
+const GENERATED_RPY: &str = "zzz_translator.rpy";
+
 fn is_rpy(p: &Path) -> bool {
-    p.is_file() && p.extension().map(|e| e == "rpy").unwrap_or(false)
+    p.is_file()
+        && p.extension().map(|e| e == "rpy").unwrap_or(false)
+        // Skip our export artifact: its quoted font paths (`fonts/tl_font.ttf`, the
+        // remapped game fonts) would otherwise be extracted as if they were dialogue.
+        && p.file_name().and_then(|n| n.to_str()) != Some(GENERATED_RPY)
 }
 
 /// Ren'Py's `game/tl/<language>/` tree holds *translations* of the source
@@ -929,7 +938,7 @@ fn setup_language(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
         s.push_str("                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
     }
 
-    std::fs::write(data_dir.join("zzz_translator.rpy"), s)
+    std::fs::write(data_dir.join(GENERATED_RPY), s)
         .with_context(|| "writing zzz_translator.rpy")?;
     Ok(())
 }

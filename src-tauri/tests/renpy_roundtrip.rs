@@ -140,6 +140,13 @@ fn archived_game_resolves_to_game_dir_and_reports_packed() {
     std::fs::write(root.join("game/script_version.txt"), b"8.4.0").unwrap();
     std::fs::create_dir_all(root.join("renpy/common")).unwrap();
     std::fs::write(root.join("renpy/common/00action.rpy"), "old \"Quit\"\n").unwrap();
+    // Our own export artifact from a prior run must not count as game source (else
+    // its font-path strings get re-imported and the packed game looks translatable).
+    std::fs::write(
+        root.join("game/zzz_translator.rpy"),
+        "translate thai python:\n    _tl_font = \"fonts/tl_font.ttf\"\n",
+    )
+    .unwrap();
 
     let eng = engine::detect(root).expect("archived Ren'Py game still detects");
     assert_eq!(eng.id(), "renpy");
