@@ -34,7 +34,7 @@ pub use codes::ExtractOpts;
 pub const TARGET_FONT: &[u8] = include_bytes!("../../resources/Sarabun-Regular.ttf");
 
 /// Result of fingerprinting a folder.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectResult {
     pub engine_id: String,
@@ -43,6 +43,12 @@ pub struct DetectResult {
     pub data_dir: String,
     /// Number of `.json` data files found.
     pub file_count: usize,
+    /// Non-blocking advisories to show before import — e.g. a game whose
+    /// dialogue is served by a built-in in-game language system, so injecting
+    /// translations into its data files won't fully translate it. Empty for a
+    /// clean, fully-translatable project.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// A translatable game format. Implementations are stateless and cheap.

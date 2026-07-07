@@ -50,6 +50,7 @@ impl GameEngine for KiriKiriEngine {
             engine_name: self.name().to_string(),
             data_dir: root.to_string_lossy().to_string(),
             file_count: count,
+            ..Default::default()
         })
     }
 

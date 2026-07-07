@@ -53,6 +53,7 @@ impl GameEngine for TyranoEngine {
             engine_name: self.name().to_string(),
             data_dir: dir.to_string_lossy().to_string(),
             file_count: count,
+            ..Default::default()
         })
     }
 

@@ -38,6 +38,9 @@ export interface DetectResult {
   engineName: string;
   dataDir: string;
   fileCount: number;
+  /** Non-blocking advisories to show before import (e.g. a built-in in-game
+   * language system that keeps dialogue out of the data files). */
+  warnings?: string[];
 }
 
 export interface Stats {

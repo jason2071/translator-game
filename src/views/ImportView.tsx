@@ -102,6 +102,13 @@ export default function ImportView() {
             <code>{detected.dataDir}</code>
           </div>
 
+          {detected.warnings?.map((w, i) => (
+            <p key={i} className="detect-warning">
+              <Icon name="warn" size={15} className="detect-warning-icon" />
+              <span>{w}</span>
+            </p>
+          ))}
+
           <div className="lang-pick">
             <label>
               From
