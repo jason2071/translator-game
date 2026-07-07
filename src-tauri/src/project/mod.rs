@@ -171,6 +171,28 @@ pub fn export(project: &Project, make_backup: bool, embed_font: bool) -> Result<
         }
     }
 
+    // Hendrix Localization: like Ren'Py, export is additive and not a plain
+    // in-place splice. Append a Thai column to `game_messages.csv`, register the
+    // language in the plugin (so it appears in the in-game menu), and embed the
+    // font. The original sheet columns and other languages are untouched.
+    if eng.id() == "rpgmaker-hendrix" {
+        let base = engine::hendrix::game_root(&project.root)
+            .ok_or_else(|| anyhow!("Hendrix sheet no longer found for this project"))?;
+        let ex = engine::hendrix::export_sheet(
+            &project.root,
+            &base,
+            &units,
+            make_backup,
+            embed_font,
+        )?;
+        return Ok(ExportResult {
+            files_written: 1,
+            units_applied: applied.len(),
+            backup_dir: ex.backup_dir,
+            note: Some(ex.note),
+        });
+    }
+
     // Distinct files that injection will overwrite.
     let mut touched: Vec<String> = applied.iter().map(|u| u.file.clone()).collect();
     touched.sort();

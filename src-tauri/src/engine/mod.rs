@@ -14,6 +14,7 @@
 pub mod codes;
 pub mod encoding;
 pub mod godot;
+pub mod hendrix;
 pub mod kirikiri;
 pub mod mvmz;
 pub mod protect;
@@ -88,6 +89,11 @@ pub trait GameEngine: Send + Sync {
 /// All engines known to this build, in detection priority order.
 pub fn engines() -> Vec<Box<dyn GameEngine>> {
     vec![
+        // Hendrix before mvmz: a Hendrix-localized game IS an RPGMaker MV/MZ game,
+        // but its text lives in `game_messages.csv` (the plugin overrides the JSON
+        // at runtime), so the more specific match must win. A normal RPGMaker game
+        // lacks the sheet/plugin and falls through to `mvmz`.
+        Box::new(hendrix::HendrixEngine),
         Box::new(mvmz::MvMzEngine),
         Box::new(renpy::RenpyEngine),
         // KiriKiri before TyranoScript: both use `.ks`, but KiriKiri carries a
