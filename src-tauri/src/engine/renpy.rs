@@ -17,6 +17,7 @@
 
 use super::codes::ExtractOpts;
 use super::renpy_tl::{self, Say};
+use super::rpa;
 use super::{DetectResult, GameEngine};
 use crate::model::{TransUnit, UnitKind};
 use anyhow::{anyhow, Context, Result};
@@ -42,7 +43,14 @@ impl GameEngine for RenpyEngine {
 
     fn describe(&self, root: &Path) -> Result<DetectResult> {
         let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
-        let count = collect_rpy(&dir).len();
+        // A packed game has no loose `.rpy` yet — count the source scripts inside
+        // its `.rpa` without unpacking (this is a read-only preview; the actual
+        // extraction happens at import in `extract`).
+        let count = if has_rpy(&dir) {
+            collect_rpy(&dir).len()
+        } else {
+            rpa_rpy_count(&dir)
+        };
         Ok(DetectResult {
             engine_id: self.id().to_string(),
             engine_name: self.name().to_string(),
@@ -54,15 +62,20 @@ impl GameEngine for RenpyEngine {
 
     fn extract(&self, root: &Path, _opts: &ExtractOpts) -> Result<Vec<TransUnit>> {
         let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
+        // Scripts packed in a `.rpa` with no loose source: pull the source `.rpy`
+        // out of the archive first (many games ship the `.rpy` alongside the
+        // compiled `.rpyc`), so the normal line-based flow below can read them.
+        ensure_unpacked(&dir)?;
         let rpys = collect_rpy(&dir);
-        // Scripts packed/compiled with no editable source: fail the import with an
-        // actionable message instead of silently producing an empty project (or,
-        // worse, importing the SDK's renpy/common UI strings as if they were the game).
+        // Still nothing translatable: the archives held only compiled `.rpyc` (no
+        // source `.rpy`). Fail the import with an actionable message instead of
+        // silently producing an empty project (or, worse, importing the SDK's
+        // renpy/common UI strings as if they were the game).
         if rpys.is_empty() && is_renpy_game_dir(&dir) {
             return Err(anyhow!(
-                "This Ren'Py game ships its scripts packed/compiled (found .rpa/.rpyc but no \
-                 editable .rpy). Unpack the archives (e.g. with unrpa) and decompile the .rpyc to \
-                 .rpy (e.g. with unrpyc), then re-import — this translator edits the .rpy source."
+                "This Ren'Py game ships only compiled scripts (found .rpa/.rpyc but no source \
+                 .rpy, even inside the archives). Decompile the .rpyc to .rpy (e.g. with unrpyc), \
+                 then re-import — this translator edits the .rpy source."
             ));
         }
         let mut units = Vec::new();
@@ -144,6 +157,61 @@ pub fn game_dir(root: &Path) -> Option<PathBuf> {
         return Some(root.to_path_buf());
     }
     None
+}
+
+/// The `.rpa` archives directly under `dir` (Ren'Py packs them at the game-dir
+/// top level), sorted for deterministic unpack order.
+fn archives_in(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_file() && p.extension().and_then(|x| x.to_str()) == Some("rpa") {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// How many distinct source `.rpy` are packed in this dir's `.rpa` archives —
+/// read-only, for the import preview count. Archives with no readable index are
+/// skipped silently (the real unpack in [`ensure_unpacked`] surfaces errors).
+fn rpa_rpy_count(dir: &Path) -> usize {
+    let mut names = HashSet::new();
+    for archive in archives_in(dir) {
+        if let Ok(list) = rpa::list_rpy(&archive) {
+            names.extend(list);
+        }
+    }
+    names.len()
+}
+
+/// Materialize the source `.rpy` a game ships packed. When `dir` has no loose
+/// `.rpy` but does have `.rpa` archives, extract every `.rpy` out of them into
+/// `dir` so the normal Ren'Py flow (and the game's own runtime, for `tl/` export)
+/// can read them. No-op once loose `.rpy` are present, so it never clobbers a
+/// hand-edited or already-unpacked script and re-import is idempotent.
+///
+/// This is the one point the engine writes into the game dir before export — but
+/// it only surfaces source that already exists inside the `.rpa` (exactly what
+/// `unrpa` does by hand), never modifying the archive or any existing file.
+fn ensure_unpacked(dir: &Path) -> Result<usize> {
+    if has_rpy(dir) {
+        return Ok(0);
+    }
+    let mut total = 0;
+    for archive in archives_in(dir) {
+        // Best-effort: an archive we can't read as RPA (corrupt, or a format we
+        // don't support) simply yields no source here — the caller then surfaces
+        // the actionable "decompile the .rpyc" message. One odd archive must not
+        // abort recovering source from the others.
+        if let Ok(n) = rpa::extract_rpy(&archive, dir) {
+            total += n;
+        }
+    }
+    Ok(total)
 }
 
 /// True if `dir` carries a Ren'Py game fingerprint other than loose `.rpy`: a

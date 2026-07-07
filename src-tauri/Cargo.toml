@@ -32,6 +32,10 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 encoding_rs = "0.8"
 # Ren'Py translation identifiers are an MD5 of the say statements' code.
 md5 = "0.7"
+# Unpack Ren'Py `.rpa` archives (zlib-compressed pickle index) to recover the
+# source `.rpy` a game ships packed — see engine::rpa.
+flate2 = "1"
+serde-pickle = "1"
 # Dev-only: `.env` loading for local API keys (guarded by debug_assertions).
 dotenvy = "0.15"
 
