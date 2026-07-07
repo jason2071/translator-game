@@ -614,11 +614,12 @@ const MIN_TERM_FREQ: i64 = 3;
 
 /// Scan every unit's source (codes stripped) for proper-noun-shaped terms and rank
 /// them by how often they appear *mid-sentence* (where a capitalized word is a name,
-/// not just a sentence start), then by raw frequency. Reads the whole DB cheaply
-/// (no AI) so the returned shortlist covers the entire game; the caller sends it to
-/// a model only to filter + classify + translate. Returns nothing for a language
-/// without capitalization (Japanese/Chinese) — the caller falls back to AI mining
-/// on a text sample there.
+/// not just a sentence start), then by raw frequency. Also folds in every distinct
+/// **speaker name** (the `context` column) — proper nouns by construction, and the
+/// primary name signal for a language without capitalization (Japanese/Chinese),
+/// where the source scan alone finds nothing. Reads the whole DB cheaply (no AI) so
+/// the returned shortlist covers the entire game; the caller sends it to a model
+/// only to filter + classify + translate.
 pub fn mine_glossary_candidates(
     conn: &Connection,
     engine_id: &str,
@@ -670,6 +671,42 @@ pub fn mine_glossary_candidates(
                 e.example = example.to_string();
             }
         }
+    }
+
+    // Speaker names (the `context` column) are proper nouns by construction — each
+    // engine records the current speaker there (RPGMaker's 101 header, Hendrix's
+    // Name column, Ren'Py's say prefix, Tyrano's `#name`). Add them directly: no
+    // capitalization is needed, so this is the primary name signal for CJK games the
+    // Latin proper-noun scan above can't read. A speaker that is only a control code
+    // (e.g. RPGMaker's `\N[1]` actor reference) strips to empty / a bare code and is
+    // skipped. Weighted like a mid-sentence hit so real names outrank incidental
+    // frequency matches.
+    let mut spk = conn.prepare(
+        "SELECT context, COUNT(*) AS c
+           FROM unit
+          WHERE context IS NOT NULL AND context <> ''
+          GROUP BY context",
+    )?;
+    let spk_rows = spk.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    for row in spk_rows {
+        let (name, count) = row?;
+        let clean = crate::engine::protect::strip_codes(engine_id, &name);
+        let clean = clean.trim();
+        if clean.is_empty() || clean.starts_with('\\') {
+            continue; // pure control code / placeholder speaker
+        }
+        let key = clean.to_lowercase();
+        if existing.contains(&key) {
+            continue;
+        }
+        let e = agg.entry(key).or_insert_with(|| Agg {
+            surface: clean.to_string(),
+            total: 0,
+            mid: 0,
+            example: clean.to_string(),
+        });
+        e.total += count;
+        e.mid += count;
     }
 
     let mut out: Vec<MinedCandidate> = agg
@@ -1010,7 +1047,8 @@ mod tests {
 
     #[test]
     fn mine_glossary_candidates_empty_for_capitalless_text() {
-        // Japanese has no capitalization ⇒ no candidates ⇒ caller uses AI fallback.
+        // Japanese dialogue with no speaker column ⇒ the Latin scan finds nothing and
+        // there are no speaker names ⇒ no candidates ⇒ caller uses AI fallback.
         let units = vec![
             unit("A.json", "/1", "カレンは笑った。", Status::Untranslated),
             unit("A.json", "/2", "カレンは強い。", Status::Untranslated),
@@ -1018,6 +1056,43 @@ mod tests {
         ];
         let conn = mem_db(&units);
         assert!(mine_glossary_candidates(&conn, "rpgmaker-mvmz", 50).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mine_glossary_candidates_surfaces_cjk_speaker_names() {
+        // A Japanese game: dialogue bodies yield no Latin proper nouns, but the
+        // speaker column carries the character names. Those must surface (the primary
+        // glossary signal for CJK), while a control-code-only speaker (\N[1]) is
+        // skipped rather than mined as a bogus term.
+        let spk = |ptr: &str, src: &str, name: &str| {
+            let mut u = TransUnit::new("A.json", ptr, UnitKind::Dialogue, src)
+                .with_context(Some(name.to_string()));
+            u.status = Status::Untranslated;
+            u
+        };
+        let units = vec![
+            spk("/1", "こんにちは。", "ハルカ"),
+            spk("/2", "元気ですか。", "ハルカ"),
+            spk("/3", "また明日。", "ハルカ"),
+            spk("/4", "了解した。", "部長"),
+            spk("/5", "よろしい。", "部長"),
+            spk("/6", "帰りたまえ。", "部長"),
+            spk("/7", "…………", "\\N[1]"),
+            spk("/8", "…………。", "\\N[1]"),
+            spk("/9", "……。", "\\N[1]"),
+        ];
+        let conn = mem_db(&units);
+        let got = mine_glossary_candidates(&conn, "rpgmaker-mvmz", 50).unwrap();
+        let haruka = got.iter().find(|c| c.term == "ハルカ").expect("speaker name mined");
+        assert_eq!(haruka.count, 3);
+        assert!(haruka.mid >= 3, "a named speaker ranks like a mid-sentence hit");
+        assert!(got.iter().any(|c| c.term == "部長"));
+        // A speaker that is only an actor-ref code must not become a candidate.
+        assert!(
+            !got.iter().any(|c| c.term.contains('\\') || c.term.contains("N[1]")),
+            "control-code speaker leaked: {:?}",
+            got.iter().map(|c| &c.term).collect::<Vec<_>>()
+        );
     }
 
     #[test]
