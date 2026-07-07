@@ -37,11 +37,24 @@ impl GameEngine for MvMzEngine {
             .filter_map(|e| e.ok())
             .filter(|e| is_json(&e.path()))
             .count();
+        // `js/` sits beside the data dir: `<root>` for MZ, `<root>/www` for MV.
+        let base = dir.parent().unwrap_or(&dir);
+        let mut warnings = Vec::new();
+        if let Some(sys) = detect_language_system(base) {
+            warnings.push(format!(
+                "This game uses a built-in language system ({sys}). Its dialogue is \
+                 served per in-game language from a separate translation file, not the \
+                 data files — so translations injected here reach the menus, item \
+                 names, and terms, but the dialogue stays in its original language. \
+                 Fully translating it needs that plugin's own workflow."
+            ));
+        }
         Ok(DetectResult {
             engine_id: self.id().to_string(),
             engine_name: self.name().to_string(),
             data_dir: dir.to_string_lossy().to_string(),
             file_count: count,
+            warnings,
         })
     }
 
@@ -289,6 +302,72 @@ pub fn data_dir(root: &Path) -> Option<PathBuf> {
 
 fn is_json(p: &Path) -> bool {
     p.is_file() && p.extension().map(|e| e == "json").unwrap_or(false)
+}
+
+/// Scan `js/plugins.js` (under `base` = `<root>` for MZ, `<root>/www` for MV) for
+/// an active in-game language/localization plugin. Such a plugin serves each
+/// message's text per the player-selected language from its own store, so text we
+/// inject into `data/*.json` never reaches that dialogue and the game exposes no
+/// Thai language slot. Returns the system's name for a warning, or `None`.
+///
+/// Detected: VisuMZ MessageCore's Text Language (only when its `Localization`
+/// param has `Enable:eval == true`, i.e. actually switched on — a bare MessageCore
+/// with the feature off must not warn), plus dedicated localization plugins by
+/// name. Best-effort: a missing/odd `plugins.js` just yields `None`.
+fn detect_language_system(base: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(base.join("js").join("plugins.js")).ok()?;
+    // plugins.js is `var $plugins =\n[ {...}, ... ];` — parse the array between
+    // the first '[' and the last ']' (same shape as install_thin_outline_plugin).
+    let start = text.find('[')?;
+    let end = text.rfind(']')?;
+    if end < start {
+        return None;
+    }
+    let arr: Vec<Value> = serde_json::from_str(&text[start..=end]).ok()?;
+    for p in &arr {
+        if p.get("status").and_then(Value::as_bool) != Some(true) {
+            continue; // disabled plugins don't affect the running game
+        }
+        let name = p.get("name").and_then(Value::as_str).unwrap_or("");
+
+        // VisuMZ MessageCore's Text Language system. Its config is a top-level
+        // struct param deployed under the key `Localization:struct` (RPGMaker keeps
+        // the `:struct` type suffix), whose value is a stringified JSON holding
+        // `"Enable:eval":"false"` by default — `"true"` only when the dev switched
+        // the system on. A plain MessageCore with the feature off must NOT warn, so
+        // key on that flag, not on MessageCore's mere presence. Match any
+        // `Localization*` key for resilience across plugin versions.
+        if name == "VisuMZ_1_MessageCore" {
+            let on = p
+                .get("parameters")
+                .and_then(Value::as_object)
+                .map(|pr| {
+                    pr.iter().any(|(k, v)| {
+                        k.starts_with("Localization")
+                            && v.as_str()
+                                .map(|s| s.contains("\"Enable:eval\":\"true\""))
+                                .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+            if on {
+                return Some("VisuMZ MessageCore Text Language".into());
+            }
+            continue;
+        }
+
+        // Dedicated localization/multi-language plugins, matched by name.
+        let lname = name.to_ascii_lowercase();
+        if lname.contains("localization")
+            || lname.contains("textlanguage")
+            || lname.contains("multilanguage")
+            || lname.contains("languageswitch")
+            || lname.contains("translationengine")
+        {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 /// True for `Map001.json` .. `MapNNN.json` (but not `MapInfos.json`).
@@ -688,6 +767,67 @@ mod tests {
         assert!(!is_data_file("package.json"));
         assert!(!is_data_file("Map.json"));
         assert!(!is_data_file("MapABC.json"));
+    }
+
+    fn write_plugins(base: &Path, body: &str) {
+        let js = base.join("js");
+        std::fs::create_dir_all(&js).unwrap();
+        std::fs::write(js.join("plugins.js"), format!("var $plugins =\n[\n{body}\n];\n")).unwrap();
+    }
+
+    #[test]
+    fn detect_language_system_flags_visumz_text_language_when_enabled() {
+        // MessageCore with its Text Language actually switched on (Enable:eval true).
+        // The real deployed key carries the `:struct` type suffix and the enable
+        // flag lives inside the stringified struct value.
+        let tmp = tempfile::tempdir().unwrap();
+        write_plugins(
+            tmp.path(),
+            r#"{"name":"VisuMZ_1_MessageCore","status":true,"description":"","parameters":{"Localization:struct":"{\"Enable:eval\":\"true\",\"CsvFilename:str\":\"Languages.csv\",\"Languages:arraystr\":\"[\\\"English\\\",\\\"Japanese\\\"]\"}","LanguageFonts:struct":"{}"}}"#,
+        );
+        assert_eq!(
+            detect_language_system(tmp.path()).as_deref(),
+            Some("VisuMZ MessageCore Text Language")
+        );
+    }
+
+    #[test]
+    fn detect_language_system_ignores_messagecore_with_feature_off() {
+        // A plain MessageCore (Text Language disabled — the shipped default) is the
+        // common case and must NOT warn, else nearly every VisuMZ game trips it.
+        let tmp = tempfile::tempdir().unwrap();
+        write_plugins(
+            tmp.path(),
+            r#"{"name":"VisuMZ_1_MessageCore","status":true,"description":"","parameters":{"Localization:struct":"{\"Enable:eval\":\"false\",\"CsvFilename:str\":\"Languages.csv\"}"}}"#,
+        );
+        assert_eq!(detect_language_system(tmp.path()), None);
+    }
+
+    #[test]
+    fn detect_language_system_flags_named_localization_plugin() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_plugins(
+            tmp.path(),
+            r#"{"name":"DKTools_Localization","status":true,"description":"","parameters":{}}"#,
+        );
+        assert_eq!(detect_language_system(tmp.path()).as_deref(), Some("DKTools_Localization"));
+    }
+
+    #[test]
+    fn detect_language_system_skips_disabled_plugins() {
+        // A localization plugin present but turned off doesn't affect the game.
+        let tmp = tempfile::tempdir().unwrap();
+        write_plugins(
+            tmp.path(),
+            r#"{"name":"DKTools_Localization","status":false,"description":"","parameters":{}}"#,
+        );
+        assert_eq!(detect_language_system(tmp.path()), None);
+    }
+
+    #[test]
+    fn detect_language_system_none_without_plugins_js() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(detect_language_system(tmp.path()), None);
     }
 
     #[test]
