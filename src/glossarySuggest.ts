@@ -26,6 +26,7 @@ interface SuggestState {
   loading: boolean; // scanning for candidates
   adding: boolean; // an "Add selected" write is in flight (guards double-click)
   msg: string | null;
+  suggestStage: string | null; // live phase text during an AI suggest (scan → ask)
 
   load: (root: string) => void; // restore this game's saved panel (on open)
   suggest: () => Promise<void>;
@@ -64,6 +65,7 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
     loading: false,
     adding: false,
     msg: null,
+    suggestStage: null,
 
     load: (root) => {
       let cands: GlossCandidate[] | null = null;
@@ -78,7 +80,7 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
       } catch {
         /* corrupt entry — start fresh */
       }
-      set({ root, cands, rows, loading: false, msg: null });
+      set({ root, cands, rows, loading: false, msg: null, suggestStage: null });
     },
 
     suggest: async () => {
@@ -105,7 +107,17 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
     },
 
     suggestAi: async (cfg) => {
-      set({ loading: true, msg: null });
+      set({ loading: true, msg: null, suggestStage: "Scanning game…" });
+      // Follow the backend's phase events so the button shows real progress (the
+      // whole-game scan, then the AI wait) instead of a silent spinner.
+      const unlisten = await api.onGlossarySuggest((s) => {
+        set({
+          suggestStage:
+            s.stage === "asking"
+              ? `Asking AI · ${s.count} term${s.count === 1 ? "" : "s"}…`
+              : "Scanning game…",
+        });
+      });
       try {
         const ai = await api.suggestGlossaryAi(cfg);
         // Merge with any candidates already present (a prior heuristic run),
@@ -127,7 +139,8 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
       } catch (e) {
         set({ msg: String(e) });
       } finally {
-        set({ loading: false });
+        unlisten();
+        set({ loading: false, suggestStage: null });
       }
     },
 
@@ -243,6 +256,6 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
       set({ cands: null, rows: {} });
       persist();
     },
-    reset: () => set({ root: null, cands: null, rows: {}, loading: false, msg: null }),
+    reset: () => set({ root: null, cands: null, rows: {}, loading: false, msg: null, suggestStage: null }),
   };
 });

@@ -249,12 +249,36 @@ fn suggest_glossary(state: tauri::State<AppState>) -> Result<Vec<GlossCandidate>
 #[tauri::command]
 async fn suggest_glossary_ai(
     config: ProviderConfig,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<GlossCandidate>, String> {
-    let (corpus, existing, source_lang, target_lang) = {
+    // Report progress to the glossary panel: the local scan, then the AI wait (the
+    // slow part), so the button isn't a silent spinner. `count` on "asking" is how
+    // many candidates the model is judging.
+    let stage = |s: &str, count: usize| {
+        let _ = app.emit("glossary://suggest", serde_json::json!({ "stage": s, "count": count }));
+    };
+    stage("mining", 0);
+
+    // Mine candidate terms from the WHOLE game locally (cheap, no AI). For a
+    // language with capitalization this returns a proper-noun shortlist; for one
+    // without (Japanese/Chinese) it returns nothing and we fall back to letting the
+    // model mine a text sample. Gather everything under the lock, then release it
+    // before the network call (async lock invariant).
+    let (mined, fallback_corpus, existing, source_lang, target_lang) = {
         let guard = state.project.lock().unwrap();
         let p = guard.as_ref().ok_or("no project open")?;
-        let lines = project::db::sample_text_for_mining(&p.conn, 300).map_err(|e| e.to_string())?;
+        let engine_id = project::db::get_meta(&p.conn, "engine_id").ok().flatten().unwrap_or_default();
+        let mined = project::db::mine_glossary_candidates(&p.conn, &engine_id, 150)
+            .map_err(|e| e.to_string())?;
+        // Only pay to gather the fallback sample when mining came up short.
+        let fallback_corpus = if mined.len() >= 5 {
+            String::new()
+        } else {
+            project::db::sample_text_for_mining(&p.conn, 300)
+                .map_err(|e| e.to_string())?
+                .join("\n")
+        };
         let existing: std::collections::HashSet<String> = project::db::glossary_list(&p.conn)
             .map_err(|e| e.to_string())?
             .into_iter()
@@ -262,9 +286,9 @@ async fn suggest_glossary_ai(
             .collect();
         let source_lang = project::db::get_meta(&p.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
         let target_lang = project::db::get_meta(&p.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into());
-        (lines.join("\n"), existing, source_lang, target_lang)
+        (mined, fallback_corpus, existing, source_lang, target_lang)
     };
-    if corpus.trim().is_empty() {
+    if mined.is_empty() && fallback_corpus.trim().is_empty() {
         return Ok(Vec::new());
     }
 
@@ -277,19 +301,50 @@ async fn suggest_glossary_ai(
     } else {
         None
     };
-
-    let (sys, user) = ai::prompt::build_glossary_mining(&source_lang, &target_lang, &corpus);
     let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
+
+    // Classify path: the model filters + classifies + translates our local
+    // shortlist (accurate counts come from the whole-DB mining, not the response).
+    if mined.len() >= 5 {
+        let pairs: Vec<(String, String)> =
+            mined.iter().map(|c| (c.term.clone(), c.example.clone())).collect();
+        let counts: std::collections::HashMap<String, i64> =
+            mined.iter().map(|c| (c.term.to_lowercase(), c.count)).collect();
+        let (sys, user) = ai::prompt::build_glossary_classify(&source_lang, &target_lang, &pairs);
+        stage("asking", pairs.len());
+        let raw = provider
+            .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut out: Vec<GlossCandidate> = ai::prompt::parse_glossary_mining(&raw)
+            .into_iter()
+            .filter(|m| !existing.contains(&m.term.to_lowercase()))
+            .map(|m| {
+                let count = counts.get(&m.term.to_lowercase()).copied().unwrap_or(0);
+                GlossCandidate {
+                    term: m.term,
+                    translation: (!m.translation.is_empty()).then_some(m.translation),
+                    kind: m.kind,
+                    count,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| b.count.cmp(&a.count));
+        return Ok(out);
+    }
+
+    // Fallback (no capitalization signal): let the model mine the text sample.
+    let (sys, user) = ai::prompt::build_glossary_mining(&source_lang, &target_lang, &fallback_corpus);
+    stage("asking", 0);
     let raw = provider
         .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
         .await
         .map_err(|e| e.to_string())?;
-
     let mut out: Vec<GlossCandidate> = ai::prompt::parse_glossary_mining(&raw)
         .into_iter()
         .filter(|m| !existing.contains(&m.term.to_lowercase()))
         .map(|m| {
-            let count = corpus.matches(&m.term).count() as i64;
+            let count = fallback_corpus.matches(&m.term).count() as i64;
             GlossCandidate {
                 term: m.term,
                 translation: (!m.translation.is_empty()).then_some(m.translation),
@@ -315,7 +370,11 @@ async fn suggest_game_context(
     let (corpus, source_lang) = {
         let guard = state.project.lock().unwrap();
         let p = guard.as_ref().ok_or("no project open")?;
-        let lines = project::db::sample_text_for_mining(&p.conn, 400).map_err(|e| e.to_string())?;
+        let engine_id = project::db::get_meta(&p.conn, "engine_id").ok().flatten().unwrap_or_default();
+        // Diverse, code-stripped sample (intro + longest + spread), capped so it
+        // fits a small context window — richer than the frequency-ranked mining
+        // sample, which over-weights repeated UI strings.
+        let lines = project::db::sample_corpus(&p.conn, &engine_id, 14_000).map_err(|e| e.to_string())?;
         let source_lang = project::db::get_meta(&p.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
         (lines.join("\n"), source_lang)
     };

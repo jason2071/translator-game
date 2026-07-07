@@ -189,6 +189,47 @@ pub fn build_glossary_mining(source_lang: &str, target_lang: &str, corpus: &str)
     (sys, corpus.to_string())
 }
 
+/// Build the (system, user) prompt that asks the model to FILTER + classify a
+/// shortlist of candidate terms already mined from the whole game (each with an
+/// example line), and suggest a translation. Unlike [`build_glossary_mining`], the
+/// model doesn't hunt a text sample — it judges a list, so the result reflects the
+/// entire game's terms while staying one cheap call. `candidates` is `(term,
+/// example_line)`; the response shares the mining shape so [`parse_glossary_mining`]
+/// reads it.
+pub fn build_glossary_classify(
+    source_lang: &str,
+    target_lang: &str,
+    candidates: &[(String, String)],
+) -> (String, String) {
+    let src = if source_lang.trim().eq_ignore_ascii_case("auto") || source_lang.trim().is_empty() {
+        "the game's source language".to_string()
+    } else {
+        source_lang.to_string()
+    };
+    let sys = format!(
+        "You are refining a translation glossary for a video game. The user gives a \
+         list of CANDIDATE terms mined from the game, one per line as \
+         `term \u{2014} example sentence` (the {src}). KEEP only true proper nouns and \
+         special terms that must be translated consistently: character names, place \
+         names, organization names, item/skill/status names, and coined \
+         world-specific terms. DROP ordinary words, common phrases, UI labels, and \
+         sentence fragments that slipped in. For each kept term give a suggested \
+         {tgt} translation (transliterate names).\n\
+         Respond with ONLY a JSON array, no prose, of objects \
+         {{\"term\": \"<term>\", \"kind\": \"<name|place|item|skill|term>\", \
+         \"tr\": \"<{tgt} translation>\"}}. Keep the term text exactly as given. Do \
+         not emit any reasoning or commentary.",
+        src = src,
+        tgt = target_lang,
+    );
+    let user = candidates
+        .iter()
+        .map(|(t, ex)| format!("{t} \u{2014} {ex}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (sys, user)
+}
+
 /// Build the (system, user) prompt asking the model to draft a short game-context
 /// note from sampled game text — the setting/era, main characters and their
 /// relationships, tone, and world rules a translator needs for consistency.
@@ -199,12 +240,14 @@ pub fn build_context_prompt(source_lang: &str, corpus: &str) -> (String, String)
         format!("{source_lang} text")
     };
     let sys = format!(
-        "You are preparing a translation brief for a video game. From the {src} the \
-         user provides, write a SHORT context note (3-6 sentences, plain prose, no \
-         headings or lists) capturing: the setting and era, the main characters and \
-         their relationships, the overall tone/register, and any world-specific \
-         terms or rules a translator must keep consistent. Be concise and factual — \
-         do not invent details that aren't supported by the text. Write the note in \
+        "You are preparing a translation brief for a video game. The {src} the user \
+         provides is a REPRESENTATIVE SAMPLE of the game's lines (opening scenes, \
+         long passages, and lines spread across the game — not in story order). From \
+         it, write a SHORT context note (3-6 sentences, plain prose, no headings or \
+         lists) capturing: the setting and era, the main characters and their \
+         relationships, the overall tone/register, and any world-specific terms or \
+         rules a translator must keep consistent. Be concise and factual — do not \
+         invent details that aren't supported by the text. Write the note in \
          English. Output only the note, no preamble."
     );
     (sys, corpus.to_string())
@@ -506,6 +549,23 @@ mod tests {
         assert!(sys.contains("Thai"));
         assert!(sys.contains("\"term\""));
         assert_eq!(user, "本文サンプル"); // corpus passed through verbatim
+    }
+
+    #[test]
+    fn glossary_classify_prompt_lists_candidates() {
+        let cands = vec![
+            ("Karen".to_string(), "I met Karen at the tower.".to_string()),
+            ("Corpo".to_string(), "She joined Corpo last year.".to_string()),
+        ];
+        let (sys, user) = build_glossary_classify("English", "Thai", &cands);
+        assert!(sys.contains("KEEP only") && sys.contains("DROP"));
+        assert!(sys.contains("Thai") && sys.contains("\"term\""));
+        // Each candidate is one `term — example` line, in order.
+        assert!(user.starts_with("Karen \u{2014} I met Karen at the tower."));
+        assert!(user.contains("Corpo \u{2014} She joined Corpo last year."));
+        // The classify response shares the mining shape, so the parser reads it.
+        let parsed = parse_glossary_mining("[{\"term\":\"Karen\",\"kind\":\"name\",\"tr\":\"คาเรน\"}]");
+        assert_eq!(parsed[0].term, "Karen");
     }
 
     #[test]

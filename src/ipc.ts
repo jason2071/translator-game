@@ -167,6 +167,13 @@ export interface TextItem {
   text: string | null;
 }
 
+// Live progress of an AI glossary suggest: "mining" (scanning the game locally)
+// then "asking" (waiting on the model — `count` = candidates being judged).
+export interface GlossSuggestStage {
+  stage: "mining" | "asking";
+  count: number;
+}
+
 export const api = {
   ping: (name: string) => invoke<string>("ping", { name }),
 
@@ -254,6 +261,10 @@ export const api = {
 
   onTextItem: (cb: (it: TextItem) => void): Promise<UnlistenFn> =>
     listen<TextItem>("translate://item", (e) => cb(e.payload)),
+
+  // Phase updates while an AI glossary suggest runs (scan → ask the model).
+  onGlossarySuggest: (cb: (s: GlossSuggestStage) => void): Promise<UnlistenFn> =>
+    listen<GlossSuggestStage>("glossary://suggest", (e) => cb(e.payload)),
 
   // Units filled during a Run, emitted per batch so the grid fills live.
   onUnitsUpdate: (cb: (updates: UnitUpdate[]) => void): Promise<UnlistenFn> =>

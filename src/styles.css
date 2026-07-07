@@ -252,7 +252,10 @@ code {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-  max-height: 21rem;
+  /* Fill the space down to near the window's bottom (the block is anchored 6rem
+     from the top, not vertically centered), so tall windows show more entries;
+     the list scrolls internally rather than growing the page. */
+  max-height: calc(100vh - 17rem);
   overflow-y: auto;
 }
 .recent-item {

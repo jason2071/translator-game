@@ -79,6 +79,35 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
     }
 }
 
+/// Strip every engine control code from `s`, leaving only the prose — [`mask_for`]
+/// then drop the `⟦n⟧` sentinels (and any doubled spaces they leave behind). Unlike
+/// masking, this is one-way: it is for feeding *readable* text to a model that only
+/// needs the meaning (glossary mining, a context brief), never for a round-trip.
+pub fn strip_codes(engine_id: &str, s: &str) -> String {
+    let masked = mask_for(engine_id, s);
+    let mut out = String::with_capacity(masked.text.len());
+    let mut chars = masked.text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == OPEN {
+            // Consume the sentinel's digits and its closing `⟧`.
+            for c2 in chars.by_ref() {
+                if c2 == CLOSE {
+                    break;
+                }
+            }
+            // Collapse the gap so "a ⟦0⟧ b" doesn't become "a  b" (two spaces).
+            if out.ends_with(' ') {
+                while chars.peek() == Some(&' ') {
+                    chars.next();
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Replace Godot placeholders with `⟦k⟧` sentinels: BBCode `[tag]`, `String`
 /// format braces `{0}`/`{name}`, printf `%s`/`%d`/`%.2f`/`%1$s`, and backslash
 /// escapes (`\n`, `\t`, `\"`). Restores via the shared [`restore`].
@@ -451,6 +480,18 @@ mod tests {
         assert!(codes_match(eng, coded, "เผา \\C[2]ไฟ\\C[0] ไหม้"));
         assert!(!codes_match(eng, coded, "เผา \\C[2]ไฟ ไหม้"), "dropped \\C[0]");
         assert!(!codes_match(eng, coded, "เผา \\C[2]ไฟ\\C[0]\\C[0] ไหม้"), "extra \\C[0]");
+    }
+
+    #[test]
+    fn strip_codes_leaves_only_prose() {
+        // Codes vanish; the prose stays; no doubled spaces where a code was.
+        assert_eq!(strip_codes("rpgmaker-mvmz", "Hi \\C[2]hero\\C[0]!"), "Hi hero!");
+        assert_eq!(strip_codes("tyrano", "Into the woods.[l][r]"), "Into the woods.");
+        // Ren'Py: interpolation + text tags stripped, the words between them kept.
+        let s = strip_codes("renpy", "Say [player_name], {b}bold{/b} now.");
+        assert!(s.contains("bold") && s.contains("now."), "prose kept: {s:?}");
+        assert!(!s.contains("player_name") && !s.contains("{b}"));
+        assert!(!s.contains("  "), "no double spaces: {s:?}");
     }
 
     #[test]

@@ -183,6 +183,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
     loading,
     adding,
     msg,
+    suggestStage,
     suggest,
     suggestAi,
     translateEmpty,
@@ -224,7 +225,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
           disabled={loading}
           title="Use AI to mine proper nouns/terms from the game's dialogue (catches names the heuristic misses)"
         >
-          <Icon name="sparkle" size={14} /> AI suggest
+          <Icon name="sparkle" size={14} /> {suggestStage ?? "AI suggest"}
         </button>
         {translating && <span className="hint">Translating in background…</span>}
         {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
@@ -262,7 +263,8 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
             disabled={loading || glossBusy}
             title="Mine more terms from the game's dialogue with AI (provider chosen at the top)"
           >
-            <Icon name="sparkle" size={14} /> {loading ? "AI scanning…" : "AI suggest"}
+            <Icon name="sparkle" size={14} />{" "}
+            {suggestStage ?? (loading ? "AI scanning…" : "AI suggest")}
           </button>
 
           {glossBusy ? (
