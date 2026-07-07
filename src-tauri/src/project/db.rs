@@ -519,6 +519,295 @@ pub fn sample_text_for_mining(conn: &Connection, max_lines: i64) -> Result<Vec<S
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// The unit kinds that carry free narrative text worth sampling for AI context /
+/// glossary work (as a SQL `IN (...)` list).
+const NARRATIVE_KINDS: &str =
+    "'Dialogue','ScrollText','Choice','Description','Profile','MapName'";
+
+/// Build a diverse, code-stripped text sample for AI game-context drafting. Unlike
+/// [`sample_text_for_mining`] (frequency-ranked, which over-weights repeated UI
+/// strings), this mixes three buckets so the brief sees real narrative: the opening
+/// passages (setting / character intros), the longest lines (substantive prose, not
+/// menu labels), and an even spread across the whole game (mid / late plot). Lines
+/// are code-stripped ([`crate::engine::protect::strip_codes`]), de-duplicated,
+/// short / UI lines (<3 words) dropped, and interleaved round-robin so all three
+/// buckets survive the `char_budget` cap that keeps the sample inside a small
+/// context window.
+pub fn sample_corpus(conn: &Connection, engine_id: &str, char_budget: usize) -> Result<Vec<String>> {
+    let per_bucket = 600usize;
+    let total: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM unit WHERE source<>'' AND kind IN ({NARRATIVE_KINDS})"),
+        [],
+        |r| r.get(0),
+    )?;
+    let stride = (total as usize / per_bucket).max(1);
+
+    let fetch = |sql: String| -> Result<Vec<String>> {
+        let mut st = conn.prepare(&sql)?;
+        let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    };
+    let intro = fetch(format!(
+        "SELECT source FROM unit WHERE source<>'' AND kind IN ({NARRATIVE_KINDS}) \
+         ORDER BY id ASC LIMIT {per_bucket}"
+    ))?;
+    let longest = fetch(format!(
+        "SELECT source FROM unit WHERE source<>'' AND kind IN ({NARRATIVE_KINDS}) \
+         ORDER BY LENGTH(source) DESC LIMIT {per_bucket}"
+    ))?;
+    // Stratified: every `stride`-th row across the whole id order.
+    let spread = fetch(format!(
+        "SELECT source FROM (SELECT source, ROW_NUMBER() OVER (ORDER BY id) AS rn \
+           FROM unit WHERE source<>'' AND kind IN ({NARRATIVE_KINDS})) \
+         WHERE (rn - 1) % {stride} = 0 LIMIT {per_bucket}"
+    ))?;
+
+    let mut buckets = [intro.into_iter(), longest.into_iter(), spread.into_iter()];
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    loop {
+        let mut drew = false;
+        for b in buckets.iter_mut() {
+            let Some(raw) = b.next() else { continue };
+            drew = true;
+            let clean = crate::engine::protect::strip_codes(engine_id, &raw);
+            let clean = clean.trim();
+            if clean.split_whitespace().count() < 3 {
+                continue; // UI label / one-word choice — no context value
+            }
+            if !seen.insert(clean.to_lowercase()) {
+                continue;
+            }
+            if used + clean.len() > char_budget && !out.is_empty() {
+                return Ok(out); // budget reached
+            }
+            used += clean.len() + 1;
+            out.push(clean.to_string());
+        }
+        if !drew {
+            break; // all buckets drained
+        }
+    }
+    Ok(out)
+}
+
+/// A glossary candidate mined locally from the *whole* game (not a sample): a
+/// proper-noun-shaped term, its total occurrences, how many are mid-sentence (a
+/// strong proper-noun signal — see [`mine_glossary_candidates`]), and one short
+/// example line for the classifier's context.
+#[derive(Debug, Clone)]
+pub struct MinedCandidate {
+    pub term: String,
+    pub count: i64,
+    pub mid: i64,
+    pub example: String,
+}
+
+/// A term must recur at least this many times across the game to be a candidate —
+/// a one-off capitalized word is almost never a glossary term.
+const MIN_TERM_FREQ: i64 = 3;
+
+/// Scan every unit's source (codes stripped) for proper-noun-shaped terms and rank
+/// them by how often they appear *mid-sentence* (where a capitalized word is a name,
+/// not just a sentence start), then by raw frequency. Reads the whole DB cheaply
+/// (no AI) so the returned shortlist covers the entire game; the caller sends it to
+/// a model only to filter + classify + translate. Returns nothing for a language
+/// without capitalization (Japanese/Chinese) — the caller falls back to AI mining
+/// on a text sample there.
+pub fn mine_glossary_candidates(
+    conn: &Connection,
+    engine_id: &str,
+    limit: usize,
+) -> Result<Vec<MinedCandidate>> {
+    let existing: std::collections::HashSet<String> = glossary_list(conn)?
+        .into_iter()
+        .map(|g| g.term.trim().to_lowercase())
+        .collect();
+
+    struct Agg {
+        surface: String,
+        total: i64,
+        mid: i64,
+        example: String,
+    }
+    let mut agg: std::collections::HashMap<String, Agg> = std::collections::HashMap::new();
+
+    let mut stmt = conn.prepare(
+        "SELECT source, COUNT(*) AS c
+           FROM unit
+          WHERE source <> ''
+            AND kind IN ('Dialogue','ScrollText','Choice','Description','Profile',
+                         'MapName','Name','Nickname')
+          GROUP BY source",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    for row in rows {
+        let (source, count) = row?;
+        let clean = crate::engine::protect::strip_codes(engine_id, &source);
+        let example = clean.trim();
+        for (term, mid) in proper_nouns(&clean) {
+            let key = term.to_lowercase();
+            if existing.contains(&key) {
+                continue;
+            }
+            let e = agg.entry(key).or_insert_with(|| Agg {
+                surface: term.clone(),
+                total: 0,
+                mid: 0,
+                example: example.to_string(),
+            });
+            e.total += count;
+            if mid {
+                e.mid += count;
+            }
+            // Prefer a shorter example that still contains the term — clearer context.
+            if example.len() < e.example.len() && example.len() >= term.len() {
+                e.example = example.to_string();
+            }
+        }
+    }
+
+    let mut out: Vec<MinedCandidate> = agg
+        .into_values()
+        .filter(|a| a.total >= MIN_TERM_FREQ)
+        .map(|a| MinedCandidate {
+            term: a.surface,
+            count: a.total,
+            mid: a.mid,
+            example: a.example,
+        })
+        .collect();
+    // Mid-sentence hits first (names), then raw frequency, then stable by term.
+    out.sort_by(|a, b| {
+        b.mid
+            .cmp(&a.mid)
+            .then(b.count.cmp(&a.count))
+            .then(a.term.cmp(&b.term))
+    });
+    out.truncate(limit);
+    Ok(out)
+}
+
+/// Extract proper-noun-shaped phrases from one line: maximal runs of consecutive
+/// capitalized words (≤4), with leading/trailing stopwords trimmed and a trailing
+/// possessive (`'s`) removed. Each result is `(term, mid_sentence)` where
+/// `mid_sentence` is true when the run does not begin its sentence — the signal
+/// that distinguishes a name from a merely sentence-initial capital.
+fn proper_nouns(line: &str) -> Vec<(String, bool)> {
+    // Tokenize into (word, capitalized, sentence_start, joinable) where `joinable`
+    // means only spaces separated this word from the previous one — so a comma or
+    // period breaks a phrase (`Later, Karen` is two terms, not one).
+    struct W {
+        text: String,
+        cap: bool,
+        ss: bool,
+        joinable: bool,
+    }
+    let mut words: Vec<W> = Vec::new();
+    let mut cur = String::new();
+    let mut sentence_start = true;
+    let mut gap_clean = true; // separator since the last word held only spaces
+    let mut joinable = true;
+    for ch in line.chars() {
+        if ch.is_alphabetic() || ((ch == '\'' || ch == '\u{2019}') && !cur.is_empty()) {
+            if cur.is_empty() {
+                joinable = gap_clean;
+            }
+            cur.push(ch);
+        } else {
+            if !cur.is_empty() {
+                let cap = cur.chars().next().unwrap().is_uppercase();
+                words.push(W { text: std::mem::take(&mut cur), cap, ss: sentence_start, joinable });
+                sentence_start = false;
+                gap_clean = true;
+            }
+            if matches!(ch, '.' | '!' | '?' | ':' | ';' | '\n' | '\r') {
+                sentence_start = true;
+            }
+            if !matches!(ch, ' ' | '\t') {
+                gap_clean = false;
+            }
+        }
+    }
+    if !cur.is_empty() {
+        let cap = cur.chars().next().unwrap().is_uppercase();
+        words.push(W { text: cur, cap, ss: sentence_start, joinable });
+    }
+
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        if !words[i].cap {
+            i += 1;
+            continue;
+        }
+        let group_start_ss = words[i].ss;
+        let start = i;
+        let mut phrase: Vec<String> = vec![words[i].text.clone()];
+        i += 1;
+        while i < words.len() && words[i].cap && words[i].joinable && (i - start) < 4 {
+            phrase.push(words[i].text.clone());
+            i += 1;
+        }
+        // Trim stopwords off both ends; a trimmed leading stopword means the real
+        // term sits mid-sentence even if the sentence itself started capitalized.
+        let mut trimmed_leading = false;
+        while phrase.first().is_some_and(|w| is_stopword(w)) {
+            phrase.remove(0);
+            trimmed_leading = true;
+        }
+        while phrase.last().is_some_and(|w| is_stopword(w)) {
+            phrase.pop();
+        }
+        if phrase.is_empty() {
+            continue;
+        }
+        let mut term = phrase.join(" ");
+        for suf in ["'s", "\u{2019}s", "'S", "\u{2019}S"] {
+            if let Some(t) = term.strip_suffix(suf) {
+                term = t.to_string();
+                break;
+            }
+        }
+        let term = term.trim().to_string();
+        if term.chars().filter(|c| c.is_alphabetic()).count() < 2 {
+            continue; // a lone initial isn't a term
+        }
+        out.push((term, !group_start_ss || trimmed_leading));
+    }
+    out
+}
+
+/// Common English words that are capitalized only because they start a sentence
+/// (or are pronouns/particles) — never glossary terms.
+const STOPWORDS: &[&str] = &[
+    "a", "about", "after", "again", "against", "ah", "all", "also", "always", "am", "an", "and",
+    "another", "any", "anything", "are", "as", "at", "away", "be", "because", "been", "before",
+    "being", "but", "by", "came", "can", "cannot", "come", "could", "did", "do", "does", "doing",
+    "don", "done", "down", "each", "even", "ever", "every", "everyone", "everything", "few", "for",
+    "from", "get", "give", "go", "going", "good", "got", "had", "has", "have", "he", "hello", "her",
+    "here", "hers", "herself", "hey", "hi", "him", "himself", "his", "how", "however", "i", "if",
+    "in", "into", "is", "it", "its", "itself", "just", "keep", "know", "let", "like", "look",
+    "made", "make", "many", "may", "maybe", "me", "might", "mine", "more", "most", "much", "must",
+    "my", "myself", "never", "new", "no", "not", "nothing", "now", "of", "off", "oh", "ok", "okay",
+    "on", "once", "one", "only", "onto", "or", "other", "our", "ours", "out", "over", "please",
+    "really", "said", "say", "see", "she", "should", "since", "so", "some", "someone", "something",
+    "sorry", "still", "such", "sure", "take", "than", "thank", "thanks", "that", "the", "their",
+    "theirs", "them", "then", "there", "these", "they", "thing", "things", "this", "those",
+    "though", "through", "thus", "to", "together", "too", "up", "upon", "us", "very", "want", "was",
+    "way", "we", "well", "were", "what", "when", "where", "which", "while", "who", "whom", "whose",
+    "why", "will", "with", "without", "would", "yeah", "yes", "yet", "you", "your", "yours",
+    "yourself",
+];
+
+fn is_stopword(word: &str) -> bool {
+    use std::sync::OnceLock;
+    static SET: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| STOPWORDS.iter().copied().collect())
+        .contains(word.to_lowercase().as_str())
+}
+
 /// A glossary violation: a translated unit whose source uses a glossary term
 /// but whose translation lacks the mapped wording.
 #[derive(Debug, Serialize)]
@@ -670,6 +959,96 @@ mod tests {
         ];
         assert_eq!(glossary_add_bulk(&mut conn, &batch).unwrap(), 1);
         assert_eq!(glossary_list(&conn).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn proper_nouns_names_and_stopword_trimming() {
+        // A mid-sentence name is flagged mid=true; a sentence-initial one is not.
+        let a = proper_nouns("I met Karen at the tower.");
+        assert!(a.iter().any(|(t, mid)| t == "Karen" && *mid));
+        let b = proper_nouns("Karen went home.");
+        assert!(b.iter().any(|(t, mid)| t == "Karen" && !*mid));
+
+        // A leading stopword ("The") is trimmed and never a term on its own.
+        assert!(proper_nouns("The dog ran off.").is_empty());
+        // Multi-word names group together; a trimmed leading stopword ⇒ mid.
+        let c = proper_nouns("We saw Karen Yu today.");
+        assert!(c.iter().any(|(t, mid)| t == "Karen Yu" && *mid));
+        // Possessive is stripped.
+        let d = proper_nouns("That is Karen's office.");
+        assert!(d.iter().any(|(t, _)| t == "Karen"));
+    }
+
+    #[test]
+    fn is_stopword_flags_common_words_case_insensitively() {
+        assert!(is_stopword("The") && is_stopword("you") && is_stopword("AND"));
+        assert!(!is_stopword("Karen") && !is_stopword("Corpo"));
+    }
+
+    #[test]
+    fn mine_glossary_candidates_surfaces_names_not_stopwords() {
+        // "Karen" recurs (count 3 ⇒ ≥ MIN_TERM_FREQ); the "The end." line yields none.
+        let units = vec![
+            unit("A.json", "/1", "I met Karen at the tower.", Status::Untranslated),
+            unit("A.json", "/2", "Later, Karen smiled warmly.", Status::Untranslated),
+            unit("A.json", "/3", "Everyone trusted Karen deeply.", Status::Untranslated),
+            unit("A.json", "/4", "The end.", Status::Untranslated),
+        ];
+        let conn = mem_db(&units);
+        let got = mine_glossary_candidates(&conn, "rpgmaker-mvmz", 50).unwrap();
+        let karen = got.iter().find(|c| c.term == "Karen").expect("Karen mined");
+        assert_eq!(karen.count, 3);
+        assert!(karen.mid >= 3, "all three occurrences are mid-sentence");
+        // Common words never surface as candidates.
+        assert!(!got.iter().any(|c| c.term.eq_ignore_ascii_case("the")));
+        assert!(!got.iter().any(|c| c.term.eq_ignore_ascii_case("everyone")));
+    }
+
+    #[test]
+    fn mine_glossary_candidates_empty_for_capitalless_text() {
+        // Japanese has no capitalization ⇒ no candidates ⇒ caller uses AI fallback.
+        let units = vec![
+            unit("A.json", "/1", "カレンは笑った。", Status::Untranslated),
+            unit("A.json", "/2", "カレンは強い。", Status::Untranslated),
+            unit("A.json", "/3", "カレンは行く。", Status::Untranslated),
+        ];
+        let conn = mem_db(&units);
+        assert!(mine_glossary_candidates(&conn, "rpgmaker-mvmz", 50).unwrap().is_empty());
+    }
+
+    #[test]
+    fn sample_corpus_is_diverse_clean_and_budgeted() {
+        let mut units = vec![
+            unit("A.json", "/s1", "OK", Status::Untranslated), // <3 words → dropped
+            unit("A.json", "/s2", "Back", Status::Untranslated), // dropped
+            unit("A.json", "/dup1", "The rain fell all night.", Status::Untranslated),
+            unit("A.json", "/dup2", "the rain fell all night.", Status::Untranslated), // case dup
+            unit(
+                "A.json",
+                "/long",
+                "This is a much longer narrative line describing the ruined city at dawn.",
+                Status::Untranslated,
+            ),
+        ];
+        for i in 0..40 {
+            units.push(unit("A.json", &format!("/m{i}"), &format!("Spread narrative line number {i}."), Status::Untranslated));
+        }
+        let conn = mem_db(&units);
+
+        let big = sample_corpus(&conn, "rpgmaker-mvmz", 100_000).unwrap();
+        // Short UI lines dropped; every kept line has ≥3 words.
+        assert!(big.iter().all(|l| l.split_whitespace().count() >= 3));
+        assert!(!big.iter().any(|l| l == "OK" || l == "Back"));
+        // Case-insensitive dedup: the rain line appears once.
+        assert_eq!(big.iter().filter(|l| l.to_lowercase() == "the rain fell all night.").count(), 1);
+        // The longest line is present (longest bucket).
+        assert!(big.iter().any(|l| l.contains("ruined city at dawn")));
+
+        // A tight budget yields a strictly smaller sample, still valid.
+        let small = sample_corpus(&conn, "rpgmaker-mvmz", 80).unwrap();
+        assert!(small.len() < big.len() && !small.is_empty());
+        let chars: usize = small.iter().map(|l| l.len() + 1).sum();
+        assert!(chars <= 80 + 80, "budget roughly respected: {chars}");
     }
 }
 
