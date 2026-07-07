@@ -573,8 +573,12 @@ pub fn sample_corpus(conn: &Connection, engine_id: &str, char_budget: usize) -> 
             drew = true;
             let clean = crate::engine::protect::strip_codes(engine_id, &raw);
             let clean = clean.trim();
-            if clean.split_whitespace().count() < 3 {
-                continue; // UI label / one-word choice — no context value
+            // Drop UI labels / one-word choices. Count letters, not whitespace
+            // words — CJK text has no spaces, so a whole sentence is one "word";
+            // splitting on whitespace would wrongly discard every Chinese/Japanese
+            // line as too short (→ an empty sample, "no context could be drafted").
+            if clean.chars().filter(|c| c.is_alphabetic()).count() < 6 {
+                continue;
             }
             if !seen.insert(clean.to_lowercase()) {
                 continue;
@@ -1029,6 +1033,9 @@ mod tests {
                 "This is a much longer narrative line describing the ruined city at dawn.",
                 Status::Untranslated,
             ),
+            // CJK has no spaces: the whole sentence is one whitespace-"word", so it
+            // must survive on letter count, not word count.
+            unit("A.json", "/cjk", "拥有高透气性的亚麻制服装", Status::Untranslated),
         ];
         for i in 0..40 {
             units.push(unit("A.json", &format!("/m{i}"), &format!("Spread narrative line number {i}."), Status::Untranslated));
@@ -1036,9 +1043,12 @@ mod tests {
         let conn = mem_db(&units);
 
         let big = sample_corpus(&conn, "rpgmaker-mvmz", 100_000).unwrap();
-        // Short UI lines dropped; every kept line has ≥3 words.
-        assert!(big.iter().all(|l| l.split_whitespace().count() >= 3));
+        // Short UI labels dropped by letter count (works for CJK, which has no
+        // spaces); substantial lines kept.
+        assert!(big.iter().all(|l| l.chars().filter(|c| c.is_alphabetic()).count() >= 6));
         assert!(!big.iter().any(|l| l == "OK" || l == "Back"));
+        // A spaceless CJK sentence survives — the bug that produced "no sampled text".
+        assert!(big.iter().any(|l| l.contains("拥有高透气性")), "CJK line must survive");
         // Case-insensitive dedup: the rain line appears once.
         assert_eq!(big.iter().filter(|l| l.to_lowercase() == "the rain fell all night.").count(), 1);
         // The longest line is present (longest bucket).
