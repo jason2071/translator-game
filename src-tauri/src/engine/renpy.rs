@@ -53,8 +53,19 @@ impl GameEngine for RenpyEngine {
 
     fn extract(&self, root: &Path, _opts: &ExtractOpts) -> Result<Vec<TransUnit>> {
         let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
+        let rpys = collect_rpy(&dir);
+        // Scripts packed/compiled with no editable source: fail the import with an
+        // actionable message instead of silently producing an empty project (or,
+        // worse, importing the SDK's renpy/common UI strings as if they were the game).
+        if rpys.is_empty() && is_renpy_game_dir(&dir) {
+            return Err(anyhow!(
+                "This Ren'Py game ships its scripts packed/compiled (found .rpa/.rpyc but no \
+                 editable .rpy). Unpack the archives (e.g. with unrpa) and decompile the .rpyc to \
+                 .rpy (e.g. with unrpyc), then re-import — this translator edits the .rpy source."
+            ));
+        }
         let mut units = Vec::new();
-        for path in collect_rpy(&dir) {
+        for path in rpys {
             let rel = rel_path(&dir, &path);
             let content =
                 std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
@@ -116,17 +127,38 @@ impl GameEngine for RenpyEngine {
     }
 }
 
-/// A Ren'Py project root holds a `game/` dir with `.rpy` scripts; some archives
-/// extract straight to the game dir, so accept a root that itself has `.rpy`.
+/// A Ren'Py project root holds a `game/` dir with the scripts. Prefer `game/`
+/// whenever it looks like a Ren'Py game folder — even when the `.rpy` are packed in
+/// a `.rpa` (no loose source) — so an *archived* game isn't mis-resolved to `root`,
+/// where the SDK's `renpy/common/*.rpy` would be imported as if they were the game
+/// (and where the `tl/` check would then look in the wrong place). Only when there
+/// is no `game/` subdir do we accept a `root` that itself holds `.rpy` (an archive
+/// unpacked straight to the root).
 pub fn game_dir(root: &Path) -> Option<PathBuf> {
     let game = root.join("game");
-    if game.is_dir() && has_rpy(&game) {
+    if game.is_dir() && (has_rpy(&game) || is_renpy_game_dir(&game)) {
         return Some(game);
     }
     if has_rpy(root) {
         return Some(root.to_path_buf());
     }
     None
+}
+
+/// True if `dir` carries a Ren'Py game fingerprint other than loose `.rpy`: a
+/// packed `.rpa` archive, a compiled `.rpyc`, or the `script_version.txt` marker.
+/// Used both to recognize an archived `game/` and to explain (in [`extract`]) why
+/// nothing was translatable.
+fn is_renpy_game_dir(dir: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    rd.flatten().any(|e| {
+        let p = e.path();
+        p.is_file()
+            && (matches!(p.extension().and_then(|x| x.to_str()), Some("rpa") | Some("rpyc"))
+                || p.file_name().and_then(|n| n.to_str()) == Some("script_version.txt"))
+    })
 }
 
 fn has_rpy(dir: &Path) -> bool {

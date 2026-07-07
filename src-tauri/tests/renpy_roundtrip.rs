@@ -127,3 +127,28 @@ fn inject_replaces_only_target_span() {
     assert!(patched.contains("Back to town."));
     assert!(!patched.contains("Into the woods we go."));
 }
+
+#[test]
+fn archived_game_resolves_to_game_dir_and_reports_packed() {
+    // A game whose scripts are packed (game/*.rpa, no loose .rpy), with the SDK's
+    // renpy/common/*.rpy present at the root — the exact shape that used to make
+    // detection fall through to `root` and import the SDK UI strings.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("game")).unwrap();
+    std::fs::write(root.join("game/archive.rpa"), b"RPA-3.0 fake").unwrap();
+    std::fs::write(root.join("game/script_version.txt"), b"8.4.0").unwrap();
+    std::fs::create_dir_all(root.join("renpy/common")).unwrap();
+    std::fs::write(root.join("renpy/common/00action.rpy"), "old \"Quit\"\n").unwrap();
+
+    let eng = engine::detect(root).expect("archived Ren'Py game still detects");
+    assert_eq!(eng.id(), "renpy");
+    // data_dir must be game/, NOT root (so the tl/ check and font remap land right,
+    // and renpy/common at the root is never treated as the game).
+    let d = eng.describe(root).unwrap();
+    assert!(d.data_dir.replace('\\', "/").ends_with("/game"), "data_dir = {}", d.data_dir);
+
+    // Extraction fails with an actionable message rather than importing the SDK UI.
+    let err = eng.extract(root, &ExtractOpts::default()).unwrap_err().to_string();
+    assert!(err.contains("packed/compiled") && err.contains("unrpa"), "got: {err}");
+}
