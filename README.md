@@ -140,4 +140,14 @@ on **Export**.
 
 - More engines: HTML (Twine/SugarCube), VX Ace/VX/XP (`.rvdata2`), RPGMaker
   2000/2003 (LCF binary), Wolf RPG. See `docs/ROADMAP.md`.
+- Assassin's Creed (AnvilNext — Origins/Odyssey/Valhalla): translate the Forger
+  `.acod` string table; forge unpack + Thai font stay external one-time steps.
+  Research + integration proposal in `docs/games/anvilnext-forger.md`.
 - Fuzzy translation memory, per-run token/cost estimate, multi-select in the grid.
+
+## Docs
+
+`docs/` is both the project documentation and an Obsidian vault — open it and
+start at `docs/Home.md`. Key notes: `docs/ENGINES.md` (engine translatability
+reference), `docs/ROADMAP.md` (next engines + the engine-adding pattern),
+`docs/QA-TEST-PLAN.md`, and `docs/games/` (per-game/engine research).

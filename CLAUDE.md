@@ -157,6 +157,11 @@ Implement `GameEngine` in a new `engine/<name>.rs`, register it in
 targeted inject). Nothing else changes — the DB, commands, and UI are
 engine-agnostic. See `docs/ROADMAP.md` for the full pattern and next targets.
 
+Per-game/engine research lives in `docs/games/` (e.g.
+`docs/games/anvilnext-forger.md` — Assassin's Creed via the Forger `.acod`
+string table). `docs/` is also an Obsidian vault; `docs/Home.md` is the map of
+content and `.obsidian/` is git-ignored.
+
 ## AI providers
 
 `ai::make_provider` dispatches on `ProviderConfig.kind`. `openai.rs` serves

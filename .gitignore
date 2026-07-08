@@ -13,6 +13,10 @@ Thumbs.db
 desktop.ini
 ui/
 
+# Obsidian vault config (docs/ is also an Obsidian vault) — per-user UI state,
+# workspace layout, and cache; not shared. The Markdown notes are still tracked.
+.obsidian/
+
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/
