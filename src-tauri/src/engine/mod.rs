@@ -13,6 +13,7 @@
 
 pub mod codes;
 pub mod encoding;
+pub mod forger_acod;
 pub mod godot;
 pub mod hendrix;
 pub mod kirikiri;
@@ -111,6 +112,10 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // Godot needs its own `project.godot` fingerprint, so it never overlaps
         // the others; order is immaterial.
         Box::new(godot::GodotEngine),
+        // Forger `.acod` string tables (Assassin's Creed). Unique extension +
+        // UTF-16LE BOM fingerprint, so it never overlaps the others; order is
+        // immaterial. Kept last as the most specialized/niche target.
+        Box::new(forger_acod::ForgerAcodEngine),
     ]
 }
 

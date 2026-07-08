@@ -12,11 +12,16 @@ const TYRANO_RE = /\\.|\[[^\]]*\]/g;
 // Godot: BBCode [tag], String.format braces {0}/{name}, printf %s/%d/%.2f/%1$s,
 // and backslash escapes.
 const GODOT_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+ 0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%/g;
+// Forger .acod: HTML-ish angle tags <font …>/</font>/<br/>/<img …/> (letter or /
+// after the <, so a bare < or "5 < 10" isn't a code), {variable}, [bracket], and
+// printf %s/%d. No backslash escapes.
+const FORGER_RE = /<\s*[A-Za-z/][^>]*>|\{[^{}]+\}|\[[^\]]+\]|%(?:\d+\$)?[-+ 0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_RE;
   if (engineId === "tyrano" || engineId === "kirikiri") return TYRANO_RE;
   if (engineId === "godot") return GODOT_RE;
+  if (engineId === "forger-acod") return FORGER_RE;
   return RPGMAKER_RE;
 }
 

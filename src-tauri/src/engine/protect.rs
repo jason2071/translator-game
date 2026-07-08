@@ -75,6 +75,8 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         // KiriKiri shares TyranoScript's KAG tag syntax, so it masks the same way.
         "tyrano" | "kirikiri" => mask_tyrano(input),
         "godot" => mask_godot(input),
+        // Forger `.acod` uses HTML-ish angle tags plus `{}`/`[]`/`%` placeholders.
+        "forger-acod" => mask_forger(input),
         _ => mask(input),
     }
 }
@@ -195,6 +197,75 @@ fn printf_len(s: &str) -> Option<usize> {
     } else {
         None
     }
+}
+
+/// Replace Forger `.acod` inline markup with `⟦k⟧` sentinels: HTML-ish angle tags
+/// (`<font …>`, `</font>`, `<br/>`, `<style …>`, `<i>`, `<img …/>`, and the
+/// malformed variants human translators leave behind), `{variable}` runtime
+/// substitutions, `[bracket]` tokens, and printf `%s`/`%d`. Restores via the
+/// shared [`restore`]. `{}`/`[]`/`%` reuse the Godot helpers.
+pub fn mask_forger(input: &str) -> Masked {
+    let mut text = String::with_capacity(input.len());
+    let mut tokens: Vec<String> = Vec::new();
+    let b = input.as_bytes();
+    let mut i = 0;
+    while i < input.len() {
+        let len = match b[i] {
+            b'<' => angle_tag_len(&input[i..]),
+            b'{' => bracket_len(&input[i..], b'{', b'}'),
+            b'[' => bracket_len(&input[i..], b'[', b']'),
+            b'%' => printf_len(&input[i..]),
+            _ => None,
+        };
+        if let Some(len) = len {
+            let idx = tokens.len();
+            tokens.push(input[i..i + len].to_string());
+            text.push(OPEN);
+            text.push_str(&idx.to_string());
+            text.push(CLOSE);
+            i += len;
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap();
+        text.push(ch);
+        i += ch.len_utf8();
+    }
+    Masked { text, tokens }
+}
+
+/// Byte length of an HTML-ish `<…>` tag at the start of `s` (`s[0] == '<'`),
+/// honoring quoted attribute values that may contain `>`. Returns None when the
+/// `<` doesn't begin a plausible tag — the next non-space char isn't a letter or
+/// `/` (so a stray `<`, an emoticon `<3`, or `5 < 10` stays literal) — or the tag
+/// is unterminated.
+fn angle_tag_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    debug_assert_eq!(b[0], b'<');
+    // Require a tag-ish start after any spaces (`<font`, `</font`, `< font`).
+    let mut k = 1;
+    while k < b.len() && b[k] == b' ' {
+        k += 1;
+    }
+    if k >= b.len() || !(b[k].is_ascii_alphabetic() || b[k] == b'/') {
+        return None;
+    }
+    let mut i = 1;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'"' | b'\'') => {
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += 1;
+                }
+                if i < b.len() {
+                    i += 1; // closing quote
+                }
+            }
+            b'>' => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+    None // unterminated `<…`
 }
 
 /// Replace TyranoScript/KAG codes with `⟦k⟧` sentinels: `[tags]` (inline and
@@ -532,6 +603,42 @@ mod tests {
         // Godot masks format braces and printf conversions.
         assert!(!mask_for("godot", "Level {0}").is_plain());
         assert!(!mask_for("godot", "You have %d gold").is_plain());
+        // Forger masks angle tags and `{}` variables.
+        assert!(!mask_for("forger-acod", "<font face='X'>hi</font>").is_plain());
+        assert!(!mask_for("forger-acod", "Hello {PlayerName}").is_plain());
+    }
+
+    #[test]
+    fn forger_mask_unmask_is_identity() {
+        let samples = [
+            "<font face='DINPro_Bold'>I wish I could retire.</font>",
+            "Your save is corrupt.<br/>Overwrite and restart?",
+            "Welcome back, {PlayerName}! You have {Count} messages.",
+            "<style name='Objective'>Reach [Waypoint]</style>",
+            "Press <img src='button_a'/> to continue",
+            "Costs %d drachmae (%s).",
+            // Malformed tags a human translator left behind must still round-trip.
+            "broken</f</font> and < font face='X'>tag",
+            "An emoticon <3 and math 5 < 10 stay literal.",
+            "No markup here at all.",
+            "",
+        ];
+        for s in samples {
+            let m = mask_forger(s);
+            let back = restore(&m.text, &m.tokens).expect("restore ok");
+            assert_eq!(back, s, "round-trip failed for {s:?}");
+        }
+    }
+
+    #[test]
+    fn forger_masks_markup_but_not_bare_lt_or_percent() {
+        let m = mask_forger("<i>Go</i> to {Place}, 50% there, [X]!");
+        assert_eq!(m.tokens, vec!["<i>", "</i>", "{Place}", "[X]"]);
+        assert!(!m.text.contains('<'), "tags hidden from the model");
+        // A bare `<` (emoticon) and a bare `%` (percent + non-conversion letter)
+        // are not markup. ("50% yes" — `% y` is not a printf conversion.)
+        let plainish = mask_forger("I <3 it, 50% yes");
+        assert!(plainish.is_plain(), "bare < and % must not mask: {:?}", plainish.text);
     }
 
     #[test]

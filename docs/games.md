@@ -21,7 +21,7 @@ section in [[ROADMAP]].
 
 | Note | Engine / games | Feasibility | Status |
 |------|----------------|-------------|--------|
-| [[anvilnext-forger]] | AnvilNext — AC Origins / Odyssey / Valhalla (`.acod` via Forger) | 🟢 Easy (text layer) + external Forger/FontForge | **planned** — phased plan + format confirmed; blocker = EN source `.acod` from Forger |
+| [[anvilnext-forger]] | AnvilNext — AC Origins / Odyssey / Valhalla (`.acod` via Forger) | 🟢 Easy (text layer) + external Forger/FontForge | **implemented** (branch `engine-forger-acod`) — engine + protect + tests green; pending real EN `.acod` validation |
 
 ## Backlog ideas (not yet researched)
 

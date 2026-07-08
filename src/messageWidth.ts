@@ -18,11 +18,14 @@ const RENPY_CODE_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}|⟦\d+⟧/g;
 const TYRANO_CODE_RE = /\\.|\[[^\]]*\]|⟦\d+⟧/g;
 // Godot: BBCode [tag], format braces, printf conversions, backslash escapes.
 const GODOT_CODE_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+ 0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
+// Forger .acod: HTML-ish angle tags, {variable}, [bracket], printf. No backslash.
+const FORGER_CODE_RE = /<\s*[A-Za-z/][^>]*>|\{[^{}]+\}|\[[^\]]+\]|%(?:\d+\$)?[-+ 0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_CODE_RE;
   if (engineId === "tyrano" || engineId === "kirikiri") return TYRANO_CODE_RE;
   if (engineId === "godot") return GODOT_CODE_RE;
+  if (engineId === "forger-acod") return FORGER_CODE_RE;
   return CODE_RE;
 }
 

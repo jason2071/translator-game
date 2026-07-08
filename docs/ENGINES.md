@@ -34,7 +34,7 @@ and are much riskier.
 | **Java** | `.jar` (`.properties` or hardcoded in `.class`) | mixed | 🟡 Medium if `.properties`, else 🔴 |
 | **Unity** | IL2CPP / Mono DLL, TextMeshPro, `resources.assets` | binary | ⚫ Out of scope (use XUnity) |
 | **Unreal Engine** | `.locres` localization table | binary (documented) | 🟡 Medium |
-| **AnvilNext** (AC Origins/Odyssey/Valhalla) | `.forge` archive → Forger-exported `.acod` (UTF-16LE `ID=text`) | binary archive / **text once exported** | 🟢 Easy for `.acod` (needs external Forger + font) |
+| **AnvilNext** (AC Origins/Odyssey/Valhalla) | `.forge` archive → Forger-exported `.acod` (UTF-16LE `ID=text`) | binary archive / **text once exported** | ✅ Supported for `.acod` (needs external Forger + font) |
 | **WebGL** | build target — usually Unity WebGL or HTML5 | — | see Unity / HTML |
 | **Others** | catch-all | — | case by case |
 
@@ -57,6 +57,14 @@ and are much riskier.
   before TyranoScript). When a translation isn't representable in the source
   encoding (e.g. Thai in a Shift-JIS game) the file is written as UTF-16LE, which
   KiriKiri loads natively. `src-tauri/src/engine/kirikiri.rs`.
+- **AnvilNext / Forger `.acod`** (Assassin's Creed Origins/Odyssey/Valhalla) —
+  UTF-16LE `HEXID=text` string tables the community **Forger** tool exports from
+  the game's `.forge` archives. Pointer = byte span into the decoded UTF-8;
+  splice-and-re-encode-UTF-16LE (same shape as KiriKiri), so round-trip is
+  byte-exact with BOM + CRLF preserved. `mask_forger` protects HTML-ish angle
+  tags plus `{variable}`/`[bracket]`/`%s`. Unpacking the `.forge` and merging a
+  Thai font stay external one-time Forger/FontForge steps.
+  `src-tauri/src/engine/forger_acod.rs`; deep-dive in `docs/games/anvilnext-forger.md`.
 
 ### Text-based candidates (fit the model — recommended path)
 - **Godot** — trivial when the game ships `.po`/`.csv` gettext catalogs; scene
@@ -68,12 +76,6 @@ and are much riskier.
   the compiled `.qsp` ships, a decompiler is required first.
 - **TADS** — text adventures; source `.t` is plain text. Compiled `.gam`/`.t3` is
   binary — needs source.
-- **AnvilNext (AC Origins/Odyssey/Valhalla)** — the `.forge` archive is binary +
-  Oodle-compressed (out of scope), but the community **Forger** tool exports the
-  localization as a plain UTF-16LE `ID=text` table (`.acod`) that fits the byte-span
-  model directly. The app would translate the `.acod`; unpacking the forge and
-  merging a Thai font stay external one-time Forger/FontForge steps. Full research +
-  integration proposal in **`docs/games/anvilnext-forger.md`** (`[[anvilnext-forger]]`).
 
 ### Binary / hard
 - **RPGMaker VX Ace / VX / XP** — same audience as our flagship MV/MZ, but

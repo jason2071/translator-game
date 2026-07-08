@@ -100,3 +100,77 @@ fn export_repairs_a_pre_fix_translated_file_from_earliest_backup() {
     let after2 = std::fs::read(root.join("game/script.rpy")).unwrap();
     assert_eq!(after1, after2, "idempotent after repair");
 }
+
+/// Assemble a `.acod`: UTF-16LE + BOM, CRLF-terminated `ID=text`.
+fn acod_utf16le(records: &[(&str, &str)]) -> Vec<u8> {
+    let mut s = String::new();
+    for (id, text) in records {
+        s.push_str(id);
+        s.push('=');
+        s.push_str(text);
+        s.push_str("\r\n");
+    }
+    let mut v = vec![0xFF, 0xFE];
+    for u in s.encode_utf16() {
+        v.extend_from_slice(&u.to_le_bytes());
+    }
+    v
+}
+
+fn decode_utf16le(bytes: &[u8]) -> String {
+    char::decode_utf16(
+        bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]])),
+    )
+    .map(|r| r.unwrap_or('\u{fffd}'))
+    .collect()
+}
+
+/// The Forger `.acod` engine stores UTF-16LE files but its pointer is a byte
+/// offset into the *decoded UTF-8*. A naive second export would decode the
+/// already-translated UTF-16 and splice original UTF-8 offsets into it — mangling
+/// the text. The `.rpgtl/source/` snapshot must make re-export byte-idempotent
+/// for this UTF-16 splice path too (not just the UTF-8 engines above).
+#[test]
+fn forger_acod_reexport_is_idempotent() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path();
+    let bytes = acod_utf16le(&[
+        ("000D1792", "Choose now, hurry!"),
+        ("000D19DE", "Are you Anthousa?"),
+        ("00093521", "Your save is corrupt.<br/>Overwrite and restart?"),
+    ]);
+    std::fs::write(root.join("Kassandra_UI.acod"), &bytes).unwrap();
+
+    let (project, fresh) = project::open_or_create(root, "en", "Thai").unwrap();
+    assert!(fresh, "first open detects Forger .acod and extracts");
+    let units = db::all_units(&project.conn).unwrap();
+    assert_eq!(units.len(), 3, "three non-empty records");
+    for u in &units {
+        // Thai is longer in bytes than the ASCII source — offset drift would show.
+        let tr = format!("\u{e41}\u{e1b}\u{e25} \u{2014} {}", u.source);
+        db::update_unit(&project.conn, u.id, Some(&tr), "Translated").unwrap();
+    }
+
+    let game_file = root.join("Kassandra_UI.acod");
+    project::export(&project, true, false).unwrap();
+    let after1 = std::fs::read(&game_file).unwrap();
+    assert_eq!(&after1[..2], &[0xFF, 0xFE], "export stays UTF-16LE with a BOM");
+    assert!(
+        root.join(".rpgtl/source/Kassandra_UI.acod").exists(),
+        "original bytes snapshotted"
+    );
+    assert!(
+        decode_utf16le(&after1).contains("\u{e41}\u{e1b}\u{e25}"),
+        "translation was written"
+    );
+
+    // Second and third exports must reproduce the file byte-for-byte.
+    project::export(&project, true, false).unwrap();
+    let after2 = std::fs::read(&game_file).unwrap();
+    assert_eq!(after1, after2, "forger re-export must be idempotent (UTF-16 splice)");
+    project::export(&project, false, false).unwrap();
+    let after3 = std::fs::read(&game_file).unwrap();
+    assert_eq!(after1, after3, "further exports stay idempotent");
+}

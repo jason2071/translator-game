@@ -12,7 +12,7 @@ tags:
   - engine/candidate
   - engine/anvilnext
   - game/assassins-creed
-status: planned
+status: implemented
 feasibility: easy-with-external-tools
 created: 2026-07-08
 related:
@@ -179,6 +179,14 @@ it. Not a self-contained "open the game folder and export" flow like RPGMaker �
 the user must run Forger first to get `.acod` and once to install a Thai font.
 
 ## Implementation plan
+
+> [!done] Status — engine shipped (branch `engine-forger-acod`)
+> Phases 1–4 are implemented and green (166 Rust tests, warning-free; `tsc`
+> clean): `engine/forger_acod.rs` (`id = "forger-acod"`), `protect::mask_forger`
+> + the `codes.ts` / `messageWidth.ts` mirrors, `tests/forger_acod_roundtrip.rs`,
+> and a Forger case in `tests/reexport_idempotent.rs`. **Remaining:** validate
+> against a real Forger-exported EN `.acod` (the blocker below) and confirm the
+> Origins export extension/markup match the Odyssey-format fixtures.
 
 Phased plan to add the `forger_acod` engine. Grounded in the confirmed format
 facts above; the only real blocker is getting an English source `.acod` (see
