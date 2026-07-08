@@ -159,8 +159,28 @@ engine-agnostic. See `docs/ROADMAP.md` for the full pattern and next targets.
 
 Per-game/engine research lives in `docs/games/` (e.g.
 `docs/games/anvilnext-forger.md` — Assassin's Creed via the Forger `.acod`
-string table). `docs/` is also an Obsidian vault; `docs/Home.md` is the map of
-content and `.obsidian/` is git-ignored.
+string table; carries the confirmed `.acod` format and a phased implementation
+plan for a `forger_acod` engine, currently `status: planned`).
+
+## Docs (Obsidian vault)
+
+`docs/` is both the project documentation and an **Obsidian vault** — open it in
+Obsidian and start at `docs/Home.md` (the map-of-content / MOC). When adding or
+editing docs, follow the vault conventions so the graph view, backlinks, and tag
+search keep working:
+
+- **Folders by topic**, each with a **folder note** of the same name as its index —
+  e.g. deep-dive research lives under `docs/games/` and `docs/games.md` is its index.
+- **YAML frontmatter** on every note: `title`, `aliases`, `tags`, `created`, and a
+  `status` where relevant (`proposed` / `planned` / `implemented`).
+- **Wikilinks** (`[[note]]`) between notes, not raw paths, so backlinks resolve.
+- **Nested tag taxonomy**: `type/research`, `engine/<name>`, `game/<name>`, `moc`.
+- **Stable core docs.** `ENGINES.md`, `ROADMAP.md`, `QA-TEST-PLAN.md` keep their
+  names and top-level paths — they're referenced from this file and `README.md`;
+  don't move or rename them.
+- **Not committed / regenerable:** `.obsidian/` (per-user vault config) and
+  `graphify-out/` (the `/graphify` knowledge-graph output) are both git-ignored;
+  the Markdown notes are tracked.
 
 ## AI providers
 

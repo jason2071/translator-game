@@ -12,7 +12,7 @@ tags:
   - engine/candidate
   - engine/anvilnext
   - game/assassins-creed
-status: proposed
+status: planned
 feasibility: easy-with-external-tools
 created: 2026-07-08
 related:
@@ -94,16 +94,37 @@ Plain **UTF-16LE**, BOM `FF FE`, one record per line:
 - `HEXID` — 8 hex digits, the string's stable id inside the localization resource
   (e.g. `000D1792`, `07270E50`). This is the join key Forger uses to place the
   string back into the forge.
-- `text` — the translatable value. May contain inline markup, notably
-  `<font face='DINPro_Bold'>…</font>`, treated like the control/markup codes other
-  engines already mask.
+- `text` — the translatable value. May contain inline markup (see the inventory
+  below), treated like the control/markup codes other engines already mask.
+- **Line terminator is `CRLF`** (`0D 00 0A 00` in UTF-16LE) — confirmed on a real
+  25,763-line Odyssey `UI.acod`, where 25,762 lines match `^[0-9A-Fa-f]{8}=`
+  (one trailing empty line).
+
+**Markup inventory (confirmed on a real `UI.acod`, by frequency).** Richer than
+just `<font>` — the mask must handle all of these, and `{…}` variables are the
+critical ones (never translate/corrupt a runtime substitution):
+
+| Markup | Count | Meaning |
+|--------|-------|---------|
+| `<font face='…'>` / `<font size="…">` / `</font>` | ~8200 | font run |
+| `{…}` | 2702 | **runtime variable** (player name, counts) — must survive verbatim |
+| `<br/>` | 1297 | line break |
+| `<style name='…'>` / `</style>` | ~2000 | styled run |
+| `[…]` | 335 | bracketed token |
+| `<img src='…'/>` | ~240 | inline button/icon glyph |
+| `<i>` / `</i>` | 460 | italic |
+| `%s` / `%d` | ~2 | printf slot |
+
+Human-translated files also contain **malformed tags** (`</f</font>`, `< font …>`,
+`<br/ >`) from translator typos — the mask regex must be lenient enough that a
+stray `<…>`-ish run still masks/restores without dropping a sentinel.
 
 Real samples (English source and shipped Thai):
 
 ```
 07270E50=<font face='DINPro_Bold'>I wish I could retire.</font>
 000D1792=เจ้าต้องเลือกแล้ว เร็วเข้า!
-000D19DE=เจ้าใช่อันธูซ่ามั้ย
+00093521=การบันทึกของคุณเสียหาย<br/>คุณต้องการเขียนทับและเริ่มเกมใหม่หรือไม่?
 ```
 
 `.forger2` — the mod manifest, JSON, `{"Format": "ForgerPatch2", …}`. It ties the
@@ -156,6 +177,84 @@ while the app does what it is good at — the string-level translate/round-trip.
 hard dependency on the **external Forger + FontForge** steps for everything around
 it. Not a self-contained "open the game folder and export" flow like RPGMaker —
 the user must run Forger first to get `.acod` and once to install a Thai font.
+
+## Implementation plan
+
+Phased plan to add the `forger_acod` engine. Grounded in the confirmed format
+facts above; the only real blocker is getting an English source `.acod` (see
+below), which does **not** block engine dev — synthetic fixtures cover that.
+
+### Phase 0 — Recon
+- ✅ Format confirmed on real files: UTF-16LE + BOM `FF FE`, **CRLF**, `HEXID=text`,
+  full markup inventory (`<font>`/`<style>`/`<br/>`/`<img>`/`<i>` + `{…}` variables
+  + `[…]` + `%s`).
+- ☐ Document how a user obtains an EN `.acod` from Forger (the workflow, below).
+
+### Phase 1 — Engine core (`src-tauri/src/engine/forger_acod.rs`)
+- `detect` — a folder holding ≥1 `*.acod` whose bytes start with BOM `FF FE` and
+  whose lines match `^[0-9A-Fa-f]{8}=`.
+- `describe` — count key lines (read-only).
+- `extract` — one `TransUnit` per line; `source` = text after `=`; pointer =
+  **byte span `"start:len"` into the UTF-16LE bytes** (the value span); mask markup.
+- `inject` — splice the translation into the value span; keep UTF-16LE, CRLF, the
+  `HEXID=` key, and the BOM.
+- Reuse `engine/encoding.rs` UTF-16LE (`read_utf16le` / `encode_utf16`, from KiriKiri).
+- Register in `engine::engines()` (`.acod` extension is unique — order-independent).
+
+### Phase 2 — Protection (`src-tauri/src/engine/protect.rs`)
+- `mask_forger`: mask **every `<…>` tag** (generic, lenient for malformed ones) plus
+  `{…}` variables, `[…]`, and `%s`/`%d` → `⟦n⟧` sentinels.
+- Branch in `protect::mask_for("forger_acod", …)` (shared `restore` is engine-agnostic).
+- Mirror the inline codes in `src/codes.ts` + `src/messageWidth.ts` (grid warning).
+
+### Phase 3 — Tests (`src-tauri/tests/forger_acod_roundtrip.rs`)
+- In-test synthetic `.acod` builder (UTF-16LE + BOM + CRLF + `ID=text` + markup) —
+  same approach KiriKiri uses to build its Shift-JIS/UTF-16 fixtures.
+- `detect` / `extract` count / **`roundtrip_identity`** (unchanged = byte-identical)
+  / targeted `inject` (span replaced, `HEXID` untouched) / mask-restore identity
+  (including a malformed tag).
+
+### Phase 4 — Export integration
+- Detect a folder of `.acod` as a project; reuse the existing `.rpgtl/source/`
+  snapshot + idempotent-export path (works unchanged for `.acod`).
+- Guard with a `reexport_idempotent`-style test.
+
+### Phase 5 — Docs + font (external)
+- Flip this note `status: proposed → implemented`; `ENGINES.md` row → ✅ Supported.
+- Write the end-to-end user flow: Forger export EN `.acod` → app translates →
+  drop into `ForgerPatches/` → run Forger.
+- Font: a one-time FontForge merge of Thai glyphs into the game font — **out of app
+  scope**, documented for the user.
+
+### Effort / sequencing
+| Phase | Effort | Depends on |
+|-------|--------|-----------|
+| 1 Engine core | ~½ day | `encoding.rs` (exists) |
+| 2 Protect | ~2 h | Phase 1 |
+| 3 Tests | ~½ day | Phase 1–2 |
+| 4 Export | ~2 h (reuse) | Phase 1 |
+| 5 Docs | ~1 h | Phase 1–4 |
+
+~1.5–2 focused days. Optional warm-up: move `ExtractOpts` out of `codes.rs` into
+`engine/mod.rs` beside the trait (a coupling the knowledge-graph flagged — every
+engine reaches into the RPGMaker module for an engine-agnostic options struct).
+
+### Blocker + open question — the EN source `.acod`
+
+- On-disk `.acod` files are the **already-translated Thai** (the endpoint). A fresh
+  translation needs the **English source**, which comes from unpacking the game's
+  English localization forge with Forger/Blacksmith — a GUI step the user runs; the
+  app never touches the `.forge`.
+- **Origins vs Odyssey caveat.** The `.acod` format is confirmed for **Odyssey**
+  (real files). The on-disk **Origins** mod ships as a *full `DataPC.forge`
+  replacement + `FontACO.rar`* (older Blacksmith flow), **not** Forger `.acod`
+  patches — so it is unconfirmed whether Forger exports `.acod` for Origins or a
+  different intermediate. Verify by running Forger against a real Origins install
+  (`…/Assassin's Creed Origins/ACOrigins.exe`; `oo2core_4_win64.dll` ships with it)
+  and checking the exported extension + a sample file before committing a real fixture.
+- **Recommended:** build Phases 1–3 now against synthetic fixtures (Odyssey-validated),
+  and swap in a real EN `.acod` fixture once one is exported — adapting the markup
+  mask if Origins differs.
 
 ## Fixtures / tests (when implemented)
 

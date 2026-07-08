@@ -25,7 +25,7 @@ and an Obsidian vault; start here.
 ## Research
 
 - [[games]] — game-translation research index (per-game / per-engine deep dives).
-  - [[anvilnext-forger]] — Assassin's Creed (Origins/Odyssey/Valhalla) via Forger `.acod`.
+  - [[anvilnext-forger]] — Assassin's Creed (Origins/Odyssey/Valhalla) via Forger `.acod`; research + phased implementation plan for a `forger_acod` engine.
 
 ## Conventions (Obsidian best practice)
 
