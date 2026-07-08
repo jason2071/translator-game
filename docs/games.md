@@ -22,6 +22,7 @@ section in [[ROADMAP]].
 | Note | Engine / games | Feasibility | Status |
 |------|----------------|-------------|--------|
 | [[anvilnext-forger]] | AnvilNext — AC Origins / Odyssey / Valhalla (`.acod` via Forger) | 🟢 Easy (text layer) + external Forger/FontForge | **implemented** (branch `engine-forger-acod`) — engine + protect + tests green; pending real EN `.acod` validation |
+| [[anvilnext-locpackage-format]] | AC Origins `.Localization_Package` binary (RE) | 🟡 crackable, multi-session RE (no `.acod`, must decode+encode char-index binary) | **in-progress** — format model cracked via EN↔TH parallel corpus; codec unfinished |
 
 ## Backlog ideas (not yet researched)
 

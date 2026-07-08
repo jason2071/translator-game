@@ -256,10 +256,11 @@ engine reaches into the RPGMaker module for an engine-agnostic options struct).
 - **Origins vs Odyssey caveat.** The `.acod` format is confirmed for **Odyssey**
   (real files). The on-disk **Origins** mod ships as a *full `DataPC.forge`
   replacement + `FontACO.rar`* (older Blacksmith flow), **not** Forger `.acod`
-  patches — so it is unconfirmed whether Forger exports `.acod` for Origins or a
-  different intermediate. Verify by running Forger against a real Origins install
-  (`…/Assassin's Creed Origins/ACOrigins.exe`; `oo2core_4_win64.dll` ships with it)
-  and checking the exported extension + a sample file before committing a real fixture.
+  patches. Investigation confirmed **Origins ships no `.acod` at all** — its text
+  lives in a binary `.Localization_Package` (char-table + index encoding) that the
+  Delutto CLI tools expose from the forge. Translating Origins therefore needs a
+  decoder+encoder for that binary, not the `.acod` engine — see
+  [[anvilnext-locpackage-format]] for the reverse-engineering notes (in progress).
 - **Recommended:** build Phases 1–3 now against synthetic fixtures (Odyssey-validated),
   and swap in a real EN `.acod` fixture once one is exported — adapting the markup
   mask if Origins differs.
