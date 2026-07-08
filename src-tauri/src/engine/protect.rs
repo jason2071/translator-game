@@ -77,6 +77,8 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         "godot" => mask_godot(input),
         // Forger `.acod` uses HTML-ish angle tags plus `{}`/`[]`/`%` placeholders.
         "forger-acod" => mask_forger(input),
+        // AC Origins aclocexport text: angle tags + `[…]` audio cues only.
+        "ac-loctext" => mask_ac_loctext(input),
         _ => mask(input),
     }
 }
@@ -217,6 +219,40 @@ pub fn mask_forger(input: &str) -> Masked {
             b'{' => bracket_len(&input[i..], b'{', b'}'),
             b'[' => bracket_len(&input[i..], b'[', b']'),
             b'%' => printf_len(&input[i..]),
+            _ => None,
+        };
+        if let Some(len) = len {
+            let idx = tokens.len();
+            tokens.push(input[i..i + len].to_string());
+            text.push(OPEN);
+            text.push_str(&idx.to_string());
+            text.push(CLOSE);
+            i += len;
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap();
+        text.push(ch);
+        i += ch.len_utf8();
+    }
+    Masked { text, tokens }
+}
+
+/// Replace AC Origins `aclocexport` markup with `⟦k⟧` sentinels: HTML-ish angle
+/// tags (`<i>`, `</i>`, `<b>`, `<LF>`, `<CR>`, shape-based via [`angle_tag_len`])
+/// and `[…]` performance/audio cues (`[beat]`, `[&breath]`, `[/&laughs]`). Unlike
+/// [`mask_forger`], **`{…}` and `%` are left as text**: in this format `{…}` wraps
+/// a whole *translatable* line (e.g. `{I am looking to hire a <i>misthios</i>.}`),
+/// not a runtime variable, and `%` is only ever prose (no printf conversions).
+/// Restores via the shared [`restore`].
+pub fn mask_ac_loctext(input: &str) -> Masked {
+    let mut text = String::with_capacity(input.len());
+    let mut tokens: Vec<String> = Vec::new();
+    let b = input.as_bytes();
+    let mut i = 0;
+    while i < input.len() {
+        let len = match b[i] {
+            b'<' => angle_tag_len(&input[i..]),
+            b'[' => bracket_len(&input[i..], b'[', b']'),
             _ => None,
         };
         if let Some(len) = len {
@@ -636,6 +672,44 @@ mod tests {
         // Forger masks angle tags and `{}` variables.
         assert!(!mask_for("forger-acod", "<font face='X'>hi</font>").is_plain());
         assert!(!mask_for("forger-acod", "Hello {PlayerName}").is_plain());
+        // ac-loctext masks angle tags and `[cue]`, but NOT `{}` (whole-line wrap)
+        // or `%` (prose) — the opposite of Forger for those two.
+        assert!(!mask_for("ac-loctext", "We're here in <i>peace</i>!").is_plain());
+        assert!(!mask_for("ac-loctext", "[&scoff]Who is he?").is_plain());
+        assert!(mask_for("ac-loctext", "{I am a misthios.} 50% sure").is_plain());
+    }
+
+    #[test]
+    fn ac_loctext_mask_unmask_is_identity() {
+        let samples = [
+            "You must choose, Quick!",
+            "We're here in <i>peace</i>!",
+            "I propose a trade. Help <i>us</i> get stronger.",
+            "[&scoff]Who walks around with a name like the \"Monger\"?",
+            "They say she's everywhere. [beat]But the hetaerae see <i>everything!</i>",
+            "since 1860.<LF> <LF>One of their main challenges",
+            "Bold <b>warning</b> and a [/&laughs] cue.",
+            // `{…}` wraps a whole translatable line, `%` is prose — both stay visible.
+            "{I am looking to hire a <i>misthios</i>.}",
+            "Deal was 50% done, no printf here.",
+            "No markup at all.",
+            "",
+        ];
+        for s in samples {
+            let m = mask_ac_loctext(s);
+            let back = restore(&m.text, &m.tokens).expect("restore ok");
+            assert_eq!(back, s, "round-trip failed for {s:?}");
+        }
+    }
+
+    #[test]
+    fn ac_loctext_keeps_curly_and_percent_visible() {
+        // The whole `{…}` sentence stays translatable (only the inner <i> masks);
+        // `%` never masks. Contrast with Forger, which hides `{…}` and `%d`.
+        let m = mask_ac_loctext("{Hire a <i>misthios</i>?} 100% ready [beat]");
+        assert_eq!(m.tokens, vec!["<i>", "</i>", "[beat]"]);
+        assert!(m.text.contains("{Hire a "), "curly wrap must stay visible");
+        assert!(m.text.contains("100% ready"), "percent must stay visible");
     }
 
     #[test]

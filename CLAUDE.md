@@ -157,10 +157,13 @@ Implement `GameEngine` in a new `engine/<name>.rs`, register it in
 targeted inject). Nothing else changes — the DB, commands, and UI are
 engine-agnostic. See `docs/ROADMAP.md` for the full pattern and next targets.
 
-Per-game/engine research lives in `docs/games/` (e.g.
-`docs/games/anvilnext-forger.md` — Assassin's Creed via the Forger `.acod`
-string table; carries the confirmed `.acod` format and a phased implementation
-plan for a `forger_acod` engine, currently `status: planned`).
+Per-game/engine research lives in `docs/games/`. Assassin's Creed (AnvilNext) has
+two shipped engines, both fed by external community tools:
+`engine/forger_acod.rs` (`.acod` UTF-16LE string tables the Forger tool exports —
+Odyssey/Valhalla; see `docs/games/anvilnext-forger.md`) and `engine/ac_loctext.rs`
+(**Origins**, which ships no `.acod`: the `aclocexport`/`aclocimport` pair turns
+its binary `.Localization_Package` into UTF-8 `Id: [0x…]` text this engine
+translates; see `docs/games/anvilnext-locpackage-format.md`).
 
 ## Docs (Obsidian vault)
 

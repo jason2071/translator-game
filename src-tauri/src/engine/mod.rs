@@ -11,6 +11,7 @@
 //! `TransUnit` is engine-defined (a JSON Pointer for MV/MZ, a byte span for the
 //! text engines); only the owning engine interprets it.
 
+pub mod ac_loctext;
 pub mod codes;
 pub mod encoding;
 pub mod forger_acod;
@@ -116,6 +117,11 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // UTF-16LE BOM fingerprint, so it never overlaps the others; order is
         // immaterial. Kept last as the most specialized/niche target.
         Box::new(forger_acod::ForgerAcodEngine),
+        // Assassin's Creed Origins via the community aclocexport text bridge. Its
+        // `.txt` extension is generic, so it fingerprints on content (an `Id: [0x…]`
+        // first line) and is registered LAST — every engine with a distinctive
+        // extension/marker is tried first, so a stray `.txt` never shadows them.
+        Box::new(ac_loctext::AcLocTextEngine),
     ]
 }
 

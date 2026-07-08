@@ -34,7 +34,7 @@ and are much riskier.
 | **Java** | `.jar` (`.properties` or hardcoded in `.class`) | mixed | 🟡 Medium if `.properties`, else 🔴 |
 | **Unity** | IL2CPP / Mono DLL, TextMeshPro, `resources.assets` | binary | ⚫ Out of scope (use XUnity) |
 | **Unreal Engine** | `.locres` localization table | binary (documented) | 🟡 Medium |
-| **AnvilNext** (AC Origins/Odyssey/Valhalla) | `.forge` archive → Forger-exported `.acod` (UTF-16LE `ID=text`) | binary archive / **text once exported** | ✅ Supported for `.acod` (needs external Forger + font) |
+| **AnvilNext** (AC Origins/Odyssey/Valhalla) | `.forge` archive → Forger `.acod` (UTF-16LE `ID=text`) **or** `aclocexport` text (UTF-8 `Id: [0x…]`) | binary archive / **text once exported** | ✅ Supported: `.acod` + `ac-loctext` (needs external Forger or Delutto+aclocexport) |
 | **WebGL** | build target — usually Unity WebGL or HTML5 | — | see Unity / HTML |
 | **Others** | catch-all | — | case by case |
 
@@ -65,6 +65,15 @@ and are much riskier.
   tags plus `{variable}`/`[bracket]`/`%s`. Unpacking the `.forge` and merging a
   Thai font stay external one-time Forger/FontForge steps.
   `src-tauri/src/engine/forger_acod.rs`; deep-dive in `docs/games/anvilnext-forger.md`.
+- **AnvilNext / `ac-loctext`** (Assassin's Creed **Origins**) — Origins ships no
+  `.acod`; its text is in a binary `.Localization_Package`, which the community
+  `aclocexport`/`aclocimport` pair turns into plain **UTF-8** `Id: [0x…]` / text
+  records and back. This engine translates that text: pointer = byte span into the
+  UTF-8 file, splice-in-place inject (round-trip byte-exact, no re-encode).
+  `mask_ac_loctext` protects angle tags + `[cue]` brackets (but not `{…}` — here it
+  wraps a whole translatable line — or `%`). External steps: Delutto Forge/DATA
+  tools + aclocexport/aclocimport. `src-tauri/src/engine/ac_loctext.rs`; deep-dive
+  in `docs/games/anvilnext-locpackage-format.md`.
 
 ### Text-based candidates (fit the model — recommended path)
 - **Godot** — trivial when the game ships `.po`/`.csv` gettext catalogs; scene

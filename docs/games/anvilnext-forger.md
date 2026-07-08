@@ -257,10 +257,12 @@ engine reaches into the RPGMaker module for an engine-agnostic options struct).
   (real files). The on-disk **Origins** mod ships as a *full `DataPC.forge`
   replacement + `FontACO.rar`* (older Blacksmith flow), **not** Forger `.acod`
   patches. Investigation confirmed **Origins ships no `.acod` at all** — its text
-  lives in a binary `.Localization_Package` (char-table + index encoding) that the
-  Delutto CLI tools expose from the forge. Translating Origins therefore needs a
-  decoder+encoder for that binary, not the `.acod` engine — see
-  [[anvilnext-locpackage-format]] for the reverse-engineering notes (in progress).
+  lives in a binary `.Localization_Package` that the Delutto CLI tools expose from
+  the forge. **Resolved:** no binary codec needed — the community `aclocexport`/
+  `aclocimport` pair turns that binary into plain UTF-8 `Id: [0x…]` text and back,
+  and the shipped **`ac-loctext`** engine translates that text. See
+  [[anvilnext-locpackage-format]] (implemented). So Origins uses `ac-loctext`;
+  Odyssey/Valhalla use this Forger `.acod` engine.
 - **Recommended:** build Phases 1–3 now against synthetic fixtures (Odyssey-validated),
   and swap in a real EN `.acod` fixture once one is exported — adapting the markup
   mask if Origins differs.

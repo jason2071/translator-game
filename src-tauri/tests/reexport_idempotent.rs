@@ -174,3 +174,66 @@ fn forger_acod_reexport_is_idempotent() {
     let after3 = std::fs::read(&game_file).unwrap();
     assert_eq!(after1, after3, "further exports stay idempotent");
 }
+
+/// Assemble an aclocexport table: UTF-8, no BOM, CRLF, two-line records separated
+/// by a blank line.
+fn loctext_utf8(records: &[(&str, &str)]) -> Vec<u8> {
+    let mut s = String::new();
+    for (id, text) in records {
+        s.push_str("Id: [0x");
+        s.push_str(id);
+        s.push_str("]\r\n");
+        s.push_str(text);
+        s.push_str("\r\n\r\n");
+    }
+    s.into_bytes()
+}
+
+/// The `ac-loctext` engine's pointer is a byte offset into the ORIGINAL UTF-8 file;
+/// export injects in place. A naive second export would splice original offsets
+/// into the already-translated (byte-shifted) text. The `.rpgtl/source/` snapshot
+/// must make re-export byte-idempotent for this UTF-8 splice path too.
+#[test]
+fn ac_loctext_reexport_is_idempotent() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path();
+    let bytes = loctext_utf8(&[
+        ("000D1792", "You must choose, Quick!"),
+        ("000D19DE", "Are you Anthousa?"),
+        ("000D19EF", "We're here in <i>peace</i>!"),
+    ]);
+    std::fs::write(root.join("LocalizationData.txt"), &bytes).unwrap();
+
+    let (project, fresh) = project::open_or_create(root, "en", "Thai").unwrap();
+    assert!(fresh, "first open detects aclocexport text and extracts");
+    let units = db::all_units(&project.conn).unwrap();
+    assert_eq!(units.len(), 3, "three records");
+    for u in &units {
+        // Thai is longer in bytes than the ASCII source — offset drift would show.
+        let tr = format!("\u{e41}\u{e1b}\u{e25} \u{2014} {}", u.source);
+        db::update_unit(&project.conn, u.id, Some(&tr), "Translated").unwrap();
+    }
+
+    let game_file = root.join("LocalizationData.txt");
+    project::export(&project, true, false).unwrap();
+    let after1 = std::fs::read(&game_file).unwrap();
+    std::str::from_utf8(&after1).expect("export stays valid UTF-8");
+    assert!(!after1.starts_with(&[0xEF, 0xBB, 0xBF]), "no BOM introduced");
+    assert!(
+        root.join(".rpgtl/source/LocalizationData.txt").exists(),
+        "original bytes snapshotted"
+    );
+    assert!(
+        String::from_utf8_lossy(&after1).contains("\u{e41}\u{e1b}\u{e25}"),
+        "translation was written"
+    );
+    // Headers and blank separators survive — output is still aclocimport-shaped.
+    assert!(String::from_utf8_lossy(&after1).contains("Id: [0x000D1792]\r\n"));
+
+    project::export(&project, true, false).unwrap();
+    let after2 = std::fs::read(&game_file).unwrap();
+    assert_eq!(after1, after2, "ac-loctext re-export must be idempotent");
+    project::export(&project, false, false).unwrap();
+    let after3 = std::fs::read(&game_file).unwrap();
+    assert_eq!(after1, after3, "further exports stay idempotent");
+}

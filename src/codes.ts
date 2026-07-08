@@ -17,12 +17,17 @@ const GODOT_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdif
 // "5 < 10" or "<low then flee>" isn't a code; {variable}, [bracket] (no nesting,
 // mirroring the backend), and printf %s/%d. No backslash. Mirrors mask_forger.
 const FORGER_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\{[^{}]+\}|\[[^[\]]+\]|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%/g;
+// AC Origins aclocexport text: shape-based angle tags (incl. <LF>/<CR>) and [cue]
+// audio brackets only. Unlike Forger, {…} (a whole-line wrap) and % (prose) are
+// NOT codes here. Mirrors mask_ac_loctext.
+const AC_LOCTEXT_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\[[^[\]]+\]/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_RE;
   if (engineId === "tyrano" || engineId === "kirikiri") return TYRANO_RE;
   if (engineId === "godot") return GODOT_RE;
   if (engineId === "forger-acod") return FORGER_RE;
+  if (engineId === "ac-loctext") return AC_LOCTEXT_RE;
   return RPGMAKER_RE;
 }
 

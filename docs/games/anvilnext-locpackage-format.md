@@ -1,112 +1,152 @@
 ---
-title: AnvilNext `.Localization_Package` binary format (reverse-engineering)
+title: AnvilNext `.Localization_Package` — Origins text bridge
 aliases:
   - Localization_Package
   - AC loc binary
-  - char-index format
+  - aclocexport format
+  - AC Origins text
 tags:
   - type/research
   - engine/anvilnext
   - game/assassins-creed
   - reverse-engineering
-status: in-progress
+status: implemented
 created: 2026-07-08
+updated: 2026-07-08
 related:
   - "[[anvilnext-forger]]"
 ---
 
-# AnvilNext `.Localization_Package` binary format (RE)
+# AnvilNext `.Localization_Package` — Origins text bridge
 
-Working notes on reverse-engineering the Assassin's Creed **Origins** localization
-binary, to let the app translate Origins end-to-end (the `.acod` engine in
-[[anvilnext-forger]] only handles the *text* form the community Forger tool emits;
-Origins ships no `.acod` — its text is in this binary). **Status: in progress —
-the format is understood at the model level and confirmed crackable, but a
-byte-exact decode+encode codec is not finished.**
+How to let the app translate Assassin's Creed **Origins** end-to-end. The `.acod`
+engine in [[anvilnext-forger]] handles the text form the community Forger tool
+emits; Origins ships no `.acod`. Its text lives in a binary `.Localization_Package`
+— **but that binary does not have to be reverse-engineered**, because the community
+already ships a matched **decode + encode** pair (`aclocexport` / `aclocimport`)
+that turns it into a plain UTF-8 text file and back. The app only has to translate
+that text file. **Status: implemented — the `ac-loctext` engine
+(`src-tauri/src/engine/ac_loctext.rs`) ships, format confirmed on 33 787 real
+Origins records; detect/extract/round-trip/inject + protect + reexport tests green.**
 
-## How the text is reached (external tools, user-run)
+> **Correction (was wrong before):** earlier notes here said `aclocexport` is
+> "decode-only, no public encoder", concluding we had to build our own binary
+> codec. That is false. **`aclocimport.exe` exists** and is the standard second
+> half of the community workflow (`aclocexport` → edit `.txt` → `aclocimport` →
+> `.txt.out`). So the binary codec is **not** on the critical path. The binary
+> findings are kept below as an appendix only.
 
-Origins has no `.acod`. To get at the text:
+## The real pipeline (all external steps user-run)
 
 ```
-DataPC.forge ──Ubisoft_Forge_Tool -e──► NNN-LocalizationPackage_English*.data
-             ──Ubisoft_DATA_Tool 11 -e──► 0-…_English*.Localization_Package  ← this file
+DataPC.forge ──Forge_Tool -e──►  NNN-LocalizationPackage_*.data
+             ──DATA_Tool 11 -e─►  0-…_*.Localization_Package     (binary)
+             ──aclocexport──────►  LocalizationData.txt          ← APP TRANSLATES THIS
+   [ app: extract → translate → export ]
+             ──aclocimport──────►  LocalizationData.txt.out      (binary, re-encoded)
+             ──DATA_Tool 11 -i─►  NNN-…_*.data
+             ──Forge_Tool 11 -i►  DataPC.forge   (back up first, then overwrite)
 ```
 
-Both are Delutto CLI tools (`GameCode 11 = Origins`, `12 = Odyssey`), symmetric
-`-e`/`-i`. `aclocexport.exe` (community) decodes the package to text but appears
-**decode-only** — no public encoder, which is the whole reason we need our own.
+`GameCode 11 = Origins`, `12 = Odyssey`; Forge/DATA tools are Delutto CLI,
+symmetric `-e`/`-i`. `aclocexport`/`aclocimport` are the community text bridge
+(referenced by the MOIX-1192 corpus repo; binaries distributed in modding
+communities, not open-source). This is exactly how the existing Thai Origins mod
+was produced — overwrite the **English** slot with Thai, repack the forge, play
+with language = English → see Thai (confirmed by diffing the game vs mod forge:
+only `393-…English_Subtitles` and `401-…English` changed).
 
-The round-trip the app must slot into: decode `.Localization_Package` → translate →
-**re-encode** `.Localization_Package` → `DATA_Tool -i` → `Forge_Tool -i` → replace
-`DataPC.forge` (backup first). No Forger patch needed — that's exactly how the
-existing Thai Origins mod ships.
+## `aclocexport` text format (confirmed on real Origins data)
 
-## How the existing Thai Origins mod was made (the diff that proved it)
+Verified against the real Origins `English_Subtitles` export (MOIX-1192 corpus,
+`aco-…English_Subtitles.Localization_Package.txt`, **33 787 records**):
 
-Extracted the game's `DataPC.forge` and the Thai mod's `DataPC.forge`, then diffed
-all 34 `*LocalizationPackage*.data`. **Only two changed**, both English slots:
+- **UTF-8, no BOM, CRLF** (`\r\n`) line endings.
+- Record = an id line, the text line, then a blank line:
 
-| package | game (EN) | mod (TH) |
-|---------|-----------|----------|
-| `393-LocalizationPackage_English_Subtitles.data` | 378 KB | 645 KB |
-| `401-LocalizationPackage_English.data` | 257 KB | 428 KB |
+  ```
+  Id: [0x000D1792]
+  You must choose, Quick!
+  <CRLF blank line>
+  Id: [0x000D197F]
+  How did you get past the guard? No one gets past the guard.
+  ```
 
-So the modder **overwrote the English slot with Thai** (play with language =
-English → see Thai), didn't add a new language, and repacked the whole forge. This
-gives a **parallel EN↔TH corpus** of the same package — the key RE lever.
+- id = `Id: [0x` + **8 uppercase hex** + `]`; ids are unique.
+- **Every value is exactly one line** — 0 multi-line, 0 empty in the whole file. A
+  literal newline inside a line is written as the markup token `<LF>` / `<CR>`, not
+  an actual break. (So parse is trivial: id line, one text line, blank.)
+- **Inline markup to protect (mask, never translate):**
+  - angle tags `<i> </i> <b> </b> <LF> <CR>` (shape-based, same family as `.acod`)
+  - square-bracket performance/audio cues: `[beat]`, `[&breath]`, `[&laughs]`,
+    `[/&laughs]` (closing form has `/`), `[sigh]`, `[&scoff]`, `[&gasp]` …
+- **Curly `{…}` is NOT a variable** here — it wraps a whole translatable line
+  (e.g. `{I am looking to hire a <i>misthios</i>.}`), and is very rare (2 in
+  33 787). Do **not** mask it away; keep the braces, translate the inside.
+- **No real printf** (`%s/%d`) in the corpus (`% g` seen is prose "…% g…"), so
+  printf masking should stay off for this engine to avoid eating prose `%`.
 
-## Format findings (from the EN↔TH parallel corpus)
+## The `ac-loctext` engine (implemented)
 
-`0-…_English_Subtitles.Localization_Package`: EN 404 717 B, TH 645 310 B.
+Slots into the existing text-engine pattern — **simpler than `forger_acod`**
+because the file is already UTF-8 (no Shift-JIS/UTF-16 re-encode). As shipped in
+`src-tauri/src/engine/ac_loctext.rs` (registered last in `engine::engines()`):
 
-- **Header:** first **37 bytes identical** across EN/TH. Magic `01 ED E0 6C`
-  (`u32 0x6CE0ED01`), then `u32 = 23`, a resource id (`00 6F 9C 3C 6E …`), and
-  small constants. Structural constants **identical in both** (so not text-derived):
-  `u32[12]=366`, `u32[16]=256`, `u32[28]=248`. The header u32s from offset ~36 on
-  differ (section pointers/sizes that grow with the larger TH payload).
-- **Character table (dictionary):** distinct characters are stored as `u16`
-  codepoints. EN uses **95** ASCII codepoints (`space..Z`, punctuation); TH uses
-  **125** Thai codepoints (the full `U+0E00–0E7F` block) plus ASCII. Adding Thai =
-  extending this table, which is a big chunk of the +240 KB growth.
-- **Strings = arrays of `u16` indices** into the character table (small values seen
-  right after the header: `2c 25 03 44 …`).
-- **String offset/id table:** a run of `u32` at ~offset 76 372 (EN) reads as pairs
-  of `u16`: the low half is a **sequential id/index** (`0x1970, 0x1971, 0x1972 …`),
-  the high half rises irregularly (`0x1A51, 0x1A59, 0x1A65 …`) — consistent with a
-  **cumulative offset / per-string length** table.
-- **`0xF0–0xFF` bytes dominate** the string-data region (EN has 132 596 bytes
-  `≥0xF0`) — very likely the **variable-length index encoding** (high-nibble escape
-  / run scheme) into the character table. Nailing this scheme is the crux.
+1. **detect** — content-based (extension `.txt` is generic): the file's **first
+   line** must be an `Id: [0x<8-hex>]` header. So a stray `.txt` never matches.
+2. **extract** — pairs each header with its following value line; `TransUnit`
+   pointer = the **UTF-8 byte span** (`"start:len"`) of the value, context = the
+   hex id, kind = Dialogue.
+3. **inject** — splices the translation into that byte span (unchanged unit =
+   byte-identical → round-trip identity is free, like Tyrano). Guards a stale
+   pointer / non-char-boundary instead of panicking.
+4. **protect** — `mask_ac_loctext`: shape-based `angle_tag_len` for `<…>`; masks
+   `[…]` cue brackets; **leaves `{…}` and `%` alone**. Mirrored in `src/codes.ts`
+   (`AC_LOCTEXT_RE`) + `src/messageWidth.ts` (`AC_LOCTEXT_CODE_RE`).
+5. Tests: `tests/ac_loctext_roundtrip.rs` (detect, "a plain .txt isn't claimed",
+   extract, byte-exact round-trip, targeted Thai inject) + inline engine/protect
+   tests + `ac_loctext_reexport_is_idempotent` in `tests/reexport_idempotent.rs`.
+   Full suite green (178), warning-free, `tsc` clean.
 
-## What's left (the crux)
-
-1. Pin the header section layout: where the char-table offset/count and the
-   string-table offset/count live (the differing u32s from ~offset 36).
-2. Decode the char table exactly (length, order — usage order vs sorted).
-3. Decode the `0xF0+` variable-length index encoding → recover each string's text.
-   Verify by round-tripping the EN file's decode against a known-good reference.
-4. **Encode**: rebuild table + re-index a translated string set → byte structure
-   the `DATA_Tool -i` (and the game) accept. This is the risk — a mismatch crashes
-   the game or drops text (the community warns of line-feed / missing-text bugs).
-
-Approach: use the parallel EN↔TH corpus — same string ids, different text — to
-align each id's index sequence in EN vs TH and infer the encoding, rather than
-guessing from one file.
+Font/glyph is **not** this engine's job — the game already renders Thai once the
+Thai codepoints are in the package (the existing mod proves it); no font embed
+needed on the app side for this path.
 
 ## Feasibility / decision
 
-🟡 **Crackable, but a real multi-session RE effort**, not a clean engine drop-in —
-it's effectively a mini re-implementation of the Delutto/aclocexport codec plus an
-encoder that doesn't exist publicly. If it lands, it becomes a heavy binary engine
-(its own module, not the byte-span text seam). Parked mid-way here; the parallel
-corpus and these findings are the restart point.
+🟢 **Easy engine, high value** — the hard part (binary codec) is done by the
+community tools; the app only owns a clean UTF-8 key/text format it already has
+the machinery for. External-tool dependency (Delutto + aclocexport/aclocimport)
+is the cost, same as the Forger path. This supersedes the binary-RE plan below.
+
+---
+
+## Appendix — binary `.Localization_Package` findings (not on the critical path)
+
+Kept only in case a future no-external-tool path is ever wanted. From the parallel
+EN↔TH corpus (`English_Subtitles`: EN 404 717 B, TH 645 310 B):
+
+- **Header:** first 36–37 bytes identical across EN/TH. Magic `01 ED E0 6C`
+  (`u32 0x6CE0ED01`), then `u32 = 23`, a resource id, small constants; structural
+  constants identical in both (`u32[12]=366`, `u32[16]=256`, `u32[28]=248`). Header
+  u32s from ~offset 36 differ (section pointers/sizes that grow with the payload).
+- **Char table (dictionary):** distinct characters as `u16` codepoints — EN 95
+  ASCII, TH 125 Thai (`U+0E00–0E7F`) + ASCII. TH's early bytes show Thai codepoints
+  big-endian (`0e32`=า, `0e19`=น, `0e07`=ง, `0e40`=เ, `0e48`=่).
+- **Strings = arrays of `u16` indices** into the char table.
+- **id/offset table** ~offset 76 372 (EN): `u16` pairs, low half a sequential id
+  (`0x1970,0x1971…`), high half a cumulative offset.
+- **`0xF0–0xFF` dominate** the string region (EN 132 596 bytes `≥0xF0`) — the
+  variable-length index encoding; decoding it was the unfinished crux. Not needed
+  now that the text bridge is confirmed.
 
 ## Reproduce / continue
 
-Samples on disk (this machine): `E:/Games/ac-loc/…English_Subtitles.Localization_Package`
-(EN) and `E:/Games/ac-mod-loc/…English_Subtitles.Localization_Package` (TH). The
-analysis scripts (`crack*.py`) live in the session scratchpad.
+- Confirmed text format: MOIX-1192 corpus repo (`aco-…English_Subtitles…txt`), and
+  the same shape holds for other AC titles in that repo.
+- Binary samples on disk (this machine): `E:/Games/ac-loc/…Localization_Package`
+  (EN) and `E:/Games/ac-mod-loc/…` (TH). Analysis scripts (`crack*.py`) in the
+  session scratchpad.
 
 ## See also
 
