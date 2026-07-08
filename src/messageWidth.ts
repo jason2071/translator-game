@@ -18,9 +18,9 @@ const RENPY_CODE_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}|⟦\d+⟧/g;
 const TYRANO_CODE_RE = /\\.|\[[^\]]*\]|⟦\d+⟧/g;
 // Godot: BBCode [tag], format braces, printf conversions, backslash escapes.
 const GODOT_CODE_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
-// Forger .acod: known-vocabulary angle tags, {variable}, [bracket] (no nesting),
-// printf (no space flag). No backslash. Mirrors engine::protect::mask_forger.
-const FORGER_CODE_RE = /<\s*\/?\s*(?:font|style|img|br|i|b|u)\b[^>]*>|\{[^{}]+\}|\[[^[\]]+\]|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
+// Forger .acod: shape-based angle tags (open vocabulary incl. <LF>), {variable},
+// [bracket] (no nesting), printf (no space flag). No backslash. Mirrors mask_forger.
+const FORGER_CODE_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\{[^{}]+\}|\[[^[\]]+\]|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_CODE_RE;

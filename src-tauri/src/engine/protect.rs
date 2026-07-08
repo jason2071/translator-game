@@ -235,22 +235,18 @@ pub fn mask_forger(input: &str) -> Masked {
     Masked { text, tokens }
 }
 
-/// The AnvilNext `.acod` inline-markup tag vocabulary (case-insensitive). The
-/// markup is a small fixed set, so [`angle_tag_len`] only masks a `<…>` run whose
-/// name is one of these — literal prose like `5 < 10` or `if x <low then flee>`
-/// stays visible to the model, while the malformed real-tag variants
-/// (`< font …>`, `<br/ >`) still match because their name is known.
-const FORGER_TAGS: &[&str] = &["font", "br", "style", "i", "b", "u", "img"];
-
-/// Byte length of a known-vocabulary `<…>` tag at the start of `s` (`s[0] == '<'`),
-/// honoring quoted attribute values that may contain `>`. Returns None when the
-/// `<` doesn't open a [`FORGER_TAGS`] tag (so a stray `<`, an emoticon `<3`,
-/// `5 < 10`, or `<low then flee>` stays literal) or the tag is unterminated.
+/// Byte length of an HTML-ish `<…>` tag at the start of `s` (`s[0] == '<'`),
+/// honoring quoted attribute values that may contain `>`. Recognises a tag by its
+/// *shape* rather than a fixed name list (real `.acod` files use tags like `<LF>`,
+/// `<font …>`, `<br/>`, `<img …/>` — an open vocabulary): after an optional `/` and
+/// spaces there must be an alphabetic name, and the run up to `>` must be either a
+/// bare token (`<LF>`, `<i>`, `<br/>`) or carry `=` attributes (`<font face='X'>`).
+/// Returns None for a stray `<`, an emoticon `<3`, `5 < 10`, or prose with bare
+/// words and no `=` (`<low then flee>` stays visible to the model), or an
+/// unterminated tag.
 fn angle_tag_len(s: &str) -> Option<usize> {
     let b = s.as_bytes();
     debug_assert_eq!(b[0], b'<');
-    // Optional closing slash, then optional spaces (malformed `< font`), then the
-    // alphabetic tag name — which must be in the known vocabulary.
     let mut k = 1;
     if k < b.len() && b[k] == b'/' {
         k += 1;
@@ -258,16 +254,18 @@ fn angle_tag_len(s: &str) -> Option<usize> {
     while k < b.len() && b[k] == b' ' {
         k += 1;
     }
-    let name_start = k;
-    while k < b.len() && b[k].is_ascii_alphabetic() {
-        k += 1;
-    }
-    let name = &s[name_start..k];
-    if name.is_empty() || !FORGER_TAGS.iter().any(|t| name.eq_ignore_ascii_case(t)) {
+    // Require an alphabetic tag name.
+    if k >= b.len() || !b[k].is_ascii_alphabetic() {
         return None;
     }
-    // Scan to the closing `>`, honoring quoted attribute values that contain `>`.
-    let mut i = 1;
+    while k < b.len() && b[k].is_ascii_alphanumeric() {
+        k += 1;
+    }
+    // Scan to `>`, quote-aware, deciding tag vs prose: attributes (`=`) prove a
+    // tag; bare words with no `=` before `>` mean it's prose, not markup.
+    let mut i = k;
+    let mut has_eq = false;
+    let mut has_bare_word = false;
     while i < b.len() {
         match b[i] {
             q @ (b'"' | b'\'') => {
@@ -279,8 +277,22 @@ fn angle_tag_len(s: &str) -> Option<usize> {
                     i += 1; // closing quote
                 }
             }
-            b'>' => return Some(i + 1),
-            _ => i += 1,
+            b'>' => {
+                return if has_eq || !has_bare_word {
+                    Some(i + 1)
+                } else {
+                    None
+                };
+            }
+            b'=' => {
+                has_eq = true;
+                i += 1;
+            }
+            c if c.is_ascii_alphanumeric() => {
+                has_bare_word = true;
+                i += 1;
+            }
+            _ => i += 1, // space, `/`, punctuation — neutral
         }
     }
     None // unterminated `<…`
@@ -636,11 +648,12 @@ mod tests {
             "Press <img src='button_a'/> to continue",
             "Costs %d drachmae (%s).",
             "Deal 50% off damage.", // "% o" is not a code — bare percent
+            "since 1860.<LF> <LF>One of their main challenges", // real AC line-break tag
             // Malformed real tags a human translator left behind must round-trip;
-            // a truncated `</f` (unknown name) simply stays literal.
+            // a truncated `</f` (prose-shaped) simply stays literal.
             "broken</f</font> and < font face='X'>tag",
             "An emoticon <3 and math 5 < 10 stay literal.",
-            "Warn if x <low then flee> now.", // <low> is not a known tag
+            "Warn if x <low then flee> now.", // prose, not a tag
             "No markup here at all.",
             "",
         ];
@@ -652,14 +665,15 @@ mod tests {
     }
 
     #[test]
-    fn forger_masks_known_tags_but_not_prose() {
-        let m = mask_forger("<i>Go</i> to {Place}, 50% there, [X]!");
-        assert_eq!(m.tokens, vec!["<i>", "</i>", "{Place}", "[X]"]);
-        assert!(!m.text.contains('<'), "known tags hidden from the model");
-        // Literal angle-bracket prose (unknown tag name) is NOT masked, so the
-        // words stay visible to the model and get translated.
+    fn forger_masks_tag_shapes_but_not_prose() {
+        // Bare-token tags (any name, incl. AC's <LF>), and attribute tags, mask.
+        let m = mask_forger("<LF><i>Go</i> to {Place}, 50% there, [X]!");
+        assert_eq!(m.tokens, vec!["<LF>", "<i>", "</i>", "{Place}", "[X]"]);
+        assert!(!m.text.contains('<'), "tag shapes hidden from the model");
+        // Prose with bare words and no `=` is NOT masked, so it stays visible and
+        // gets translated.
         let prose = mask_forger("if x <low then flee> now");
-        assert!(prose.is_plain(), "unknown-tag prose must not mask: {:?}", prose.text);
+        assert!(prose.is_plain(), "prose-shaped <…> must not mask: {:?}", prose.text);
         // A bare `<` (emoticon) and `50% off` (space + conversion letter) stay text.
         assert!(mask_forger("I <3 it, 50% off").is_plain());
     }
