@@ -251,38 +251,77 @@ Ubisoft_Forge_Tool.exe -i DataPC.forge DataPC
 
 ---
 
-## ตัวอย่างจริง — Uplay install (command → OUTPUT ทุกขั้น)
+## ตัวอย่างจริง — Uplay install (copy-paste ทีละ step)
 
-game dir (Uplay): `C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Assassin's Creed Origins`
-forge หลักที่มี localization = **`DataPC.forge`**. Package numbers (คอนเฟิร์มจาก corpus):
-**`393`** = English_Subtitles (บทพูด), **`401`** = English (UI/เมนู).
+Package numbers (คอนเฟิร์มจาก corpus): **`393`** = English_Subtitles (บทพูด),
+**`401`** = English (UI/เมนู). ⚠️ ทำใน work dir แยก (อย่าแตะ Program Files ตรงๆ).
 
-⚠️ **อย่าทำใน Program Files** (ต้อง admin + เสี่ยง) — copy forge ไปทำที่ work dir แยก
-
+**Step 0 — ตั้ง path ครั้งเดียว** (copy ทั้งก้อน วางใน PowerShell — step อื่นใช้ตัวแปรนี้):
 ```powershell
-# ── SETUP: copy forge ไป work dir (ต้นฉบับปลอดภัย) ──
-mkdir "E:\Games\ac-work"
-copy "C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Assassin's Creed Origins\DataPC.forge" "E:\Games\ac-work\"
+$game  = "C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Assassin's Creed Origins"
+$work  = "E:\Games\ac-work"
+$tools = "E:\Games\Tools"
+$data  = "$work\DataPC\393-LocalizationPackage_English_Subtitles.data"
+$pkg   = "$work\393_sub\393-LocalizationPackage_English_Subtitles\0-LocalizationPackage_English_Subtitles.Localization_Package"
+mkdir $work -Force; copy "$game\DataPC.forge" $work
 ```
 
-| # | Command | OUTPUT |
-|---|---------|--------|
-| 1 | `cd "E:\Games\Tools\Ubisoft_Forge_Tool_By_Delutto"`<br>`.\Ubisoft_Forge_Tool.exe -e "E:\Games\ac-work\DataPC.forge" "E:\Games\ac-work\DataPC"` | โฟลเดอร์ `E:\Games\ac-work\DataPC\` มี `.data` เพียบ (รวม `393-LocalizationPackage_English_Subtitles.data`) |
-| 2 | `cd "E:\Games\Tools\Ubisoft_DATA_Tool_By_Delutto"`<br>`.\Ubisoft_DATA_Tool.exe 11 -e "E:\Games\ac-work\DataPC\393-LocalizationPackage_English_Subtitles.data" "E:\Games\ac-work\393_sub"` | `E:\Games\ac-work\393_sub\0-LocalizationPackage_English_Subtitles.Localization_Package` |
-| 3 | `cd "E:\Games\Tools\aclocalizationpackagetool"`<br>`.\aclocexport.exe "E:\Games\ac-work\393_sub\0-LocalizationPackage_English_Subtitles.Localization_Package"` | `…\393_sub\0-…Localization_Package.txt` ← **ได้ .txt** |
-| 4 | เปิดแอป → open folder `E:\Games\ac-work\393_sub` → แปล → Export | `.txt` ที่แปลแล้ว (ทับที่เดิม) |
-| 5 | `cd "E:\Games\Tools\aclocalizationpackagetool"`<br>`.\aclocimport.exe "E:\Games\ac-work\393_sub\0-…Localization_Package.txt"` | `…\0-…Localization_Package.txt.out` → **rename ทับ** `0-…Localization_Package` เดิม |
-| 6 | `.\Ubisoft_DATA_Tool.exe 11 -i "E:\Games\ac-work\DataPC\393-…English_Subtitles.data" "E:\Games\ac-work\393_sub"` | `…\DataPC\393-…Subtitles.data.NEW` → **rename ทับ** `.data` เดิม |
-| 7 | `.\Ubisoft_Forge_Tool.exe -i "E:\Games\ac-work\DataPC.forge" "E:\Games\ac-work\DataPC"` | `E:\Games\ac-work\DataPC.forge.NEW` → **rename เป็น** `DataPC.forge` |
-| 8 | copy `DataPC.forge` กลับ game folder (ทับ — ต้นฉบับ backup แล้ว) → เล่น ภาษา=English | เห็นไทย |
+**Step 1 — forge → .data**
+```powershell
+& "$tools\Ubisoft_Forge_Tool_By_Delutto\Ubisoft_Forge_Tool.exe" -e "$work\DataPC.forge" "$work\DataPC"
+```
+→ `$work\DataPC\` เต็มไปด้วย `.data`
 
-- **ทำ UI/เมนูด้วย:** ทำ #2–#7 ซ้ำกับ `401-LocalizationPackage_English.data`
-- ถ้าเลข `393`/`401` ไม่ตรงหลัง #1 → หาไฟล์ชื่อ `*LocalizationPackage_English_Subtitles.data`
+**Step 2 — .data → .Localization_Package**
+```powershell
+& "$tools\Ubisoft_DATA_Tool_By_Delutto\Ubisoft_DATA_Tool.exe" 11 -e $data "$work\393_sub"
+```
+→ ได้ไฟล์ที่ `$pkg` (DATA_Tool ซ้อน folder อีกชั้น — `$pkg` ชี้ครบแล้ว)
+
+**Step 3 — .Localization_Package → .txt** ← ขั้นที่ทำ `.txt`
+```powershell
+& "$tools\aclocalizationpackagetool\aclocexport.exe" $pkg
+```
+→ ได้ `$pkg` + `.txt`
+
+**Step 4 — แปลในแอป**
+เปิดแอป → open folder `$work\393_sub\393-LocalizationPackage_English_Subtitles` → แปล → Export
+(`.txt` แปลแล้วทับที่เดิม)
+
+**Step 5 — .txt → binary (ห่อกลับ)**
+```powershell
+& "$tools\aclocalizationpackagetool\aclocimport.exe" "$pkg.txt"
+copy "$pkg.txt.out" $pkg -Force
+```
+→ `.txt.out` เขียนทับ `.Localization_Package` เดิม
+
+**Step 6 — binary → .data**
+```powershell
+& "$tools\Ubisoft_DATA_Tool_By_Delutto\Ubisoft_DATA_Tool.exe" 11 -i $data "$work\393_sub"
+copy "$data.NEW" $data -Force
+```
+→ `.data.NEW` เขียนทับ `.data`
+
+**Step 7 — .data → forge**
+```powershell
+& "$tools\Ubisoft_Forge_Tool_By_Delutto\Ubisoft_Forge_Tool.exe" -i "$work\DataPC.forge" "$work\DataPC"
+```
+→ ได้ `$work\DataPC.forge.NEW`
+
+**Step 8 — ติดตั้ง + เล่น**
+```powershell
+copy "$work\DataPC.forge.NEW" "$game\DataPC.forge" -Force
+```
+→ เปิดเกม ตั้งภาษา = **English** → เห็นไทย
+
+> - **ทำ UI/เมนูด้วย:** ทำ Step 2–7 ซ้ำ เปลี่ยน `393` → `401` (`English.data`)
+> - เลขไม่ตรงหลัง Step 1 → หาไฟล์ชื่อ `*LocalizationPackage_English_Subtitles.data` ใน `$work\DataPC\`
 
 ## แก้ปัญหา
 
 | อาการ | สาเหตุ / วิธีแก้ |
 |-------|----------------|
+| `aclocexport # File open error` | path ผิด — DATA_Tool export **ซ้อน folder อีกชั้น** (`393_sub\393-Localization…\0-….Localization_Package`) → ใส่ path ให้ครบชั้น (ตัวแปร `$pkg` ชี้ถูกแล้ว) |
 | แอป detect ไม่เจอ | ไฟล์ต้องขึ้นต้นบรรทัดแรกด้วย `Id: [0x……]` — ถ้าไม่ใช่ แสดงว่า aclocexport ยังไม่เสร็จ/ผิดไฟล์ |
 | ไทยขึ้น □□□ ในเกม | font ไม่มี glyph ไทย → ดูหัวข้อ Font |
 | เกม crash / ข้อความหาย | ห่อกลับผิดชั้น หรือ import ผิด GameCode (ต้อง `11` สำหรับ Origins) → เอา backup มาวางคืน แล้วทำใหม่ |
