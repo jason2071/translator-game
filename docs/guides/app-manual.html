@@ -79,7 +79,6 @@
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 30px -14px rgba(0,0,0,.6);
   }
 
-  * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
     font-family: var(--sans); line-height: 1.68; font-size: 16px;
@@ -155,6 +154,8 @@
     background: var(--accent-soft); border: 1px solid var(--accent-line);
     padding: 1px 9px; border-radius: 7px; font-weight: 600; flex: none; }
   h3 { font-size: 16.5px; margin: 26px 0 8px; font-weight: 700; color: var(--text); }
+  h4.lbl { font-size: 14px; margin: 18px 0 4px; color: var(--muted);
+    font-family: var(--mono); font-weight: 600; letter-spacing: .04em; }
   .sub { color: var(--muted); margin: 0 0 18px; font-size: 15px; }
   p { margin: 12px 0; }
   ul, ol { margin: 12px 0; padding-left: 22px; }
@@ -176,18 +177,6 @@
   }
   code { font-family: var(--mono); font-size: .88em; background: var(--code-bg);
     border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; color: var(--accent-ink); }
-  pre { margin: 0; }
-  pre code { display: block; background: none; border: none; padding: 0; color: var(--text); }
-
-  /* code / path block with copy */
-  .block { position: relative; background: var(--code-bg); border: 1px solid var(--border);
-    border-radius: 10px; padding: 14px 16px; margin: 12px 0; overflow-x: auto;
-    font-family: var(--mono); font-size: 13px; line-height: 1.6; }
-  .copy { position: absolute; top: 8px; right: 8px; font-family: var(--sans);
-    font-size: 11.5px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
-    background: var(--surface); border: 1px solid var(--border-strong); color: var(--muted); }
-  .copy:hover { color: var(--accent-ink); border-color: var(--accent); }
-
   /* step list (quick start) */
   ol.steps { list-style: none; padding: 0; counter-reset: step; margin: 22px 0; }
   ol.steps > li {
@@ -199,14 +188,9 @@
     width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
     background: var(--accent); color: #fff; font-family: var(--mono);
     font-size: 13px; font-weight: 600; }
-  :root[data-theme="dark"] ol.steps > li::before,
-  ol.steps > li::before { color: #fff; }
   ol.steps b { display: block; margin-bottom: 2px; }
 
-  /* cards / callouts */
-  .card { background: var(--surface); border: 1px solid var(--border);
-    border-radius: 12px; padding: 18px 20px; margin: 16px 0; box-shadow: var(--shadow); }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  /* callouts */
   .callout { border-radius: 10px; padding: 13px 16px 13px 44px; margin: 16px 0;
     position: relative; font-size: 14.5px; border: 1px solid var(--border); background: var(--surface-2); }
   .callout::before { position: absolute; left: 15px; top: 12px; font-size: 16px; }
@@ -248,7 +232,6 @@
       border-bottom: 1px solid var(--border); padding: 20px; }
     .toc-ver { display: none; }
     .content { padding: 0 20px 80px; }
-    .grid2 { grid-template-columns: 1fr; }
     h1 { font-size: 28px; }
   }
   @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
@@ -476,7 +459,7 @@
           <li><span class="ui">API key</span> — ทุก provider <b>ยกเว้น Local</b>. password + <span class="ui">Save</span> / <span class="ui">Clear</span>. เก็บใน OS keychain, ไม่เก็บใน browser</li>
         </ul>
 
-        <h4 style="font-size:14px;margin:18px 0 4px;color:var(--muted);font-family:var(--mono)">DEFAULT MODELS</h4>
+        <h4 class="lbl">DEFAULT MODELS</h4>
         <div class="tbl-wrap"><table>
           <tr><th>Provider</th><th>Default model</th></tr>
           <tr><td>OpenAI</td><td><code>gpt-4o-mini</code></td></tr>
@@ -667,22 +650,6 @@
       });
     }, { rootMargin: '-10% 0px -80% 0px', threshold: 0 });
     document.querySelectorAll('section[id]').forEach(function (s) { io.observe(s); });
-  })();
-
-  // copy buttons on code/path blocks
-  (function () {
-    document.querySelectorAll('.block').forEach(function (block) {
-      var b = document.createElement('button');
-      b.className = 'copy'; b.textContent = 'copy';
-      b.addEventListener('click', function () {
-        var code = block.querySelector('code') || block;
-        navigator.clipboard.writeText(code.innerText.trim()).then(function () {
-          b.textContent = 'copied ✓';
-          setTimeout(function () { b.textContent = 'copy'; }, 1400);
-        });
-      });
-      block.appendChild(b);
-    });
   })();
 </script>
 </body>
