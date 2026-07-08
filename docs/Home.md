@@ -22,10 +22,17 @@ and an Obsidian vault; start here.
   **engine-adding pattern**.
 - [[QA-TEST-PLAN]] — manual + automated QA test plan.
 
+## Guides
+
+- [[guides]] — step-by-step how-to walkthroughs (extract → translate → repack).
+  - [[translate-ac-origins]] — แปล Assassin's Creed Origins end-to-end with the
+    `ac-loctext` engine + the external Forge/DATA/aclocexport tools.
+
 ## Research
 
 - [[games]] — game-translation research index (per-game / per-engine deep dives).
   - [[anvilnext-forger]] — Assassin's Creed (Origins/Odyssey/Valhalla) via Forger `.acod`; research + phased implementation plan for a `forger_acod` engine.
+  - [[anvilnext-locpackage-format]] — AC Origins `.Localization_Package` → aclocexport text bridge (the `ac-loctext` engine).
 
 ## Conventions (Obsidian best practice)
 
