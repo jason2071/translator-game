@@ -178,8 +178,10 @@ fn printf_len(s: &str) -> Option<usize> {
     if j < b.len() && b[j] == b'$' && j > i {
         i = j + 1;
     }
-    // Flags, width, precision.
-    while i < b.len() && matches!(b[i], b'-' | b'+' | b' ' | b'0' | b'#') {
+    // Flags, width, precision. The space flag (`% d`) is intentionally excluded:
+    // game/localization text uses "50% off" far more than a space-flagged
+    // conversion, and masking "% o" would split the following word.
+    while i < b.len() && matches!(b[i], b'-' | b'+' | b'0' | b'#') {
         i += 1;
     }
     while i < b.len() && b[i].is_ascii_digit() {
@@ -233,22 +235,38 @@ pub fn mask_forger(input: &str) -> Masked {
     Masked { text, tokens }
 }
 
-/// Byte length of an HTML-ish `<…>` tag at the start of `s` (`s[0] == '<'`),
+/// The AnvilNext `.acod` inline-markup tag vocabulary (case-insensitive). The
+/// markup is a small fixed set, so [`angle_tag_len`] only masks a `<…>` run whose
+/// name is one of these — literal prose like `5 < 10` or `if x <low then flee>`
+/// stays visible to the model, while the malformed real-tag variants
+/// (`< font …>`, `<br/ >`) still match because their name is known.
+const FORGER_TAGS: &[&str] = &["font", "br", "style", "i", "b", "u", "img"];
+
+/// Byte length of a known-vocabulary `<…>` tag at the start of `s` (`s[0] == '<'`),
 /// honoring quoted attribute values that may contain `>`. Returns None when the
-/// `<` doesn't begin a plausible tag — the next non-space char isn't a letter or
-/// `/` (so a stray `<`, an emoticon `<3`, or `5 < 10` stays literal) — or the tag
-/// is unterminated.
+/// `<` doesn't open a [`FORGER_TAGS`] tag (so a stray `<`, an emoticon `<3`,
+/// `5 < 10`, or `<low then flee>` stays literal) or the tag is unterminated.
 fn angle_tag_len(s: &str) -> Option<usize> {
     let b = s.as_bytes();
     debug_assert_eq!(b[0], b'<');
-    // Require a tag-ish start after any spaces (`<font`, `</font`, `< font`).
+    // Optional closing slash, then optional spaces (malformed `< font`), then the
+    // alphabetic tag name — which must be in the known vocabulary.
     let mut k = 1;
+    if k < b.len() && b[k] == b'/' {
+        k += 1;
+    }
     while k < b.len() && b[k] == b' ' {
         k += 1;
     }
-    if k >= b.len() || !(b[k].is_ascii_alphabetic() || b[k] == b'/') {
+    let name_start = k;
+    while k < b.len() && b[k].is_ascii_alphabetic() {
+        k += 1;
+    }
+    let name = &s[name_start..k];
+    if name.is_empty() || !FORGER_TAGS.iter().any(|t| name.eq_ignore_ascii_case(t)) {
         return None;
     }
+    // Scan to the closing `>`, honoring quoted attribute values that contain `>`.
     let mut i = 1;
     while i < b.len() {
         match b[i] {
@@ -617,9 +635,12 @@ mod tests {
             "<style name='Objective'>Reach [Waypoint]</style>",
             "Press <img src='button_a'/> to continue",
             "Costs %d drachmae (%s).",
-            // Malformed tags a human translator left behind must still round-trip.
+            "Deal 50% off damage.", // "% o" is not a code — bare percent
+            // Malformed real tags a human translator left behind must round-trip;
+            // a truncated `</f` (unknown name) simply stays literal.
             "broken</f</font> and < font face='X'>tag",
             "An emoticon <3 and math 5 < 10 stay literal.",
+            "Warn if x <low then flee> now.", // <low> is not a known tag
             "No markup here at all.",
             "",
         ];
@@ -631,14 +652,16 @@ mod tests {
     }
 
     #[test]
-    fn forger_masks_markup_but_not_bare_lt_or_percent() {
+    fn forger_masks_known_tags_but_not_prose() {
         let m = mask_forger("<i>Go</i> to {Place}, 50% there, [X]!");
         assert_eq!(m.tokens, vec!["<i>", "</i>", "{Place}", "[X]"]);
-        assert!(!m.text.contains('<'), "tags hidden from the model");
-        // A bare `<` (emoticon) and a bare `%` (percent + non-conversion letter)
-        // are not markup. ("50% yes" — `% y` is not a printf conversion.)
-        let plainish = mask_forger("I <3 it, 50% yes");
-        assert!(plainish.is_plain(), "bare < and % must not mask: {:?}", plainish.text);
+        assert!(!m.text.contains('<'), "known tags hidden from the model");
+        // Literal angle-bracket prose (unknown tag name) is NOT masked, so the
+        // words stay visible to the model and get translated.
+        let prose = mask_forger("if x <low then flee> now");
+        assert!(prose.is_plain(), "unknown-tag prose must not mask: {:?}", prose.text);
+        // A bare `<` (emoticon) and `50% off` (space + conversion letter) stay text.
+        assert!(mask_forger("I <3 it, 50% off").is_plain());
     }
 
     #[test]

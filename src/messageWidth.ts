@@ -17,9 +17,10 @@ const RENPY_CODE_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}|⟦\d+⟧/g;
 // TyranoScript / KiriKiri KAG: [tags], backslash escapes.
 const TYRANO_CODE_RE = /\\.|\[[^\]]*\]|⟦\d+⟧/g;
 // Godot: BBCode [tag], format braces, printf conversions, backslash escapes.
-const GODOT_CODE_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+ 0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
-// Forger .acod: HTML-ish angle tags, {variable}, [bracket], printf. No backslash.
-const FORGER_CODE_RE = /<\s*[A-Za-z/][^>]*>|\{[^{}]+\}|\[[^\]]+\]|%(?:\d+\$)?[-+ 0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
+const GODOT_CODE_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
+// Forger .acod: known-vocabulary angle tags, {variable}, [bracket] (no nesting),
+// printf (no space flag). No backslash. Mirrors engine::protect::mask_forger.
+const FORGER_CODE_RE = /<\s*\/?\s*(?:font|style|img|br|i|b|u)\b[^>]*>|\{[^{}]+\}|\[[^[\]]+\]|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_CODE_RE;

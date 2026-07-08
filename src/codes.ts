@@ -10,12 +10,13 @@ const RENPY_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}/g;
 // TyranoScript / KiriKiri KAG: [tags] (inline and block) and backslash escapes.
 const TYRANO_RE = /\\.|\[[^\]]*\]/g;
 // Godot: BBCode [tag], String.format braces {0}/{name}, printf %s/%d/%.2f/%1$s,
-// and backslash escapes.
-const GODOT_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+ 0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%/g;
-// Forger .acod: HTML-ish angle tags <font …>/</font>/<br/>/<img …/> (letter or /
-// after the <, so a bare < or "5 < 10" isn't a code), {variable}, [bracket], and
-// printf %s/%d. No backslash escapes.
-const FORGER_RE = /<\s*[A-Za-z/][^>]*>|\{[^{}]+\}|\[[^\]]+\]|%(?:\d+\$)?[-+ 0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%/g;
+// and backslash escapes. (No space flag: "50% off" is prose, not `% o`.)
+const GODOT_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%/g;
+// Forger .acod: HTML-ish angle tags from the known vocabulary (font/style/img/br/
+// i/b/u), so literal prose like "5 < 10" or "<low then flee>" isn't a code;
+// {variable}, [bracket] (no nesting, mirroring the backend), and printf %s/%d.
+// No backslash escapes. Mirrors engine::protect::mask_forger.
+const FORGER_RE = /<\s*\/?\s*(?:font|style|img|br|i|b|u)\b[^>]*>|\{[^{}]+\}|\[[^[\]]+\]|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_RE;

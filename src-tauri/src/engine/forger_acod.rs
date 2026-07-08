@@ -101,7 +101,11 @@ impl GameEngine for ForgerAcodEngine {
             for u in file_units {
                 let (start, len) = parse_pointer(&u.pointer)
                     .ok_or_else(|| anyhow!("bad .acod pointer {} in {}", u.pointer, file))?;
-                if start + len > text.len() {
+                // Guard the range AND its char boundaries: if the file changed
+                // since extract, an in-range pointer can still land mid-UTF-8-char,
+                // which would panic `replace_range` instead of failing gracefully.
+                let end = start + len;
+                if end > text.len() || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
                     return Err(anyhow!(
                         "stale pointer {} in {} — re-extract needed",
                         u.pointer,
@@ -127,20 +131,29 @@ impl GameEngine for ForgerAcodEngine {
 /// string table (UTF-16LE BOM + at least one `HEXID=` line), not just any file
 /// with that extension.
 fn is_forger_acod(root: &Path) -> bool {
-    collect_acod(root).iter().any(|p| {
-        std::fs::read(p)
-            .map(|b| looks_like_acod(&b))
-            .unwrap_or(false)
-    })
+    collect_acod(root).iter().any(|p| looks_like_acod(p))
 }
 
-/// True if `bytes` begin with the UTF-16LE BOM and, once decoded, contain at least
-/// one `HEXID=` record line.
-fn looks_like_acod(bytes: &[u8]) -> bool {
-    if !bytes.starts_with(&[0xFF, 0xFE]) {
+/// True if `path` begins with the UTF-16LE BOM and, within its first few KB,
+/// contains at least one `HEXID=` record line. Only a prefix is read/decoded —
+/// the first record sits right after the BOM, so there's no need to slurp a
+/// multi-MB table just to fingerprint it (this runs up to 3× per file on open).
+fn looks_like_acod(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = [0u8; 8192];
+    let Ok(n) = f.read(&mut buf) else {
+        return false;
+    };
+    let buf = &buf[..n];
+    if !buf.starts_with(&[0xFF, 0xFE]) {
         return false;
     }
-    let content = encoding::decode(bytes, encoding::Enc::Utf16Le);
+    // The first record sits right after the BOM, well inside the prefix, so a
+    // `HEXID=` line always appears even if the read truncated a later one.
+    let content = encoding::decode(buf, encoding::Enc::Utf16Le);
     content.lines().any(|l| key_value_start(l).is_some())
 }
 
