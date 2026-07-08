@@ -64,7 +64,7 @@ function isZeroWidth(cp: number): boolean {
 }
 
 /** Roughly the on-screen width of one line, in half-width character units. */
-export function displayWidth(line: string, engineId?: string | null): number {
+function displayWidth(line: string, engineId?: string | null): number {
   let w = 0;
   for (const ch of line.replace(codeRe(engineId), "")) {
     const cp = ch.codePointAt(0)!;

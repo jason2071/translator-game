@@ -51,8 +51,7 @@ end-to-end through Ollama (inline tags + `[emb]` survive mask/restore).
 
 Known gaps (follow-up): `#name` written as literal display text (games without
 `[chara_new]`) is context-only, not translated; `*label|caption` save titles and
-`[ptext]`/`[ruby]` attributes not extracted; MessagePreview still renders raw KAG
-tags (RPGMaker-flavored preview, same as Ren'Py today).
+`[ptext]`/`[ruby]` attributes not extracted.
 
 ## Done: KiriKiri (KAG) — `engine/kirikiri.rs` + `engine/encoding.rs`
 KiriKiri is the JP visual-novel engine TyranoScript's KAG tag syntax descends
@@ -116,9 +115,7 @@ see below).
   count is right (done on `engine-tyrano`). Still RPGMaker-tuned in *default*: the
   fixed 46-char guard over-warns for VN engines that auto word-wrap (Ren'Py, Tyrano).
   Remaining: default `maxLineWidth` to 46 for RPGMaker and 0/high for VN engines
-  (per `project.engineId`) in the import flow. Also: MessagePreview `renderLine`
-  only tokenizes RPGMaker `\`-codes, so Ren'Py/Tyrano bracket codes render literally
-  — make it engine-aware for a true preview.
+  (per `project.engineId`) in the import flow.
 - **Tier 3 robustness**: no frontend tests exist (add vitest + RTL for store /
   translation queue / UnitRow); add a `translate_units` orchestrator test (tauri
   mock runtime); add a CI **build+test on push/PR** workflow (CI today only does
@@ -143,7 +140,7 @@ see below).
   round-trip mismatches; bare code/asset strings NOT extracted.
 - `cargo run --example harness -- ai <game> translategemma:12b <n>` → real
   translation with inline codes preserved through mask/restore.
-- In-app: open a real game → detect the engine → Run a batch → Preview → Export.
+- In-app: open a real game → detect the engine → Run a batch → Export.
 - Release: bump `package.json` + `src-tauri/Cargo.toml` + `Cargo.lock` +
   `src-tauri/tauri.conf.json`, tag `vX.Y.Z`, push tag → CI publishes installers +
   portable + signed `latest.json`.

@@ -7,7 +7,6 @@ import { overflowLines } from "../messageWidth";
 import { codesMismatch } from "../codes";
 import { statusColor } from "../status";
 import { Icon } from "./Icon";
-import { MessagePreview } from "./MessagePreview";
 
 // Kinds shown in a fixed-width message/choice box, where a too-long line
 // overflows on screen. Other kinds (names, descriptions) have looser layouts.
@@ -31,7 +30,6 @@ export const UnitRow = memo(function UnitRow({
   const enqueue = useTranslation((s) => s.enqueue);
   const unitsBusy = useTranslation((s) => s.units.phase !== "idle");
   const [value, setValue] = useState(unit.translation ?? "");
-  const [showPreview, setShowPreview] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -126,25 +124,6 @@ export const UnitRow = memo(function UnitRow({
           >
             ⚠ line too long ({overflow.map((o) => o.width).join(", ")}/{maxLineWidth})
           </span>
-        )}
-        {boxed && value && (
-          <button
-            type="button"
-            className="preview-toggle"
-            aria-pressed={showPreview}
-            title="Preview in a message box"
-            onClick={() => setShowPreview((p) => !p)}
-          >
-            <Icon name="eye" size={13} /> {showPreview ? "Hide preview" : "Preview"}
-          </button>
-        )}
-        {boxed && showPreview && value && (
-          <MessagePreview
-            text={value}
-            speaker={unit.kind === "Dialogue" ? unit.context : null}
-            maxWidth={maxLineWidth}
-            engineId={engineId}
-          />
         )}
         <button
           type="button"
