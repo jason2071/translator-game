@@ -17,6 +17,10 @@ ui/
 # workspace layout, and cache; not shared. The Markdown notes are still tracked.
 .obsidian/
 
+# graphify knowledge-graph output (generated locally — HTML/JSON viz, cache,
+# manifest, cost tracker). Regenerate with `/graphify .`; not shared state.
+graphify-out/
+
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/
