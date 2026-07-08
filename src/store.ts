@@ -65,6 +65,16 @@ let winReq = 0;
 // pauses — avoiding a write per keystroke and out-of-order IPC clobbering.
 let gameCtxTimer: ReturnType<typeof setTimeout> | undefined;
 
+// Coalesce stats refreshes during a live Run. applyUnitUpdates fires once per
+// batch, and getStats runs a full `GROUP BY status` over EVERY unit — cheap once,
+// but on a ~1M-unit project, doing it several times a second is a real tax that
+// makes each batch heavier and holds a reader open against WAL checkpointing.
+// Throttle to at most one refresh per window (trailing): the grid rows still
+// patch live (that's a separate set), only the count query is coalesced. The
+// exact final counts are restored by TranslateBar's post-run refreshMeta().
+const STATS_THROTTLE_MS = 500;
+let statsTimer: ReturnType<typeof setTimeout> | undefined;
+
 const EMPTY_WINDOW: UnitWindow = { offset: 0, rows: [] };
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -96,6 +106,10 @@ export const useStore = create<AppStore>((set, get) => ({
   closeProject: async () => {
     // Cancel any pending game-context write so it can't land on the next project.
     if (gameCtxTimer) clearTimeout(gameCtxTimer);
+    if (statsTimer) {
+      clearTimeout(statsTimer);
+      statsTimer = undefined;
+    }
     await api.closeProject();
     useGlossarySuggest.getState().reset();
     useErrors.getState().reset();
@@ -238,6 +252,12 @@ export const useStore = create<AppStore>((set, get) => ({
       return u;
     });
     if (changed) set({ window: { ...win, rows } });
-    void get().refreshStats();
+    // Throttled: don't run the full stats scan on every batch (see STATS_THROTTLE_MS).
+    if (!statsTimer) {
+      statsTimer = setTimeout(() => {
+        statsTimer = undefined;
+        void get().refreshStats();
+      }, STATS_THROTTLE_MS);
+    }
   },
 }));

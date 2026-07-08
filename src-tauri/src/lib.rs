@@ -739,6 +739,7 @@ async fn translate_units(
 
     let mut first = true;
     let mut base = 0usize; // index of the chunk's first group within to_ai
+    let mut batch_no = 0usize; // for the periodic WAL checkpoint below
     let mut last_error: Option<String> = None; // first transport-level failure
     for chunk in to_ai.chunks(batch_size) {
         if state.cancel.load(Ordering::SeqCst) {
@@ -926,6 +927,17 @@ async fn translate_units(
             },
         );
         base += chunk.len();
+
+        // Fold the WAL back periodically so a long Run's continuous writes don't
+        // bloat the -wal file (which slows every read that must scan it). PASSIVE
+        // won't block, and this holds the lock only for the checkpoint — no await.
+        batch_no += 1;
+        if batch_no % 32 == 0 {
+            let guard = state.project.lock().unwrap();
+            if let Some(proj) = guard.as_ref() {
+                let _ = project::db::wal_checkpoint(&proj.conn);
+            }
+        }
     }
 
     summary.error = last_error;

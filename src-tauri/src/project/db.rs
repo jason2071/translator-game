@@ -11,6 +11,9 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"
         PRAGMA journal_mode = WAL;
+        -- Fold the WAL back sooner (default 1000 pages) so a long write-heavy Run
+        -- doesn't let the -wal file grow large and slow every read that scans it.
+        PRAGMA wal_autocheckpoint = 400;
 
         CREATE TABLE IF NOT EXISTS unit (
             id          INTEGER PRIMARY KEY,
@@ -234,6 +237,15 @@ pub fn update_unit(conn: &Connection, id: i64, translation: Option<&str>, status
         "UPDATE unit SET translation = ?1, status = ?2 WHERE id = ?3",
         params![translation, status, id],
     )?;
+    Ok(())
+}
+
+/// Fold the WAL back into the main DB file. Called periodically during a long
+/// Run so the `-wal` file doesn't bloat over thousands of continuous writes
+/// (which slows every read that must scan it). PASSIVE never blocks on a reader,
+/// so it's safe to call mid-Run; it simply does as much as it can and returns.
+pub fn wal_checkpoint(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
     Ok(())
 }
 
