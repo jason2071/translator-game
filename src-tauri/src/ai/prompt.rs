@@ -230,6 +230,54 @@ pub fn build_glossary_classify(
     (sys, user)
 }
 
+/// Map a per-project **era preset** to a register directive for the system prompt.
+/// Returns `None` for an unset/unknown era (so the caller adds nothing). When the
+/// target is Thai, the era's pronoun set is appended — that is the register cue
+/// that matters most in Thai (ข้า/เจ้า vs ฉัน/คุณ), so even a weak local model
+/// picks the period-appropriate pronoun instead of defaulting to modern casual.
+pub fn era_directive(era: &str, target_lang: &str) -> Option<String> {
+    let (desc, thai): (&str, &str) = match era.trim() {
+        "ancient" => (
+            "ancient / epic (e.g. ancient Egypt, Greece, Rome) — archaic, formal, period speech; no modern slang or anachronisms",
+            "ข้า (I); เจ้า, ท่าน (you). Do NOT use modern ฉัน, ผม, คุณ, นาย.",
+        ),
+        "medieval" => (
+            "medieval / high fantasy (knights, kingdoms, magic) — old-worldly, formal diction",
+            "ข้า (I); เจ้า, ท่าน (you). Do NOT use modern ฉัน, ผม, คุณ.",
+        ),
+        "wuxia" => (
+            "Chinese wuxia / xianxia — martial-hero diction with an archaic Chinese flavor",
+            "ข้า, ข้าน้อย (I); ท่าน, เจ้า (you). Do NOT use modern ฉัน, คุณ.",
+        ),
+        "samurai" => (
+            "feudal Japan / samurai era — formal, honorific speech",
+            "ข้า (I); ท่าน, เจ้า (you). Do NOT use modern ฉัน, คุณ.",
+        ),
+        "modern" => (
+            "modern / contemporary — natural everyday speech",
+            "ฉัน, ผม (I) and คุณ, เธอ (you), chosen to fit each character.",
+        ),
+        "scifi" => (
+            "science fiction / near-future / cyberpunk — clean, neutral contemporary speech",
+            "ฉัน, ผม (I); คุณ (you).",
+        ),
+        _ => return None,
+    };
+    let mut s = format!("Setting era: {desc}.");
+    if is_thai(target_lang) {
+        s.push_str(" Thai pronouns: ");
+        s.push_str(thai);
+    }
+    Some(s)
+}
+
+/// True when `target_lang` names Thai (the app's primary target), so era pronoun
+/// hints apply. Matches the English name or the Thai endonym.
+fn is_thai(target_lang: &str) -> bool {
+    let t = target_lang.trim().to_lowercase();
+    t.contains("thai") || target_lang.contains("ไทย")
+}
+
 /// Build the (system, user) prompt asking the model to draft a short game-context
 /// note from sampled game text — the setting/era, main characters and their
 /// relationships, tone, and world rules a translator needs for consistency.
@@ -603,5 +651,30 @@ mod tests {
             "Modern-day town. Two siblings."
         );
         assert_eq!(plain_completion("  A short brief.  "), "A short brief.");
+    }
+
+    #[test]
+    fn era_directive_maps_presets_and_thai_pronouns() {
+        // Ancient + Thai target → archaic pronouns spelled out, modern ones forbidden.
+        let a = era_directive("ancient", "Thai").unwrap();
+        assert!(a.contains("Setting era: ancient"));
+        assert!(a.contains("ข้า") && a.contains("เจ้า"));
+        assert!(a.contains("Do NOT use modern"));
+
+        // Modern + Thai → the modern pronouns are the ones offered.
+        let m = era_directive("modern", "Thai").unwrap();
+        assert!(m.contains("ฉัน") && m.contains("คุณ"));
+
+        // Non-Thai target → era description only, no Thai pronoun block.
+        let en = era_directive("ancient", "English").unwrap();
+        assert!(en.contains("Setting era: ancient"));
+        assert!(!en.contains("ข้า"), "Thai pronouns only when target is Thai");
+
+        // Thai endonym is recognised too.
+        assert!(era_directive("wuxia", "ภาษาไทย").unwrap().contains("ข้า"));
+
+        // Unset / unknown → nothing added.
+        assert!(era_directive("", "Thai").is_none());
+        assert!(era_directive("nonsense", "Thai").is_none());
     }
 }

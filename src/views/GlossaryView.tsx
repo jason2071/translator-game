@@ -91,12 +91,27 @@ export default function GlossaryView() {
   );
 }
 
+// Setting-era presets. The value is the key the backend maps to a register
+// directive (see `ai::prompt::era_directive`); "" = none (rely on game context).
+const ERA_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "Era: none" },
+  { value: "ancient", label: "Ancient / Epic (โบราณ)" },
+  { value: "medieval", label: "Medieval / Fantasy (ยุคกลาง)" },
+  { value: "wuxia", label: "Wuxia / Xianxia (กำลังภายใน)" },
+  { value: "samurai", label: "Feudal Japan (ซามูไร)" },
+  { value: "modern", label: "Modern (ปัจจุบัน)" },
+  { value: "scifi", label: "Sci-fi / Future (ไซไฟ)" },
+];
+
 // Per-project game context (lore/setting) — stored in the project DB and fed to
 // the model on every Run. Lives here (per-project, like the glossary) rather than
 // in Settings (which is global/per-provider). "AI draft" fills it from the game.
+// The Era dropdown is a shortcut that seeds period-appropriate register/pronouns
+// into the prompt, composing with (and framing) the free-text context below.
 function GameContextPanel() {
   const project = useStore((s) => s.project);
   const setGameContext = useStore((s) => s.setGameContext);
+  const setEra = useStore((s) => s.setEra);
   const glossaryConfig = useSettings((s) => s.glossaryConfig);
   // The AI provider here governs BOTH "AI draft" (context) and the glossary's
   // "AI suggest" — surfaced at the top so it's visible before either is run.
@@ -141,6 +156,18 @@ function GameContextPanel() {
           Game context <span className="hint">(this project)</span>
         </label>
         <div className="gloss-context-actions">
+          <select
+            className="gloss-provider"
+            value={project.era ?? ""}
+            onChange={(e) => setEra(e.target.value)}
+            title="Setting era — seeds period-appropriate register/pronouns (e.g. ancient → ข้า/เจ้า) into the AI prompt on every Run"
+          >
+            {ERA_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
           <select
             className="gloss-provider"
             value={glossaryProvider}

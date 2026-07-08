@@ -35,6 +35,7 @@ interface AppStore {
   closeProject: () => Promise<void>;
   setLanguages: (source: string, target: string) => Promise<void>;
   setGameContext: (text: string) => Promise<void>;
+  setEra: (era: string) => Promise<void>;
   setFilter: (patch: Partial<UnitFilter>) => Promise<void>;
   reloadUnits: () => Promise<void>;
   refreshMeta: () => Promise<void>;
@@ -118,6 +119,13 @@ export const useStore = create<AppStore>((set, get) => ({
     gameCtxTimer = setTimeout(() => {
       api.setGameContext(text).catch(() => {});
     }, 400);
+  },
+
+  setEra: async (era) => {
+    // A dropdown (not typed) — update the store and persist immediately.
+    const p = get().project;
+    if (p) set({ project: { ...p, era } });
+    api.setEra(era).catch(() => {});
   },
 
   setFilter: async (patch) => {

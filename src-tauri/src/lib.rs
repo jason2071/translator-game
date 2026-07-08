@@ -125,6 +125,15 @@ fn set_game_context(text: String, state: tauri::State<AppState>) -> Result<(), S
     with_project(&state, |p| project::db::set_meta(&p.conn, "game_context", &text))
 }
 
+/// Set this project's setting-era preset (e.g. "ancient", "modern"), which seeds
+/// a register directive (period-appropriate pronouns/diction) into the prompt on
+/// every Run — on top of the free-text game context. Empty clears it. Persisted
+/// per-project in the sidecar DB. See `ai::prompt::era_directive`.
+#[tauri::command]
+fn set_era(era: String, state: tauri::State<AppState>) -> Result<(), String> {
+    with_project(&state, |p| project::db::set_meta(&p.conn, "era", &era))
+}
+
 // --- grid browse & edit ---------------------------------------------------
 
 #[tauri::command]
@@ -543,7 +552,7 @@ async fn translate_units(
     // source (dedup), and pre-fill any group whose source is already in TM. Only
     // genuinely-new distinct sources reach the AI, so repeated lines and
     // previously-translated strings are never re-billed.
-    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context) = {
+    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era) = {
         let guard = state.project.lock().unwrap();
         let proj = guard.as_ref().ok_or("no project is open")?;
         let overwrite = scope.overwrite.unwrap_or(false);
@@ -673,8 +682,10 @@ async fn translate_units(
         // Per-project lore/setting notes, fed to the model on top of the global
         // Extra prompt (config.system_prompt).
         let game_context = project::db::get_meta(&proj.conn, "game_context").ok().flatten().unwrap_or_default();
+        // Setting-era preset → a register directive prepended to extra_system.
+        let era = project::db::get_meta(&proj.conn, "era").ok().flatten().unwrap_or_default();
 
-        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context)
+        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era)
     };
 
     let mut summary = TranslateSummary {
@@ -706,16 +717,20 @@ async fn translate_units(
     let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
     let client = state.http.clone();
     let tone = config.tone.clone().unwrap_or_else(|| "casual".into());
-    // System-prompt extras: this project's game context first (lore/setting), then
-    // the global Extra prompt. Either may be empty; None when both are.
+    // System-prompt extras, in order: the setting-era register directive, then this
+    // project's game context (lore/setting), then the global Extra prompt. Any may
+    // be empty; None when all are. Era leads so its register cue frames the rest.
     let extra_system = {
-        let mut parts: Vec<&str> = Vec::new();
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(dir) = ai::prompt::era_directive(&era, &target_lang) {
+            parts.push(dir);
+        }
         if !game_context.trim().is_empty() {
-            parts.push(game_context.trim());
+            parts.push(game_context.trim().to_string());
         }
         let global = config.system_prompt.as_deref().unwrap_or("").trim();
         if !global.is_empty() {
-            parts.push(global);
+            parts.push(global.to_string());
         }
         if parts.is_empty() { None } else { Some(parts.join("\n")) }
     };
@@ -1152,6 +1167,7 @@ pub fn run() {
             close_project,
             set_languages,
             set_game_context,
+            set_era,
             list_units,
             count_units,
             update_unit,

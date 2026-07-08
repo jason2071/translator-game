@@ -33,6 +33,9 @@ pub struct ProjectInfo {
     pub target_lang: String,
     /// Per-project lore/setting notes fed to the model on every Run.
     pub game_context: String,
+    /// Per-project setting-era preset (e.g. "ancient", "modern") that seeds a
+    /// register directive into the prompt. Empty = unset. See `ai::prompt::era_directive`.
+    pub era: String,
     pub stats: Stats,
     /// True if this open just extracted the game (fresh project).
     pub freshly_extracted: bool,
@@ -120,6 +123,7 @@ impl Project {
             target_lang: db::get_meta(&self.conn, "target_lang")?
                 .unwrap_or_else(|| "Thai".into()),
             game_context: db::get_meta(&self.conn, "game_context")?.unwrap_or_default(),
+            era: db::get_meta(&self.conn, "era")?.unwrap_or_default(),
             stats: db::stats(&self.conn)?,
             freshly_extracted,
         })
