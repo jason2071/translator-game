@@ -187,6 +187,11 @@ code {
   align-items: center;
   gap: 0.5rem;
 }
+/* When the update banner shows above the picker, drop the fixed topbar below it
+   so the theme toggle / version don't overlap the banner's buttons. */
+.update-banner + .import-view .import-topbar {
+  top: 3.25rem;
+}
 .import-view h1 {
   font-size: var(--fs-xl);
   margin-bottom: 0.25rem;
