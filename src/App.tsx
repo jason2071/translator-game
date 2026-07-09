@@ -82,7 +82,13 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  if (!project) return <ImportView />;
+  if (!project)
+    return (
+      <>
+        <UpdateBanner />
+        <ImportView />
+      </>
+    );
   return (
     <div className={`app${collapsed ? " collapsed" : ""}`}>
       <Sidebar
@@ -91,7 +97,6 @@ export default function App() {
         onToggleCollapse={() => setCollapsed((c) => !c)}
       />
       <div className="main">
-        <UpdateBanner />
         <TranslateBar onOpenErrors={() => setPanel("errors")} />
         <GridView />
       </div>
