@@ -90,10 +90,11 @@ impl GameEngine for UnityEngine {
             data_dir: data.to_string_lossy().to_string(),
             file_count: assets_count(&data),
             warnings: vec![
-                "Unity (Naninovel) support is experimental — it translates Naninovel \
-                 managed-text (UI, names, gallery, scripted-UI text) via a Python + \
-                 UnityPy helper. Story text held in stripped custom scripts is not \
-                 covered."
+                "Unity (Naninovel) support is experimental. It translates Naninovel \
+                 managed text — menus, character names, gallery text — via a Python + \
+                 UnityPy helper. Story dialogue compiled into the game's scripts is \
+                 NOT translated (those use stripped-typetree serialization this engine \
+                 can't reach), so a script-heavy game gets only its UI translated."
                     .to_string(),
             ],
         })
