@@ -51,11 +51,29 @@ pub fn list_rpy(archive: &Path) -> Result<Vec<String>> {
 /// prior run or a hand-edited script is never clobbered). Returns how many files
 /// were written.
 pub fn extract_rpy(archive: &Path, out_dir: &Path) -> Result<usize> {
+    extract_matching(archive, out_dir, is_rpy_name)
+}
+
+/// Like [`extract_rpy`] but for compiled `.rpyc` — used to stage the bytecode of a
+/// compiled-only game on disk before handing it to unrpyc for decompilation (see
+/// [`ensure_decompiled`](super::renpy)). Same no-clobber / safe-path contract.
+pub fn extract_rpyc(archive: &Path, out_dir: &Path) -> Result<usize> {
+    extract_matching(archive, out_dir, is_rpyc_name)
+}
+
+/// Extract every archive entry whose name satisfies `keep` into `out_dir`,
+/// re-creating the internal directory structure and never clobbering an existing
+/// file. Backs [`extract_rpy`] / [`extract_rpyc`]. Returns how many were written.
+fn extract_matching(
+    archive: &Path,
+    out_dir: &Path,
+    keep: impl Fn(&str) -> bool,
+) -> Result<usize> {
     let index = read_index(archive)?;
     let mut f = File::open(archive).with_context(|| format!("opening {}", archive.display()))?;
     let mut written = 0usize;
     for (name, segments) in &index {
-        if !is_rpy_name(name) {
+        if !keep(name) {
             continue;
         }
         let rel = safe_relative(name)
@@ -76,6 +94,10 @@ pub fn extract_rpy(archive: &Path, out_dir: &Path) -> Result<usize> {
 
 fn is_rpy_name(name: &str) -> bool {
     name.to_ascii_lowercase().ends_with(".rpy")
+}
+
+fn is_rpyc_name(name: &str) -> bool {
+    name.to_ascii_lowercase().ends_with(".rpyc")
 }
 
 /// Read + de-obfuscate the archive index.
@@ -285,6 +307,40 @@ mod tests {
         assert_eq!(std::fs::read(out.join("script.rpy")).unwrap(), script);
         // The asset was not extracted.
         assert!(!out.join("images/logo.png").exists());
+    }
+
+    #[test]
+    fn extract_rpyc_takes_only_bytecode_and_preserves_rpy_contract() {
+        let rpy = b"label start:\n    e \"Hi\"\n";
+        let rpyc = b"RENPY RPC2 fake-bytecode";
+        let png = b"\x89PNG";
+        let archive = build_rpa(
+            0x1234_5678,
+            &[
+                ("script.rpy", rpy),
+                ("script.rpyc", rpyc),
+                ("images/logo.png", png),
+            ],
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let rpa = tmp.path().join("archive.rpa");
+        std::fs::write(&rpa, &archive).unwrap();
+
+        // The new extractor takes only the compiled `.rpyc` (note `.rpyc` does not
+        // satisfy the `.rpy` predicate, so there's no overlap).
+        let out = tmp.path().join("rpyc");
+        assert_eq!(extract_rpyc(&rpa, &out).unwrap(), 1);
+        assert_eq!(std::fs::read(out.join("script.rpyc")).unwrap(), rpyc);
+        assert!(!out.join("script.rpy").exists());
+        assert!(!out.join("images/logo.png").exists());
+
+        // The `.rpy`-only contract is untouched: extract_rpy skips the `.rpyc`, and
+        // list_rpy still lists only the source.
+        let src = tmp.path().join("src");
+        assert_eq!(extract_rpy(&rpa, &src).unwrap(), 1);
+        assert!(src.join("script.rpy").exists());
+        assert!(!src.join("script.rpyc").exists());
+        assert_eq!(list_rpy(&rpa).unwrap(), vec!["script.rpy".to_string()]);
     }
 
     #[test]

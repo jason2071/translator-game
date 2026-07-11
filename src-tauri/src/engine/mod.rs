@@ -24,6 +24,7 @@ pub mod renpy;
 pub mod rpa;
 pub mod renpy_tl;
 pub mod tyrano;
+pub mod unrpyc;
 
 use crate::model::TransUnit;
 use std::path::Path;

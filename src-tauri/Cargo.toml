@@ -36,6 +36,9 @@ md5 = "0.7"
 # source `.rpy` a game ships packed — see engine::rpa.
 flate2 = "1"
 serde-pickle = "1"
+# Embed the bundled unrpyc decompiler (a multi-file Python tree) so a game that
+# ships only compiled `.rpyc` can be auto-decompiled — see engine::unrpyc.
+include_dir = "0.7"
 # Dev-only: `.env` loading for local API keys (guarded by debug_assertions).
 dotenvy = "0.15"
 

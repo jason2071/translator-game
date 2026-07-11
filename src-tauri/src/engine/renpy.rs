@@ -18,6 +18,7 @@
 use super::codes::ExtractOpts;
 use super::renpy_tl::{self, Say};
 use super::rpa;
+use super::unrpyc::{self, PyMajor};
 use super::{DetectResult, GameEngine};
 use crate::model::{TransUnit, UnitKind};
 use anyhow::{anyhow, Context, Result};
@@ -66,16 +67,33 @@ impl GameEngine for RenpyEngine {
         // out of the archive first (many games ship the `.rpy` alongside the
         // compiled `.rpyc`), so the normal line-based flow below can read them.
         ensure_unpacked(&dir)?;
-        let rpys = collect_rpy(&dir);
-        // Still nothing translatable: the archives held only compiled `.rpyc` (no
-        // source `.rpy`). Fail the import with an actionable message instead of
-        // silently producing an empty project (or, worse, importing the SDK's
-        // renpy/common UI strings as if they were the game).
+        let mut rpys = collect_rpy(&dir);
+        // Compiled-only game: the archives / loose files held only `.rpyc`, no source
+        // `.rpy`. Try to auto-decompile in place (the game ships its own Python +
+        // Ren'Py runtime, which is all unrpyc needs) before giving up.
+        let mut decompile_hint = None;
+        if rpys.is_empty() && is_renpy_game_dir(&dir) {
+            decompile_hint = ensure_decompiled(&dir, root)?;
+            rpys = collect_rpy(&dir); // re-scan for the `.rpy` unrpyc just wrote
+        }
+        // Still nothing translatable. Fail the import with an actionable message
+        // instead of silently producing an empty project (or, worse, importing the
+        // SDK's renpy/common UI strings as if they were the game). If auto-decompile
+        // was attempted, say why it couldn't finish.
         if rpys.is_empty() && is_renpy_game_dir(&dir) {
             return Err(anyhow!(
                 "This Ren'Py game ships only compiled scripts (found .rpa/.rpyc but no source \
-                 .rpy, even inside the archives). Decompile the .rpyc to .rpy (e.g. with unrpyc), \
-                 then re-import — this translator edits the .rpy source."
+                 .rpy, even inside the archives).{}",
+                match decompile_hint {
+                    Some(why) => format!(
+                        " Automatic decompile could not run: {why}. Decompile the .rpyc to .rpy \
+                         (e.g. with unrpyc), then re-import."
+                    ),
+                    None =>
+                        " Decompile the .rpyc to .rpy (e.g. with unrpyc), then re-import — this \
+                         translator edits the .rpy source."
+                            .to_string(),
+                }
             ));
         }
         let mut units = Vec::new();
@@ -212,6 +230,203 @@ fn ensure_unpacked(dir: &Path) -> Result<usize> {
         }
     }
     Ok(total)
+}
+
+/// Best-effort auto-decompile of a compiled-only game: turn its `.rpyc` into source
+/// `.rpy` in place so the normal Ren'Py flow can read them. Called from [`extract`]
+/// only when no `.rpy` were recoverable and the dir still looks like a Ren'Py game.
+///
+/// A game that ships `.rpyc` also ships its own Python interpreter
+/// (`<root>/lib/<platform>/python`) and Ren'Py runtime — all the bundled
+/// [`unrpyc`](super::unrpyc) decompiler needs. We stage any `.rpyc` locked inside
+/// `.rpa` onto disk (like [`ensure_unpacked`] does for `.rpy`), then run
+/// `<python> unrpyc.py -c <dir>`, which writes a `.rpy` next to every `.rpyc`.
+///
+/// Returns `Ok(None)` on success (or nothing to do); `Ok(Some(reason))` when it
+/// could not decompile, so the caller folds `reason` into the actionable error and
+/// the import degrades exactly as before — never a silent empty project. `Err` is
+/// reserved for unexpected IO, never for "no Python" or "unrpyc failed".
+fn ensure_decompiled(dir: &Path, root: &Path) -> Result<Option<String>> {
+    // 1. Make sure the compiled scripts are on disk. Many compiled-only games pack
+    //    their `.rpyc` inside a `.rpa` (with assets), so pull them out first. Reads
+    //    only each archive's index + the `.rpyc` segments — asset archives (images,
+    //    movies) contribute nothing and are never streamed in full.
+    if !has_rpyc(dir) {
+        for archive in archives_in(dir) {
+            let _ = rpa::extract_rpyc(&archive, dir); // best-effort, mirrors ensure_unpacked
+        }
+    }
+    if !has_rpyc(dir) {
+        return Ok(Some(
+            "found no .rpyc to decompile (compiled scripts not in the game dir or its archives)"
+                .to_string(),
+        ));
+    }
+
+    // 2. Find the game's own bundled Python; its major version picks the unrpyc
+    //    branch. No interpreter → degrade to the actionable error.
+    let Some((python, major)) = find_bundled_python(root) else {
+        return Ok(Some(
+            "no bundled Python interpreter found under the game's lib/ folder".to_string(),
+        ));
+    };
+    let unrpyc_py = unrpyc::materialize(major)?;
+
+    // 3. Run unrpyc over the game dir (it recurses and writes `.rpy` beside each
+    //    `.rpyc`). Mirrors export_tl's three-tier subprocess handling: a spawn
+    //    failure or a non-zero exit degrades to the actionable error rather than
+    //    aborting the import. Retry once with --try-harder against obfuscation.
+    //    Force single-process on Ren'Py 8 (Py3), where multiprocessing is available:
+    //    its default `Pool` re-spawns the interpreter per worker, which is fragile
+    //    under our console-less captured subprocess. (Py2 games either lack
+    //    multiprocessing — auto single-worker — or reject `-p`, so pass nothing.)
+    let single = matches!(major, PyMajor::Py3);
+    match run_unrpyc(&python, &unrpyc_py, dir, single, false) {
+        Ok(true) => Ok(None),
+        Ok(false) => match run_unrpyc(&python, &unrpyc_py, dir, single, true) {
+            Ok(true) => Ok(None),
+            Ok(false) => Ok(Some("unrpyc could not decompile the scripts".to_string())),
+            Err(e) => Ok(Some(format!("could not run the bundled Python: {e}"))),
+        },
+        Err(e) => Ok(Some(format!("could not run the bundled Python: {e}"))),
+    }
+}
+
+/// Run `<python> <unrpyc_py> -c [--try-harder] <dir>`. `Ok(true)` on exit 0,
+/// `Ok(false)` on a non-zero exit, `Err` only when the process could not be spawned.
+///
+/// `unrpyc.py` does `import decompiler` / `import deobfuscate` — sibling modules in
+/// its own dir. A game's bundled Ren'Py `python` does NOT auto-add the script's
+/// directory to `sys.path` the way stock CPython does (its runtime sets `sys.path`
+/// itself), so those imports fail with `No module named decompiler` when we launch
+/// it directly. Point `PYTHONPATH` at the unrpyc dir so the package resolves
+/// regardless of the interpreter's script-path handling.
+fn run_unrpyc(
+    python: &Path,
+    unrpyc_py: &Path,
+    dir: &Path,
+    single_process: bool,
+    try_harder: bool,
+) -> Result<bool> {
+    let pkg_dir = unrpyc_py.parent().unwrap_or(unrpyc_py);
+    let mut cmd = Command::new(python);
+    // Run unrpyc.py by its *bare name* from its own dir. A game's bundled Ren'Py
+    // `python` sets `sys.path` itself and doesn't honor PYTHONPATH or add an absolute
+    // script's dir, so `import decompiler` (a sibling module) fails. With cwd = the
+    // unrpyc dir and a relative script name, `sys.path[0]` becomes "" (the cwd), so
+    // the sibling package resolves.
+    cmd.current_dir(pkg_dir).arg("unrpyc.py").arg("-c");
+    if single_process {
+        cmd.arg("-p").arg("1");
+    }
+    if try_harder {
+        cmd.arg("--try-harder");
+    }
+    cmd.arg(dir);
+    let output = cmd
+        .output()
+        .with_context(|| format!("spawning {}", python.display()))?;
+    Ok(output.status.success())
+}
+
+/// Whether `dir` (recursively, skipping `tl/`) holds any compiled `.rpyc`.
+fn has_rpyc(dir: &Path) -> bool {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if !is_tl_dir(&p) {
+                    stack.push(p);
+                }
+            } else if p.extension().and_then(|x| x.to_str()) == Some("rpyc") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The Python interpreter a Ren'Py game bundles under `<root>/lib/<platform>/`, plus
+/// its major version (which selects the [`unrpyc`](super::unrpyc) branch). Only an
+/// interpreter matching the *host* OS can be executed, so we match the platform dir
+/// against [`std::env::consts::OS`] and prefer 64-bit. Ren'Py's dir naming varies —
+/// `py3-windows-x86_64` / `py2-windows-x86_64` (7.4+/8) or a bare `windows-x86_64`
+/// (older 6/7) — so the major version is read from the prefix when present, else
+/// sniffed from the `libpython2*/3*` runtime beside the interpreter (or a
+/// `lib/pythonX.Y` marker). Returns `None` when no runnable interpreter is found.
+fn find_bundled_python(root: &Path) -> Option<(PathBuf, PyMajor)> {
+    let lib = root.join("lib");
+    let os_tok = match std::env::consts::OS {
+        "windows" => "windows",
+        "macos" => "mac",
+        _ => "linux",
+    };
+    let mut best: Option<(PathBuf, PyMajor, u8)> = None; // (exe, major, arch rank)
+    for e in std::fs::read_dir(&lib).ok()?.flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let lname = name.to_ascii_lowercase();
+        let host = lname.contains(os_tok) || (os_tok == "mac" && lname.contains("darwin"));
+        if !host {
+            continue;
+        }
+        let Some(exe) = python_in(&p) else { continue };
+        let rank = if lname.contains("x86_64")
+            || lname.contains("amd64")
+            || lname.contains("aarch64")
+            || lname.contains("arm64")
+            || lname.contains("universal")
+        {
+            2 // 64-bit
+        } else {
+            1 // 32-bit / unknown
+        };
+        if best.as_ref().map_or(true, |(_, _, r)| rank > *r) {
+            best = Some((exe, python_major(&lname, &p, &lib), rank));
+        }
+    }
+    best.map(|(exe, major, _)| (exe, major))
+}
+
+/// The interpreter executable inside a Ren'Py `lib/<platform>/` dir, if any.
+fn python_in(dir: &Path) -> Option<PathBuf> {
+    ["python.exe", "pythonw.exe", "python", "pythonw"]
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_file())
+}
+
+/// Decide a bundled interpreter's Python major version: the `py3-`/`py2-` dir prefix
+/// when present, else the `libpython3*`/`libpython2*` runtime beside it, else a
+/// `lib/python3*`/`lib/python2*` marker dir. Defaults to Py3 (modern Ren'Py).
+fn python_major(dirname_lower: &str, platform_dir: &Path, lib: &Path) -> PyMajor {
+    if dirname_lower.starts_with("py3-") {
+        return PyMajor::Py3;
+    }
+    if dirname_lower.starts_with("py2-") {
+        return PyMajor::Py2;
+    }
+    for probe in [platform_dir, lib] {
+        if let Ok(rd) = std::fs::read_dir(probe) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_ascii_lowercase();
+                if n.contains("python3") {
+                    return PyMajor::Py3;
+                }
+                if n.contains("python2") {
+                    return PyMajor::Py2;
+                }
+            }
+        }
+    }
+    PyMajor::Py3
 }
 
 /// True if `dir` carries a Ren'Py game fingerprint other than loose `.rpy`: a
@@ -1331,6 +1546,45 @@ label start:
             vec!["scripts/ch1.rpyc".to_string()]
         );
         assert!(eng.stale_companions("notes.txt").is_empty());
+    }
+
+    #[test]
+    fn find_bundled_python_prefers_host_64bit_and_reads_major() {
+        // Build lib dirs for the *host* OS so this runs on any CI platform.
+        let os_tok = match std::env::consts::OS {
+            "windows" => "windows",
+            "macos" => "mac",
+            _ => "linux",
+        };
+        let exe = if cfg!(windows) { "python.exe" } else { "python" };
+
+        // Ren'Py 7 layout: a bare `<os>-<arch>` dir (no py-prefix) with a
+        // libpython2.7 runtime → Py2; the 64-bit build wins over the 32-bit one.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let p64 = root.join("lib").join(format!("{os_tok}-x86_64"));
+        let p32 = root.join("lib").join(format!("{os_tok}-i686"));
+        for d in [&p64, &p32] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join(exe), b"").unwrap();
+            std::fs::write(d.join("libpython2.7.dll"), b"").unwrap();
+        }
+        let (found, major) = find_bundled_python(root).expect("interpreter found");
+        assert_eq!(found, p64.join(exe), "prefers the 64-bit build");
+        assert_eq!(major, PyMajor::Py2);
+
+        // Ren'Py 8 layout: a `py3-<os>-<arch>` prefix → Py3.
+        let tmp3 = tempfile::tempdir().unwrap();
+        let d3 = tmp3.path().join("lib").join(format!("py3-{os_tok}-x86_64"));
+        std::fs::create_dir_all(&d3).unwrap();
+        std::fs::write(d3.join(exe), b"").unwrap();
+        let (_e, m3) = find_bundled_python(tmp3.path()).expect("py3 interpreter found");
+        assert_eq!(m3, PyMajor::Py3);
+
+        // No lib/ (or no runnable interpreter) → None, so extract degrades to the
+        // actionable error rather than trying to spawn nothing.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(find_bundled_python(empty.path()).is_none());
     }
 
     #[test]

@@ -55,7 +55,17 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   `renpy_tl.rs` + `renpy::export_tl` are the **Ren'Py `tl/<lang>/` export path**
   (see the export invariant below): rather than splice, run the game's own bundled
   Ren'Py to generate the translation skeleton, then fill it — source `.rpy` are
-  never touched.
+  never touched. **Compiled-only Ren'Py games** (ship `.rpyc`/`.rpa` with no source
+  `.rpy`) are handled at import by `renpy::ensure_decompiled`: it stages `.rpyc` out
+  of any `.rpa` (`rpa::extract_rpyc`), finds the game's own bundled Python
+  (`<root>/lib/py{3,2}-*` **or** a bare `<os>-<arch>` dir, major version selects the
+  branch), and runs the embedded `engine::unrpyc` decompiler (MIT, vendored under
+  `resources/unrpyc/` as v2 for Py3 / v1 for Py2, materialized to a temp cache) to
+  write `.rpy` in place — then the normal flow reads them. Invoked with cwd = the
+  unrpyc dir + a relative `unrpyc.py` so its sibling `import decompiler` resolves
+  (the bundled Ren'Py Python doesn't add an absolute script's dir to `sys.path`). If
+  no Python is found or unrpyc fails, import degrades to the original actionable
+  "decompile with unrpyc" error — never a silent empty project.
 - **`project/`** — SQLite persistence (`db.rs`) and project lifecycle (`mod.rs`):
   open/create the sidecar store, backup, and export.
 - **`ai/`** — one `TranslationProvider` trait, providers behind it, plus prompt

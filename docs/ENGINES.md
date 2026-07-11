@@ -45,7 +45,10 @@ and are much riskier.
   re-serialized compact for round-trip. `src-tauri/src/engine/mvmz.rs`.
 - **Ren'Py** — `.rpy` scripts; pointer = byte span; splice-in-place inject; skips
   `game/tl/<lang>/`; protects `[interpolation]` / `{tags}`.
-  `src-tauri/src/engine/renpy.rs`.
+  `src-tauri/src/engine/renpy.rs`. Compiled-only games (`.rpyc`/`.rpa`, no source
+  `.rpy`) auto-decompile at import via the bundled [unrpyc](https://github.com/CensoredUsername/unrpyc) driven by the game's own
+  Python (`ensure_decompiled` → `engine::unrpyc`); falls back to an actionable error
+  if no interpreter is present.
 - **TyranoScript** — `.ks` KAG scenario scripts; pointer = byte span; splice-in-place
   inject. Extracts message text, `[glink text=]` choices, and `[chara_new jname=]`
   names; skips comments/labels/`@`-commands and `[iscript]`/`[html]` blocks;

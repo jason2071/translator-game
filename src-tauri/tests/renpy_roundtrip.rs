@@ -238,3 +238,35 @@ fn packed_game_with_source_rpy_auto_unpacks() {
     let again = eng.extract(root, &ExtractOpts::default()).unwrap();
     assert_eq!(again.len(), units.len());
 }
+
+#[test]
+fn compiled_only_game_without_bundled_python_reports_actionable_error() {
+    // Scripts packed as `.rpyc` inside the `.rpa` (no `.rpy` anywhere) and NO bundled
+    // Python under `lib/`. Auto-decompile stages the `.rpyc` out of the archive but
+    // can't run unrpyc, so import must still degrade to the actionable
+    // "decompile … unrpyc" error (never a silent empty project) — now naming why the
+    // automatic attempt couldn't run. This is the key no-regression guard.
+    let rpyc: &[u8] = b"RENPY RPC2 fake-bytecode";
+    let archive = build_rpa(0x4242_4242, &[("story.rpyc", rpyc)]);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("game")).unwrap();
+    std::fs::write(root.join("game/scripts.rpa"), &archive).unwrap();
+    std::fs::write(root.join("game/script_version.txt"), b"7.4.0").unwrap();
+
+    let eng = engine::detect(root).expect("compiled-only Ren'Py game detects");
+    assert_eq!(eng.id(), "renpy");
+
+    let err = eng
+        .extract(root, &ExtractOpts::default())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("compiled") && err.contains("unrpyc"), "got: {err}");
+    assert!(
+        err.contains("Automatic decompile"),
+        "should explain the auto-attempt: {err}"
+    );
+    // The bytecode was staged out of the archive as a side effect of the attempt.
+    assert!(root.join("game/story.rpyc").exists(), "rpyc staged from archive");
+}
