@@ -32,6 +32,8 @@ export default function ImportView() {
 
   async function pickFolder() {
     setError(null);
+    setPath(null);
+    setDetected(null);
     const picked = await open({ directory: true, title: "Select game folder" });
     if (typeof picked !== "string") return;
     setPath(picked);
@@ -51,6 +53,15 @@ export default function ImportView() {
     }
   }
 
+  // Dismiss a pending folder selection and return to the recents view, without
+  // reopening the OS folder dialog (which is the only other way out of a selection).
+  function resetSelection() {
+    setPath(null);
+    setDetected(null);
+    setError(null);
+    setChecking(false);
+  }
+
   // Reopen a project straight from history — no detect step or language pickers:
   // the backend keeps its saved languages and doesn't re-extract.
   async function reopenRecent(root: string) {
@@ -63,6 +74,12 @@ export default function ImportView() {
 
   const theme = useTheme((s) => s.theme);
   const toggleTheme = useTheme((s) => s.toggle);
+
+  // Show a fixed cap of recents in a column-first 2-column grid (newest top-left).
+  // The row count is balanced (≤10 rows → ≤10 per column) so the left column fills
+  // first and the grid stays even for any count.
+  const shownRecents = recents.slice(0, 20);
+  const recentRows = Math.min(10, Math.ceil(shownRecents.length / 2));
 
   return (
     <div className="import-view">
@@ -78,17 +95,38 @@ export default function ImportView() {
         </button>
       </div>
       <h1>RPGMaker Translator</h1>
-      <p className="subtitle">Import a game folder to begin</p>
+      <p className="subtitle">
+        {detected
+          ? "Review the detected engine and languages, then open"
+          : "Import a game folder to begin"}
+      </p>
 
       <button className="primary" onClick={pickFolder} disabled={checking || loading}>
         {checking ? "Detecting…" : "Choose game folder…"}
       </button>
 
       {path && <p className="path">{path}</p>}
-      {(error || storeError) && <p className="error">{error || storeError}</p>}
+      {(error || storeError) && (
+        <p className="import-error-card">
+          <Icon name="warn" size={15} className="import-error-icon" />
+          <span>{error || storeError}</span>
+        </p>
+      )}
 
       {detected && (
         <div className="detect-card">
+          <div className="detect-head">
+            <h2 className="detect-title">Detected game</h2>
+            <button
+              className="detect-dismiss iconbtn"
+              onClick={resetSelection}
+              disabled={loading}
+              aria-label="Cancel — choose a different folder"
+              title="Cancel"
+            >
+              <Icon name="close" size={14} />
+            </button>
+          </div>
           <div className="detect-row">
             <span>Engine</span>
             <strong>{detected.engineName}</strong>
@@ -97,7 +135,7 @@ export default function ImportView() {
             <span>Data files</span>
             <strong>{detected.fileCount}</strong>
           </div>
-          <div className="detect-row">
+          <div className="detect-row detect-row-block">
             <span>Data dir</span>
             <code>{detected.dataDir}</code>
           </div>
@@ -112,7 +150,11 @@ export default function ImportView() {
           <div className="lang-pick">
             <label>
               From
-              <select value={sourceLang} onChange={(e) => setSourceLang(e.target.value)}>
+              <select
+                value={sourceLang}
+                disabled={loading}
+                onChange={(e) => setSourceLang(e.target.value)}
+              >
                 {SOURCE_LANGS.map((l) => (
                   <option key={l} value={l}>
                     {l}
@@ -123,7 +165,11 @@ export default function ImportView() {
             <span className="arrow">→</span>
             <label>
               To
-              <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)}>
+              <select
+                value={targetLang}
+                disabled={loading}
+                onChange={(e) => setTargetLang(e.target.value)}
+              >
                 {TARGET_LANGS.map((l) => (
                   <option key={l} value={l}>
                     {l}
@@ -143,7 +189,7 @@ export default function ImportView() {
         </div>
       )}
 
-      {recents.length > 0 && (
+      {recents.length > 0 && !detected && (
         <section className="recent-section">
           <div className="recent-header">
             <h2 className="recent-title">Recent</h2>
@@ -151,8 +197,11 @@ export default function ImportView() {
               Clear
             </button>
           </div>
-          <ul className="recent-list">
-            {recents.map((r) => {
+          <ul
+            className="recent-list"
+            style={{ gridTemplateRows: `repeat(${recentRows}, auto)` }}
+          >
+            {shownRecents.map((r) => {
               const total = Math.max(r.stats.total, 1);
               const done = doneCount(r.stats);
               return (
@@ -160,34 +209,25 @@ export default function ImportView() {
                   <button
                     className="recent-row"
                     disabled={loading}
+                    aria-label={`${basename(r.root)} — ${Math.round((done / total) * 100)}% translated, opened ${timeAgo(r.lastOpened)}`}
                     onClick={() => reopenRecent(r.root)}
                   >
-                    <Icon name="folder" className="recent-icon" />
-                    <span className="recent-main">
-                      <span className="recent-name" title={r.root}>
-                        {pendingRoot === r.root ? "Opening…" : basename(r.root)}
+                    <Icon name="folder" size={18} className="recent-icon" />
+                    <span className="recent-name" title={r.root}>
+                      {pendingRoot === r.root ? "Opening…" : basename(r.root)}
+                    </span>
+                    <span className="recent-progress" aria-hidden="true">
+                      <span className="recent-bar">
+                        <span
+                          className="recent-bar-fill"
+                          style={{ width: `${(done / total) * 100}%` }}
+                        />
                       </span>
-                      <span className="recent-meta">
-                        <span className="recent-badge">{r.engineName}</span>
-                        <span>
-                          {r.sourceLang} → {r.targetLang}
-                        </span>
-                        <span className="recent-progress">
-                          <span className="recent-bar">
-                            <span
-                              className="recent-bar-fill"
-                              style={{ width: `${(done / total) * 100}%` }}
-                            />
-                          </span>
-                          <span className="recent-count">
-                            {done}/{r.stats.total}
-                          </span>
-                        </span>
-                        <span className="recent-time">
-                          <Icon name="clock" size={12} /> {timeAgo(r.lastOpened)}
-                        </span>
+                      <span className={`recent-pct${done >= r.stats.total && r.stats.total > 0 ? " done" : ""}`}>
+                        {Math.round((done / total) * 100)}%
                       </span>
                     </span>
+                    <span className="recent-time">{timeAgo(r.lastOpened)}</span>
                   </button>
 
                   <button

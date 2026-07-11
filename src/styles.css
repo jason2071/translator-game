@@ -174,7 +174,7 @@ code {
    ============================================================ */
 .import-view {
   max-width: 560px;
-  margin: 6rem auto;
+  margin: 3rem auto;
   padding: 2rem;
   text-align: center;
   position: relative;
@@ -205,11 +205,41 @@ code {
   font-size: var(--fs-sm);
   word-break: break-all;
 }
+/* The landing screen's single action — give it hero weight, not toolbar-button size. */
+.import-view > button.primary {
+  padding: var(--sp-3) var(--sp-6);
+  font-size: var(--fs-base);
+}
+/* A blocking error should read at least as strongly as a non-blocking warning
+   (same callout pattern as .detect-warning, tinted --err). */
+.import-error-card {
+  display: flex;
+  gap: var(--sp-2);
+  margin: var(--sp-3) auto 0;
+  max-width: 496px;
+  padding: 0.6rem 0.75rem;
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--err) 45%, transparent);
+  border-radius: var(--r-md);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.import-error-icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--err);
+}
 
 /* Recent-projects history on the import screen. */
 .recent-section {
   margin-top: 1.75rem;
   text-align: left;
+  /* Break out wider than the 560px header column so two columns have room, while
+     staying centered. Window min width is 900px, so 880px always fits. */
+  width: min(880px, 94vw);
+  margin-left: 50%;
+  transform: translateX(-50%);
 }
 .recent-header {
   display: flex;
@@ -254,14 +284,14 @@ code {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  /* Fill the space down to near the window's bottom (the block is anchored 6rem
-     from the top, not vertically centered), so tall windows show more entries;
-     the list scrolls internally rather than growing the page. */
-  max-height: calc(100vh - 17rem);
-  overflow-y: auto;
+  /* Compact 2-column grid, column-first: the left column fills to `recentRows`
+     (≤10) before the right begins, so the newest is top-left. The row count is set
+     inline (grid-template-rows: repeat(rows, auto)). No internal scroll — the whole
+     page must fit without scrolling. */
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-auto-flow: column;
+  gap: var(--sp-2) var(--sp-3);
 }
 .recent-item {
   position: relative;
@@ -270,11 +300,15 @@ code {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-2) 2.25rem var(--sp-2) var(--sp-3);
+  gap: var(--sp-2);
+  /* right pad reserves the hover-reveal remove ×'s full box so it never overlaps
+     the time text (icon 14 + iconbtn padding + border ≈ 25px, sitting at sp-1). */
+  padding: var(--sp-2) 2.4rem var(--sp-2) var(--sp-3);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  /* --r-sm to match the app's other compact controls (cells, inputs); --r-md is for
+     full cards/panels and reads too blobby on a ~26px row. */
+  border-radius: var(--r-sm);
   text-align: left;
   cursor: pointer;
   color: var(--fg);
@@ -291,41 +325,26 @@ code {
   flex-shrink: 0;
   color: var(--muted);
 }
-.recent-main {
+.recent-name {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.recent-name {
   font-weight: 600;
+  font-size: var(--fs-md);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.recent-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex-wrap: wrap;
-  color: var(--muted);
-  font-size: var(--fs-xs);
-}
-.recent-badge {
-  background: var(--panel2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-full);
-  padding: 1px 8px;
 }
 .recent-progress {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
 }
 .recent-bar {
-  width: 56px;
-  height: 5px;
+  width: 48px;
+  height: 6px;
   background: var(--panel2);
   border: 1px solid var(--border);
   border-radius: var(--r-full);
@@ -336,16 +355,25 @@ code {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--status-translated));
 }
+.recent-pct {
+  min-width: 2.4em;
+  text-align: right;
+}
+/* A finished project (100%) stands out at a glance without extra chrome. */
+.recent-pct.done {
+  color: var(--status-translated);
+  font-weight: 600;
+}
 .recent-time {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 .recent-remove {
   position: absolute;
   top: 50%;
-  right: var(--sp-2);
+  right: var(--sp-1);
   transform: translateY(-50%);
   opacity: 0;
   transition: opacity 0.12s;
@@ -382,6 +410,57 @@ code {
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
   text-align: left;
+  animation: detect-in 0.15s ease-out;
+}
+@keyframes detect-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .detect-card {
+    animation: none;
+  }
+}
+/* Card heading + the cancel × on one row — gives the card a title (echoing
+   `.recent-title`) and keeps × out of the first data row's value column. */
+.detect-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -0.25rem -0.25rem var(--sp-3);
+}
+.detect-title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+/* In flow now (not absolute) — override the blanket full-width `.detect-card button`. */
+.detect-card .detect-dismiss {
+  width: auto;
+  margin: 0;
+}
+/* Long file paths read far better left-aligned on their own line than right-aligned
+   with break-all mid-segment. */
+.detect-row-block {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+.detect-row-block code {
+  width: 100%;
+  text-align: left;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  color: var(--muted);
 }
 .detect-row {
   display: flex;
@@ -431,6 +510,12 @@ code {
   flex: 1;
   color: var(--muted);
   font-size: var(--fs-xs);
+}
+/* The caption's fs-xs would otherwise cascade into the <select> (font: inherit),
+   rendering the language dropdowns at ~9px — reassert a real control size. */
+.lang-pick select {
+  font-size: var(--fs-md);
+  color: var(--fg);
 }
 .lang-pick .arrow,
 .lang-switch .arrow {

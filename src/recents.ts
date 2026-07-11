@@ -6,7 +6,7 @@ import type { ProjectInfo, Stats } from "./ipc";
 // — like `settings.ts`, it lives in localStorage; API keys never do.
 
 const KEY = "rpgtl.recents.v1";
-const CAP = 15;
+const CAP = 20;
 
 export interface RecentProject {
   root: string; // absolute folder path — the unique id
