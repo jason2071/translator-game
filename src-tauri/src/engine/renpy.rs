@@ -248,13 +248,13 @@ fn ensure_unpacked(dir: &Path) -> Result<usize> {
 /// reserved for unexpected IO, never for "no Python" or "unrpyc failed".
 fn ensure_decompiled(dir: &Path, root: &Path) -> Result<Option<String>> {
     // 1. Make sure the compiled scripts are on disk. Many compiled-only games pack
-    //    their `.rpyc` inside a `.rpa` (with assets), so pull them out first. Reads
-    //    only each archive's index + the `.rpyc` segments — asset archives (images,
-    //    movies) contribute nothing and are never streamed in full.
-    if !has_rpyc(dir) {
-        for archive in archives_in(dir) {
-            let _ = rpa::extract_rpyc(&archive, dir); // best-effort, mirrors ensure_unpacked
-        }
+    //    their `.rpyc` inside a `.rpa` (with assets), so pull them out. No-clobber, so
+    //    loose `.rpyc` already on disk are kept; we do NOT gate on their presence
+    //    because some games ship a mix (loose gui `.rpyc` + the story packed in
+    //    scripts.rpa). Cheap — reads each archive's index + only the `.rpyc` segments,
+    //    so asset archives (images, movies) contribute nothing and are never streamed.
+    for archive in archives_in(dir) {
+        let _ = rpa::extract_rpyc(&archive, dir); // best-effort, mirrors ensure_unpacked
     }
     if !has_rpyc(dir) {
         return Ok(Some(
@@ -276,14 +276,9 @@ fn ensure_decompiled(dir: &Path, root: &Path) -> Result<Option<String>> {
     //    `.rpyc`). Mirrors export_tl's three-tier subprocess handling: a spawn
     //    failure or a non-zero exit degrades to the actionable error rather than
     //    aborting the import. Retry once with --try-harder against obfuscation.
-    //    Force single-process on Ren'Py 8 (Py3), where multiprocessing is available:
-    //    its default `Pool` re-spawns the interpreter per worker, which is fragile
-    //    under our console-less captured subprocess. (Py2 games either lack
-    //    multiprocessing — auto single-worker — or reject `-p`, so pass nothing.)
-    let single = matches!(major, PyMajor::Py3);
-    match run_unrpyc(&python, &unrpyc_py, dir, single, false) {
+    match run_unrpyc(&python, &unrpyc_py, dir, false) {
         Ok(true) => Ok(None),
-        Ok(false) => match run_unrpyc(&python, &unrpyc_py, dir, single, true) {
+        Ok(false) => match run_unrpyc(&python, &unrpyc_py, dir, true) {
             Ok(true) => Ok(None),
             Ok(false) => Ok(Some("unrpyc could not decompile the scripts".to_string())),
             Err(e) => Ok(Some(format!("could not run the bundled Python: {e}"))),
@@ -301,13 +296,7 @@ fn ensure_decompiled(dir: &Path, root: &Path) -> Result<Option<String>> {
 /// itself), so those imports fail with `No module named decompiler` when we launch
 /// it directly. Point `PYTHONPATH` at the unrpyc dir so the package resolves
 /// regardless of the interpreter's script-path handling.
-fn run_unrpyc(
-    python: &Path,
-    unrpyc_py: &Path,
-    dir: &Path,
-    single_process: bool,
-    try_harder: bool,
-) -> Result<bool> {
+fn run_unrpyc(python: &Path, unrpyc_py: &Path, dir: &Path, try_harder: bool) -> Result<bool> {
     let pkg_dir = unrpyc_py.parent().unwrap_or(unrpyc_py);
     let mut cmd = Command::new(python);
     // Run unrpyc.py by its *bare name* from its own dir. A game's bundled Ren'Py
@@ -315,10 +304,12 @@ fn run_unrpyc(
     // script's dir, so `import decompiler` (a sibling module) fails. With cwd = the
     // unrpyc dir and a relative script name, `sys.path[0]` becomes "" (the cwd), so
     // the sibling package resolves.
+    //
+    // Deliberately no `-p`: Ren'Py's bundled interpreter (py2 *and* py3) ships
+    // without the `_multiprocessing` C module, so unrpyc's `-p`/--processes choice
+    // set is empty and any `-p N` is rejected outright; with it absent unrpyc already
+    // falls back to single-threaded decompilation, which is what we want anyway.
     cmd.current_dir(pkg_dir).arg("unrpyc.py").arg("-c");
-    if single_process {
-        cmd.arg("-p").arg("1");
-    }
     if try_harder {
         cmd.arg("--try-harder");
     }
