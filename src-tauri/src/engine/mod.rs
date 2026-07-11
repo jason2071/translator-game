@@ -24,6 +24,7 @@ pub mod renpy;
 pub mod rpa;
 pub mod renpy_tl;
 pub mod tyrano;
+pub mod unity;
 pub mod unrpyc;
 
 use crate::model::TransUnit;
@@ -114,6 +115,10 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // Godot needs its own `project.godot` fingerprint, so it never overlaps
         // the others; order is immaterial.
         Box::new(godot::GodotEngine),
+        // Unity (Naninovel): a `<name>_Data/` dir with `resources.assets` + a
+        // Naninovel runtime assembly — a fingerprint no other engine shares, so
+        // order is immaterial. Plain (non-Naninovel) Unity games are declined.
+        Box::new(unity::UnityEngine),
         // Forger `.acod` string tables (Assassin's Creed). Unique extension +
         // UTF-16LE BOM fingerprint, so it never overlaps the others; order is
         // immaterial. Kept last as the most specialized/niche target.

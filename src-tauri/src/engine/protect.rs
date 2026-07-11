@@ -79,6 +79,8 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         "forger-acod" => mask_forger(input),
         // AC Origins aclocexport text: angle tags + `[…]` audio cues only.
         "ac-loctext" => mask_ac_loctext(input),
+        // Unity/Naninovel managed text: TMPro rich-text tags + `{n}` format args.
+        "unity" => mask_unity(input),
         _ => mask(input),
     }
 }
@@ -253,6 +255,43 @@ pub fn mask_ac_loctext(input: &str) -> Masked {
         let len = match b[i] {
             b'<' => angle_tag_len(&input[i..]),
             b'[' => bracket_len(&input[i..], b'[', b']'),
+            _ => None,
+        };
+        if let Some(len) = len {
+            let idx = tokens.len();
+            tokens.push(input[i..i + len].to_string());
+            text.push(OPEN);
+            text.push_str(&idx.to_string());
+            text.push(CLOSE);
+            i += len;
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap();
+        text.push(ch);
+        i += ch.len_utf8();
+    }
+    Masked { text, tokens }
+}
+
+/// Replace Unity/Naninovel managed-text markup with `⟦k⟧` sentinels: TextMeshPro
+/// rich-text tags (`<color=#ffabce>`, `</color>`, `<b>`, `<br>`, `<size=120%>`, …,
+/// shape-based via [`angle_tag_len`]), `{0}`/`{name}` `string.Format` placeholders,
+/// and backslash escapes (`\n`). Unlike [`mask_forger`], **`[…]` and `%` are left as
+/// text**: in managed-text values a bracket is decorative/translatable prose
+/// (`[点击图标]`, "[click icon]") not a runtime code, and `%` is only ever prose
+/// (`50%`). Restores via the shared [`restore`]; `{}` reuses the Godot helper.
+pub fn mask_unity(input: &str) -> Masked {
+    let mut text = String::with_capacity(input.len());
+    let mut tokens: Vec<String> = Vec::new();
+    let b = input.as_bytes();
+    let mut i = 0;
+    while i < input.len() {
+        let len = match b[i] {
+            b'<' => angle_tag_len(&input[i..]),
+            b'{' => bracket_len(&input[i..], b'{', b'}'),
+            b'\\' if i + 1 < input.len() => {
+                Some(1 + input[i + 1..].chars().next().unwrap().len_utf8())
+            }
             _ => None,
         };
         if let Some(len) = len {
@@ -710,6 +749,34 @@ mod tests {
         assert_eq!(m.tokens, vec!["<i>", "</i>", "[beat]"]);
         assert!(m.text.contains("{Hire a "), "curly wrap must stay visible");
         assert!(m.text.contains("100% ready"), "percent must stay visible");
+    }
+
+    #[test]
+    fn unity_mask_unmask_is_identity() {
+        let samples = [
+            "Hire manager to run your {0} for you.",
+            "<color=#ffabce>[点击图标]</color>获得金钱\\n升级<color=#ffabce>[等级]</color>",
+            "Tip <b>2</b>: use <color=#E47B39FF>\"undo\"</color> to go back",
+            "<size=120%>Big</size> and <br> break",
+            "50% off, cost {Count} coins", // `%` and `[]` would be prose/decoration
+            "No markup at all.",
+            "",
+        ];
+        for s in samples {
+            let m = mask_unity(s);
+            let back = restore(&m.text, &m.tokens).expect("restore ok");
+            assert_eq!(back, s, "round-trip failed for {s:?}");
+        }
+    }
+
+    #[test]
+    fn unity_masks_tags_and_format_args_but_not_brackets_or_percent() {
+        // TMPro rich-text tags and `{n}` format args hide; decorative `[…]`
+        // brackets and `%` stay visible (translatable prose).
+        let m = mask_unity("<color=#fff>[点击]</color> {0}% done \\n go");
+        assert_eq!(m.tokens, vec!["<color=#fff>", "</color>", "{0}", "\\n"]);
+        assert!(m.text.contains("[点击]"), "decorative brackets stay visible");
+        assert!(m.text.contains("% done"), "percent stays visible");
     }
 
     #[test]

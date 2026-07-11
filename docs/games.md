@@ -23,10 +23,11 @@ section in [[ROADMAP]].
 |------|----------------|-------------|--------|
 | [[anvilnext-forger]] | AnvilNext — AC Origins / Odyssey / Valhalla (`.acod` via Forger) | 🟢 Easy (text layer) + external Forger/FontForge | **implemented** (branch `engine-forger-acod`) — engine + protect + tests green; pending real EN `.acod` validation |
 | [[anvilnext-locpackage-format]] | AC Origins `.Localization_Package` → `aclocexport` text | 🟢 Easy (community `aclocexport`/`aclocimport` do the binary; app owns a UTF-8 `Id:`/text format) | **implemented** — `ac-loctext` engine (branch `engine-forger-acod`); format confirmed on 33 787 real Origins records; tests green. Supersedes the binary-RE idea |
+| [[unity-naninovel]] | Unity (Mono) — Naninovel managed-text `TextAsset`s (e.g. My MILF Stepmom) | 🟢 Easy (built-in `TextAsset`, no typetree) via bundled UnityPy helper; 🔴 stripped-typetree custom Unity games declined | **implemented** (Phase 1) — `unity` engine + `mask_unity` + tests green; validated in-game. Ships behind system Python until the frozen-helper bundle (Phase 2) |
 
 ## Backlog ideas (not yet researched)
 
-- Unity (I2Localization CSV / TextMeshPro) — big indie audience; font via TMP asset.
+- Unity I2Localization CSV / generic `TextAsset` text — Tier 2 of [[unity-naninovel]].
 - Unreal Engine `.locres` — documented binary table.
 - Wolf RPG (`Data.wolf`) — often encrypted; needs a decryptor first.
 
