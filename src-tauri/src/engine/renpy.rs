@@ -1060,6 +1060,19 @@ pub fn export_tl(
     };
     let lang = normalize_lang(target_lang);
 
+    // Compiled-only games carry no source `.rpy` on disk, so Ren'Py's `translate`
+    // would emit only the SDK `common.rpy` and leave every line of dialogue
+    // untranslated. When the game dir has no source (a compiled-only game whose
+    // decompiled `.rpy` were never written, or were lost between import and export —
+    // cleaned or re-copied), re-materialize it the same way import does: unpack the
+    // `.rpa`, decompile the `.rpyc`, so `translate` sees the game's own scripts.
+    // Guarded on "no source present" so a game that already has `.rpy` (shipped or
+    // previously decompiled) skips the work — this must not re-decompile every export.
+    if collect_rpy(data_dir).is_empty() {
+        let _ = ensure_unpacked(data_dir);
+        let _ = ensure_decompiled(data_dir, root);
+    }
+
     // Generate the skeleton. The `translate` command is headless (returns without
     // launching the game window) and writes `game/tl/<lang>/`.
     let output = Command::new(&exe)
