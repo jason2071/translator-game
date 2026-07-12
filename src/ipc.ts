@@ -79,6 +79,14 @@ export interface ExportResult {
   note?: string | null;
 }
 
+export interface ModResult {
+  /** Absolute path to the written .zip. */
+  zipPath: string;
+  filesWritten: number;
+  unitsApplied: number;
+  note?: string | null;
+}
+
 export interface UnitFilter {
   file?: string;
   status?: Status;
@@ -208,6 +216,9 @@ export const api = {
 
   exportProject: (backup = true, embedFont = false) =>
     invoke<ExportResult>("export_project", { backup, embedFont }),
+
+  /** Export a distributable mod .zip (overlays onto the game; game untouched). */
+  exportMod: (embedFont = false) => invoke<ModResult>("export_mod", { embedFont }),
 
   applyTm: () => invoke<number>("apply_tm"),
 

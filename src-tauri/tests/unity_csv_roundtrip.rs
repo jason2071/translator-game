@@ -122,7 +122,7 @@ fn export_locale_writes_parallel_thai_folder() {
         }
     }
 
-    let ex = unity_csv::export_locale(root, &data, &units, "Thai", false, false).unwrap();
+    let ex = unity_csv::export_locale(root, &data, &units, "Thai", false, false, None).unwrap();
     assert!(ex.files >= 2);
 
     let thai = data.join("StreamingAssets/Localization/thai");
@@ -211,7 +211,7 @@ fn real_game_full_export() {
     }
     assert!(hit >= 4, "expected to match sample keys, matched {hit}");
 
-    let ex = unity_csv::export_locale(root, &data, &units, "Thai", false, true).unwrap();
+    let ex = unity_csv::export_locale(root, &data, &units, "Thai", false, true, None).unwrap();
     eprintln!("full export: {}", ex.note);
     assert!(!ex.note.contains("failed"), "font embed should succeed: {}", ex.note);
 
@@ -240,4 +240,88 @@ fn real_game_full_export() {
         assert_eq!(&cat[pos + 60..pos + 64], &[0, 0, 0, 0], "CRC zeroed for {name}");
     }
     eprintln!("full export: all font-bundle CRCs zeroed ✓");
+}
+
+/// Optional real-game MOD export: `export_locale(out_base = Some(staging))` overwrites
+/// every locale by key into a staging mirror + stages the font bundles/catalog there,
+/// never touching the game. Needs `RPGTL_UNITYCSV_GAME` + Python/UnityPy on PATH.
+/// Writes only to a temp dir, so no write opt-in is required.
+#[test]
+fn real_game_mod_export() {
+    let Ok(root) = std::env::var("RPGTL_UNITYCSV_GAME") else {
+        eprintln!("skipped: set RPGTL_UNITYCSV_GAME to run");
+        return;
+    };
+    let root = Path::new(&root);
+    let data = std::fs::read_dir(root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.is_dir() && p.file_name().unwrap().to_string_lossy().ends_with("_Data"))
+        .expect("a _Data dir");
+    let cat = data.join("StreamingAssets/aa/catalog.bin");
+
+    // Read a font-bundle CRC from a catalog: 16-byte hash from the filename → +60.
+    let crc_at = |catalog: &Path, bundle_name: &str| -> u32 {
+        let hash = bundle_name
+            .trim_end_matches(".bundle")
+            .rsplit('_')
+            .find(|t| t.len() == 32 && t.bytes().all(|b| b.is_ascii_hexdigit()))
+            .unwrap();
+        let raw: Vec<u8> = (0..16)
+            .map(|i| u8::from_str_radix(&hash[i * 2..i * 2 + 2], 16).unwrap())
+            .collect();
+        let bytes = std::fs::read(catalog).unwrap();
+        let pos = bytes.windows(16).position(|w| w == raw.as_slice()).unwrap();
+        u32::from_le_bytes(bytes[pos + 60..pos + 64].try_into().unwrap())
+    };
+    let bundle_names: Vec<String> = std::fs::read_dir(data.join("StreamingAssets/aa/StandaloneWindows64"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with("fonts") && n.ends_with(".bundle"))
+        .collect();
+    let game_crc_before: Vec<u32> = bundle_names.iter().map(|n| crc_at(&cat, n)).collect();
+
+    let eng = engine::detect(root).unwrap();
+    let mut units = eng.extract(root, &ExtractOpts::default()).unwrap();
+    for u in &mut units {
+        if u.context.as_deref() == Some("menu_new_game") || u.context.as_deref() == Some("67e9_p_ceea") {
+            u.translation = Some("ไทย ◆TH◆".into());
+            u.status = Status::Translated;
+        }
+    }
+
+    let staging = tempfile::tempdir().unwrap();
+    let ex = unity_csv::export_locale(root, &data, &units, "Thai", false, true, Some(staging.path()))
+        .unwrap();
+    eprintln!("mod export: {}", ex.note);
+    assert!(!ex.note.contains("failed"), "mod font embed should succeed: {}", ex.note);
+
+    // The mod overwrote EVERY existing locale (english + russian) by key.
+    let mod_data = staging.path().join(data.file_name().unwrap());
+    let loc = mod_data.join("StreamingAssets/Localization");
+    let mut locales_seen = 0;
+    for e in std::fs::read_dir(&loc).unwrap().flatten() {
+        if e.path().is_dir() {
+            assert!(e.path().join("ui.csv").is_file() || e.path().join("dialogs.csv").is_file());
+            locales_seen += 1;
+        }
+    }
+    assert!(locales_seen >= 2, "expected english + russian overwritten, saw {locales_seen}");
+
+    // Font bundles staged + their CRC zeroed in the MOD catalog.
+    let mod_cat = mod_data.join("StreamingAssets/aa/catalog.bin");
+    for n in &bundle_names {
+        assert!(
+            mod_data.join(format!("StreamingAssets/aa/StandaloneWindows64/{n}")).is_file(),
+            "{n} should be staged in the mod"
+        );
+        assert_eq!(crc_at(&mod_cat, n), 0, "{n} CRC zeroed in the mod catalog");
+    }
+
+    // The GAME is untouched: its catalog CRCs are unchanged (mod patched only its copy).
+    let game_crc_after: Vec<u32> = bundle_names.iter().map(|n| crc_at(&cat, n)).collect();
+    assert_eq!(game_crc_before, game_crc_after, "the game catalog must be untouched");
+    eprintln!("mod export: {locales_seen} locales overwritten, fonts staged, game untouched ✓");
 }

@@ -171,6 +171,23 @@ projects.
 - **Game files are read-only until Export.** All state is kept in the sidecar
   `<game>/.rpgtl/` (`project.db`, backups, `source/`). `project::export` backs up
   the files it will touch, then injects in place.
+- **Two export modes: in-place vs mod.** `project::export` writes the translation
+  **into the game** (backup + in-place inject + optional `embed_font`).
+  `project::export_mod` instead builds a **staging mirror** of the game root, writes
+  only the changed/added files there, and zips it to `.rpgtl/mods/<lang>-<ts>.zip`
+  (via `zip_dir`) — a distributable overlay the user copies over their game, with the
+  **game never modified**. The redirect rides the existing `inject(root, units,
+  out_dir)` seam plus an `out_dir`/`out_base` on the font + additive-export paths
+  (`GameEngine::embed_font` gained an `out_dir` where patched/new files land — reads
+  come from `data_dir`, or from `out_dir` if a file was already injected there;
+  `unity_csv::export_locale` gained an `out_base`). A mod is built to be the target
+  language **without an in-game language switch**: `unity-csvloc` overwrites *every*
+  shipped source locale by key (keys are shared across locales), single-locale
+  engines are inherently the target. Supported so far: `unity-csvloc` (safe — in-place
+  is additive so source locales stay pristine) and `rpgmaker-mvmz` (structural JSON
+  pointers → reading an already-exported game is idempotent). Byte-span text engines
+  (godot/tyrano/kirikiri) and the Ren'Py/Hendrix multi-locale specials still return
+  "use Export → game" until their pristine-read path is added.
 - **Export must be idempotent.** A `pointer` is a byte offset into the *original*
   file, but export injects in place, so a naive second export would splice
   original offsets into already-translated bytes — cutting multi-byte characters

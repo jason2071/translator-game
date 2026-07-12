@@ -83,14 +83,23 @@ pub trait GameEngine: Send + Sync {
     /// Drop the bundled target-language font (`font`, i.e. [`TARGET_FONT`]) into
     /// the game and repoint the game's fonts at it, so translated text renders
     /// (the stock fonts often lack Thai/CJK glyphs). Called at export time, after
-    /// [`inject`](Self::inject), only when the user opts in. `backup_dir`, when
-    /// given, is the export's timestamped backup folder — copy any font-hook file
-    /// there before overwriting it. Returns a human-readable note on what was
-    /// patched, or `None` when the engine has no font hook. Default: no-op.
+    /// [`inject`](Self::inject), only when the user opts in. Returns a
+    /// human-readable note on what was patched, or `None` when the engine has no
+    /// font hook. Default: no-op.
+    ///
+    /// `data_dir` is the live game (the source of truth for originals); `out_dir` is
+    /// where patched/new files are written and is `== data_dir` for a normal in-place
+    /// export, or a separate **staging mirror** for a "mod" export (so the game is
+    /// never touched). An impl must therefore read originals from `data_dir` (or, when
+    /// a file may already have been injected, prefer `out_dir` if present) and write
+    /// only under `out_dir`. `backup_dir`, when given, is the export's timestamped
+    /// backup folder — copy any font-hook file there before overwriting it (only
+    /// relevant in-place; a mod never overwrites the game).
     fn embed_font(
         &self,
         _root: &Path,
         _data_dir: &Path,
+        _out_dir: &Path,
         _font: &[u8],
         _backup_dir: Option<&Path>,
     ) -> anyhow::Result<Option<String>> {

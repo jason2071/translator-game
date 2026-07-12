@@ -39,11 +39,17 @@ serde-pickle = "1"
 # Embed the bundled unrpyc decompiler (a multi-file Python tree) so a game that
 # ships only compiled `.rpyc` can be auto-decompiled — see engine::unrpyc.
 include_dir = "0.7"
+# Package a translation as a distributable .zip mod (deflate reuses flate2 above).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Walk the staging mirror when building a mod zip.
+walkdir = "2"
 # Dev-only: `.env` loading for local API keys (guarded by debug_assertions).
 dotenvy = "0.15"
 
 [dev-dependencies]
 tempfile = "3"
+# Read back a mod .zip in the export_mod integration test.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["macros", "rt", "time"] }
 async-trait = "0.1"

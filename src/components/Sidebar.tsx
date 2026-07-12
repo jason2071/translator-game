@@ -1,5 +1,6 @@
 import { useState, useEffect, type CSSProperties } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api, type ExportResult, type Status } from "../ipc";
 import { useStore } from "../store";
 import { useTheme } from "../theme";
@@ -29,16 +30,20 @@ export function Sidebar({
   const toggleTheme = useTheme((s) => s.toggle);
 
   const [exporting, setExporting] = useState(false);
+  const [exportingMod, setExportingMod] = useState(false);
   const [applyingTm, setApplyingTm] = useState(false);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [version, setVersion] = useState("");
 
-  // RPGMaker's stock fonts have no Thai glyphs, so offer to embed a Thai-capable
-  // font on export. Default on when translating to Thai. (Ren'Py embeds its own
-  // font in the tl/<lang>/ path, so the option is RPGMaker-only here.)
-  const isMvMz = project.engineId === "rpgmaker-mvmz";
+  // Stock game fonts often have no Thai glyphs, so offer to embed a Thai-capable font
+  // on export. Default on when translating to Thai. Shown for the engines whose
+  // `embed_font` does something (Ren'Py embeds its own font inside its tl/ path).
+  const FONT_ENGINES = ["rpgmaker-mvmz", "unity-csvloc", "rpgmaker-hendrix"];
+  const MOD_ENGINES = ["unity-csvloc", "rpgmaker-mvmz"];
+  const fontCapable = FONT_ENGINES.includes(project.engineId);
+  const modCapable = MOD_ENGINES.includes(project.engineId);
   const [embedFont, setEmbedFont] = useState(() => /thai/i.test(project.targetLang ?? ""));
 
   useEffect(() => {
@@ -66,7 +71,7 @@ export function Sidebar({
     setErr(null);
     setResult(null);
     try {
-      const r = await api.exportProject(true, isMvMz && embedFont);
+      const r = await api.exportProject(true, fontCapable && embedFont);
       setResult(r);
       setMsg(r.note ?? `Exported ${r.unitsApplied} units → ${r.filesWritten} files`);
       await refreshMeta();
@@ -74,6 +79,23 @@ export function Sidebar({
       setErr(String(e));
     } finally {
       setExporting(false);
+    }
+  }
+
+  // Export a distributable mod .zip that overlays onto the game (game untouched),
+  // then reveal it in the file manager.
+  async function doExportMod() {
+    setExportingMod(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const r = await api.exportMod(fontCapable && embedFont);
+      setMsg((r.note ?? `Mod: ${r.unitsApplied} units → ${r.filesWritten} files`) + " (.zip)");
+      await revealItemInDir(r.zipPath).catch(() => {});
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setExportingMod(false);
     }
   }
 
@@ -207,18 +229,29 @@ export function Sidebar({
           <Icon name="settings" />
           <span className="lbl">Settings</span>
         </button>
-        <button className="primary full" onClick={doExport} disabled={exporting}>
+        <button className="primary full" onClick={doExport} disabled={exporting || exportingMod}>
           <Icon name="export" />
           <span className="lbl">{exporting ? "Exporting…" : "Export → game"}</span>
         </button>
+        {modCapable && (
+          <button
+            className="ghost full"
+            onClick={doExportMod}
+            disabled={exporting || exportingMod}
+            title="Build a .zip you copy over the game (game untouched). It makes the game Thai with no in-game language switch."
+          >
+            <Icon name="export" />
+            <span className="lbl">{exportingMod ? "Packaging…" : "Export as mod (.zip)"}</span>
+          </button>
+        )}
         <div className="row">
-          {isMvMz && !collapsed && (
+          {fontCapable && !collapsed && (
             <label className="chk embed-font-chk" title="Drop a Thai-capable font into the game and repoint its fonts at it, so translated Thai renders instead of missing-glyph boxes">
               <input
                 type="checkbox"
                 checked={embedFont}
                 onChange={(e) => setEmbedFont(e.target.checked)}
-                disabled={exporting}
+                disabled={exporting || exportingMod}
               />
               Embed Thai font
             </label>

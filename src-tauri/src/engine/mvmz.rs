@@ -150,28 +150,34 @@ impl GameEngine for MvMzEngine {
         &self,
         _root: &Path,
         data_dir: &Path,
+        out_dir: &Path,
         font: &[u8],
         backup_dir: Option<&Path>,
     ) -> Result<Option<String>> {
         const FONT_FILE: &str = "Sarabun-Regular.ttf";
         // `fonts/` and `js/` sit beside the data dir: `<root>` for MZ, `<root>/www`
-        // for a deployed MV game.
-        let base = data_dir.parent().unwrap_or(data_dir);
-        let fonts_dir = base.join("fonts");
-        std::fs::create_dir_all(&fonts_dir).context("creating fonts/ dir")?;
-        std::fs::write(fonts_dir.join(FONT_FILE), font)
+        // for a deployed MV game. Reads come from the game (`base_in`); everything
+        // patched/new is written under `base_out` (== `base_in` in-place, or a mod
+        // staging mirror). A file inject may already have written (System.json) is
+        // preferred from `base_out`.
+        let base_in = data_dir.parent().unwrap_or(data_dir);
+        let base_out = out_dir.parent().unwrap_or(out_dir);
+        let fonts_out = base_out.join("fonts");
+        std::fs::create_dir_all(&fonts_out).context("creating fonts/ dir")?;
+        std::fs::write(fonts_out.join(FONT_FILE), font)
             .with_context(|| format!("writing fonts/{FONT_FILE}"))?;
 
         // Repoint the game's font at ours — MV via gamefont.css, MZ via System.json.
-        let css = fonts_dir.join("gamefont.css");
-        let sys_path = data_dir.join("System.json");
-        let font_note = if css.is_file() {
+        let css_in = base_in.join("fonts").join("gamefont.css");
+        let sys_in = data_dir.join("System.json");
+        let sys_out = out_dir.join("System.json");
+        let font_note = if css_in.is_file() {
             if let Some(bdir) = backup_dir {
                 let dst = bdir.join("fonts").join("gamefont.css");
                 if let Some(parent) = dst.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                let _ = std::fs::copy(&css, &dst);
+                let _ = std::fs::copy(&css_in, &dst);
             }
             // Fixed template overriding both families MV uses; later @font-face for
             // a family wins in NW.js/Chromium, and writing a constant keeps
@@ -181,17 +187,20 @@ impl GameEngine for MvMzEngine {
                  @font-face {{ font-family: GameFont; src: url(\"{FONT_FILE}\"); }}\n\
                  @font-face {{ font-family: GameFontFallback; src: url(\"{FONT_FILE}\"); }}\n"
             );
-            std::fs::write(&css, patched).context("writing fonts/gamefont.css")?;
+            std::fs::write(fonts_out.join("gamefont.css"), patched)
+                .context("writing fonts/gamefont.css")?;
             format!("Embedded {FONT_FILE}, repointed fonts/gamefont.css (MV).")
-        } else if sys_path.is_file() {
-            let text = std::fs::read_to_string(&sys_path).context("reading System.json")?;
+        } else if sys_in.is_file() {
+            // Prefer the already-injected System.json under out_dir; fall back to the game.
+            let read_from = if sys_out.is_file() { &sys_out } else { &sys_in };
+            let text = std::fs::read_to_string(read_from).context("reading System.json")?;
             let mut val: Value = serde_json::from_str(&text).context("parsing System.json")?;
             match val.get_mut("advanced").and_then(Value::as_object_mut) {
                 Some(adv) => {
                     adv.insert("mainFontFilename".into(), Value::String(FONT_FILE.into()));
                     // Compact + key-order-preserving, matching RPGMaker's own format.
                     let out = serde_json::to_string(&val)?;
-                    std::fs::write(&sys_path, out).context("writing System.json")?;
+                    std::fs::write(&sys_out, out).context("writing System.json")?;
                     format!("Embedded {FONT_FILE}, set System.json mainFontFilename (MZ).")
                 }
                 None => format!("Embedded {FONT_FILE} into fonts/, but System.json has no advanced block."),
@@ -205,7 +214,7 @@ impl GameEngine for MvMzEngine {
         // outline blobs them together (a mai-ek over a sara-ii). A tiny plugin
         // drops the outline width so the marks stay distinct. Best-effort: a
         // failure here must not fail the font embed.
-        let outline_note = match install_thin_outline_plugin(base, backup_dir) {
+        let outline_note = match install_thin_outline_plugin(base_in, base_out, backup_dir) {
             Ok(note) => note,
             Err(e) => Some(format!("(text-outline plugin skipped: {e})")),
         };
@@ -241,22 +250,34 @@ const THIN_OUTLINE_PLUGIN: &str = r#"/*:
 /// register it (last, so it wins) in `js/plugins.js`. Idempotent — re-running
 /// after it is already registered is a no-op. Returns a short status note, or
 /// `None` when the game has no `js/plugins.js` (nothing we can safely hook).
-fn install_thin_outline_plugin(base: &Path, backup_dir: Option<&Path>) -> Result<Option<String>> {
+fn install_thin_outline_plugin(
+    base_in: &Path,
+    base_out: &Path,
+    backup_dir: Option<&Path>,
+) -> Result<Option<String>> {
     const PLUGIN_NAME: &str = "RPGTL_ThaiText";
-    let plugins_js = base.join("js").join("plugins.js");
-    if !plugins_js.is_file() {
+    // The game must ship a plugins.js to hook. Prefer an already-injected copy under
+    // base_out; fall back to the game's.
+    let plugins_in = base_in.join("js").join("plugins.js");
+    let plugins_out = base_out.join("js").join("plugins.js");
+    let read_from = if plugins_out.is_file() { &plugins_out } else { &plugins_in };
+    if !read_from.is_file() {
         return Ok(None);
     }
 
-    // 1) Drop the plugin file (idempotent overwrite).
-    let plugins_dir = base.join("js").join("plugins");
+    // 1) Drop the plugin file (idempotent overwrite) under base_out.
+    let plugins_dir = base_out.join("js").join("plugins");
     std::fs::create_dir_all(&plugins_dir).context("creating js/plugins/ dir")?;
     std::fs::write(plugins_dir.join(format!("{PLUGIN_NAME}.js")), THIN_OUTLINE_PLUGIN)
         .context("writing the thin-outline plugin")?;
 
     // 2) Register it in the $plugins array unless it is already there.
-    let text = std::fs::read_to_string(&plugins_js).context("reading js/plugins.js")?;
+    let text = std::fs::read_to_string(read_from).context("reading js/plugins.js")?;
     if text.contains(&format!("\"{PLUGIN_NAME}\"")) {
+        // Already registered upstream; still ensure base_out has the file.
+        if plugins_out != *read_from {
+            std::fs::write(&plugins_out, &text).context("writing js/plugins.js")?;
+        }
         return Ok(Some("(text outline already thinned)".into()));
     }
     if let Some(bdir) = backup_dir {
@@ -264,7 +285,7 @@ fn install_thin_outline_plugin(base: &Path, backup_dir: Option<&Path>) -> Result
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::copy(&plugins_js, &dst);
+        let _ = std::fs::copy(read_from, &dst);
     }
     // plugins.js is `var $plugins =\n[ {...}, ... ];` — parse the JSON array
     // between the first '[' and the last ']', append our entry, and rewrite,
@@ -283,7 +304,7 @@ fn install_thin_outline_plugin(base: &Path, backup_dir: Option<&Path>) -> Result
         "parameters": {}
     }));
     let rebuilt = format!("{}{}{}", &text[..start], serde_json::to_string(&arr)?, &text[end + 1..]);
-    std::fs::write(&plugins_js, rebuilt).context("writing js/plugins.js")?;
+    std::fs::write(&plugins_out, rebuilt).context("writing js/plugins.js")?;
     Ok(Some("thinned the text outline (RPGTL_ThaiText plugin).".into()))
 }
 
@@ -844,7 +865,7 @@ mod tests {
         .unwrap();
 
         let note = MvMzEngine
-            .embed_font(tmp.path(), &data, super::super::TARGET_FONT, None)
+            .embed_font(tmp.path(), &data, &data, super::super::TARGET_FONT, None)
             .unwrap()
             .expect("a note");
         assert!(note.contains("MZ"), "{note}");
@@ -873,7 +894,7 @@ mod tests {
 
         let backup = tmp.path().join("backup");
         let note = MvMzEngine
-            .embed_font(tmp.path(), &data, super::super::TARGET_FONT, Some(&backup))
+            .embed_font(tmp.path(), &data, &data, super::super::TARGET_FONT, Some(&backup))
             .unwrap()
             .expect("a note");
         assert!(note.contains("MV"), "{note}");
@@ -890,7 +911,7 @@ mod tests {
 
         // Re-running is idempotent (writes the same fixed template).
         let css2_note = MvMzEngine
-            .embed_font(tmp.path(), &data, super::super::TARGET_FONT, None)
+            .embed_font(tmp.path(), &data, &data, super::super::TARGET_FONT, None)
             .unwrap();
         assert!(css2_note.is_some());
         assert_eq!(std::fs::read_to_string(fonts.join("gamefont.css")).unwrap(), css);
@@ -917,7 +938,7 @@ mod tests {
         .unwrap();
 
         MvMzEngine
-            .embed_font(tmp.path(), &data, super::super::TARGET_FONT, None)
+            .embed_font(tmp.path(), &data, &data, super::super::TARGET_FONT, None)
             .unwrap();
 
         // Plugin file dropped, and registered LAST so it wins over other plugins.
@@ -937,7 +958,7 @@ mod tests {
 
         // Re-embedding must not register it a second time.
         MvMzEngine
-            .embed_font(tmp.path(), &data, super::super::TARGET_FONT, None)
+            .embed_font(tmp.path(), &data, &data, super::super::TARGET_FONT, None)
             .unwrap();
         assert_eq!(read_names(), vec!["Existing", "RPGTL_ThaiText"]);
     }

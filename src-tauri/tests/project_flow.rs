@@ -84,3 +84,47 @@ fn open_edit_export_reopen() {
     assert!(!fresh2, "second open should reuse the DB");
     assert_eq!(project::db::stats(&proj2.conn).unwrap().translated, 1);
 }
+
+/// A mod export writes a distributable `.zip` mirroring the game's paths and never
+/// touches the game itself.
+#[test]
+fn export_mod_zips_the_translation_without_touching_the_game() {
+    use std::io::Read;
+
+    let (_tmp, root) = temp_game();
+    let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+
+    // Translate the game title.
+    let units = project::db::list_units(
+        &proj.conn,
+        &UnitFilter {
+            file: Some("System.json".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let title = units.iter().find(|u| u.pointer == "/gameTitle").unwrap();
+    project::db::update_unit(&proj.conn, title.id, Some("ทดสอบเควส"), Status::Translated.as_str())
+        .unwrap();
+
+    let sys = root.join("data").join("System.json");
+    let before = std::fs::read(&sys).unwrap();
+
+    let r = project::export_mod(&proj, false).unwrap();
+    let zip_path = Path::new(&r.zip_path);
+    assert!(zip_path.is_file(), "a mod .zip should be written");
+    assert!(r.files_written >= 1);
+    assert_eq!(r.units_applied, 1);
+
+    // The game itself is untouched by a mod export.
+    assert_eq!(std::fs::read(&sys).unwrap(), before, "mod export must not modify the game");
+
+    // The zip carries data/System.json with the translated title.
+    let f = std::fs::File::open(zip_path).unwrap();
+    let mut zip = zip::ZipArchive::new(f).unwrap();
+    let mut entry = zip.by_name("data/System.json").expect("data/System.json in the mod zip");
+    let mut buf = String::new();
+    entry.read_to_string(&mut buf).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&buf).unwrap();
+    assert_eq!(val.pointer("/gameTitle").unwrap().as_str().unwrap(), "ทดสอบเควส");
+}

@@ -56,6 +56,21 @@ translates **English → Thai** (like the Naninovel locale slot).
   Untranslated catalogs are copied verbatim so the locale is complete. An unchanged
   unit reproduces the original bytes → **true byte-identity round-trip**.
 
+## Export modes: in-place vs mod `.zip`
+
+- **Export → game** (`export_locale(out_base = None)`): additive, in place — writes a
+  new `<target>/` locale folder into the game (source locales untouched) and, when the
+  font is embedded, swaps the game's font bundles + clears their CRC. The user picks
+  the new language in-game.
+- **Export as mod (.zip)** (`export_locale(out_base = Some(staging))`, driven by
+  `project::export_mod`): builds a **staging mirror** of the game root, writes only the
+  changed/added files there, and zips it — a distributable overlay the user copies over
+  their game. The **game is never touched**. To make it the target language with **no
+  in-game switch**, it **overwrites every shipped source locale** (`english/`,
+  `russian/`, …) *by key* (CSV keys are shared across locales, so one `{key → Thai}`
+  map fills them all), and stages the swapped font bundles + a CRC-zeroed copy of
+  `catalog.bin`. So whichever locale the game shows is Thai.
+
 ## Fonts (the hard part) + Addressables CRC
 
 The stock TMPro fonts (LiberationSans / berlinsansfb / Onest) have **no Thai

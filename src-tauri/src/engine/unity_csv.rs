@@ -116,11 +116,12 @@ impl GameEngine for UnityCsvEngine {
         &self,
         root: &Path,
         data_dir: &Path,
+        out_dir: &Path,
         font: &[u8],
         backup_dir: Option<&Path>,
     ) -> Result<Option<String>> {
         let _ = root;
-        embed_thai_font(data_dir, font, backup_dir).map(Some)
+        embed_thai_font(data_dir, out_dir, font, backup_dir).map(Some)
     }
 }
 
@@ -312,12 +313,18 @@ pub struct LocaleExport {
     pub note: String,
 }
 
-/// Additive export: rebuild every source CSV with its translations and write it into a
-/// **new `<target>/` locale folder** (plus a `meta.txt` so the game lists it), leaving
-/// the source locales untouched — the parallel-locale model, like Ren'Py's `tl/`. When
-/// `embed_font`, also swaps the Thai font into the font bundle(s) and clears their
-/// Addressables CRC. Returns file count + a human note. `make_backup` only guards the
-/// font/catalog edits (the new locale folder overwrites nothing).
+/// Export the translated locale.
+///
+/// **In-place (`out_base = None`):** additive — rebuild each source CSV with its
+/// translations and write it into a **new `<target>/` locale folder** (+ a `meta.txt`
+/// so the game lists it), leaving the source locales untouched (parallel-locale, like
+/// Ren'Py's `tl/`). `make_backup` guards the font/catalog edits.
+///
+/// **Mod (`out_base = Some(base)`):** write a distributable overlay under `base`
+/// (mirroring the game root's layout) — the game is never touched. To make the game
+/// Thai **without an in-game language switch**, it **overwrites every existing source
+/// locale** (english, russian, …) by key (CSV keys are shared across locales), so
+/// whichever locale the game shows is Thai. See [`export_mod_locale`].
 pub fn export_locale(
     root: &Path,
     data_dir: &Path,
@@ -325,7 +332,11 @@ pub fn export_locale(
     target_lang: &str,
     make_backup: bool,
     embed_font: bool,
+    out_base: Option<&Path>,
 ) -> Result<LocaleExport> {
+    if let Some(base) = out_base {
+        return export_mod_locale(root, data_dir, units, embed_font, base);
+    }
     let loc = data_dir.join("StreamingAssets").join("Localization");
     let (src_name, _src_dir) =
         source_locale(&loc).ok_or_else(|| anyhow!("no source locale folder to translate from"))?;
@@ -391,7 +402,7 @@ pub fn export_locale(
         } else {
             None
         };
-        match embed_thai_font(data_dir, super::TARGET_FONT, backup.as_deref()) {
+        match embed_thai_font(data_dir, data_dir, super::TARGET_FONT, backup.as_deref()) {
             Ok(n) => note.push_str(&format!(" {n}")),
             Err(e) => note.push_str(&format!(" Font embedding failed: {e}")),
         }
@@ -403,6 +414,145 @@ pub fn export_locale(
         backup_dir,
         note,
     })
+}
+
+/// Mod export: write a Thai overlay under `base` (mirroring the game root), never
+/// touching the game. **Overwrites every existing source locale** by key so the game
+/// is Thai whichever locale it defaults to (no in-game switch). Font bundles +
+/// `catalog.bin` (CRC-zeroed) are staged under `base` too.
+fn export_mod_locale(
+    root: &Path,
+    data_dir: &Path,
+    units: &[TransUnit],
+    embed_font: bool,
+    base: &Path,
+) -> Result<LocaleExport> {
+    let loc = data_dir.join("StreamingAssets").join("Localization");
+    // Mirror of the game's data dir under the mod base (e.g. base/<name>_Data).
+    let data_rel = data_dir.strip_prefix(root).unwrap_or(data_dir);
+    let out_data = base.join(data_rel);
+    let out_loc = out_data.join("StreamingAssets").join("Localization");
+
+    // key -> Thai, keyed by (catalog filename, key). Keys are shared across locales,
+    // so the same map fills english/, russian/, … alike.
+    let key_map = build_key_map(units);
+
+    let mut files = 0usize;
+    let mut locales = 0usize;
+    for locale_dir in locale_dirs(&loc) {
+        let Some(lname) = locale_dir.file_name().and_then(|n| n.to_str()) else { continue };
+        let out_locale = out_loc.join(lname);
+        std::fs::create_dir_all(&out_locale)
+            .with_context(|| format!("creating {}", out_locale.display()))?;
+        for csv in csv_files(&locale_dir) {
+            let name = csv.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            let content = std::fs::read_to_string(&csv)
+                .with_context(|| format!("reading {}", csv.display()))?;
+            let rebuilt = rebuild_by_key(&content, name, &key_map);
+            std::fs::write(out_locale.join(name), rebuilt)
+                .with_context(|| format!("writing {lname}/{name}"))?;
+            files += 1;
+        }
+        // Keep each locale's meta.txt (labels stay as shipped; only the text is Thai).
+        let meta = locale_dir.join("meta.txt");
+        if meta.is_file() {
+            std::fs::copy(&meta, out_locale.join("meta.txt")).context("copying meta.txt")?;
+        }
+        locales += 1;
+    }
+
+    let mut note = format!(
+        "Wrote Thai into {files} catalog(s) across {locales} locale folder(s) (every language \
+         overwritten, so the game is Thai without switching)."
+    );
+    if embed_font {
+        match embed_thai_font(data_dir, &out_data, super::TARGET_FONT, None) {
+            Ok(n) => note.push_str(&format!(" {n}")),
+            Err(e) => note.push_str(&format!(" Font embedding failed: {e}")),
+        }
+    }
+
+    Ok(LocaleExport {
+        files,
+        backup_dir: None,
+        note,
+    })
+}
+
+/// Map `(catalog filename, key) -> translation` from the applied units. A unit's
+/// `file` ends in the catalog name and its `context` is the key.
+fn build_key_map(units: &[TransUnit]) -> std::collections::HashMap<(String, String), String> {
+    let mut map = std::collections::HashMap::new();
+    for u in units {
+        if !u.status.is_applied() {
+            continue;
+        }
+        let (Some(tr), Some(key)) = (u.translation.as_deref(), u.context.as_deref()) else {
+            continue;
+        };
+        let name = Path::new(&u.file)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        map.insert((name, key.to_string()), tr.to_string());
+    }
+    map
+}
+
+/// Rebuild one `key;value` catalog, replacing each value whose `(catalog, key)` is in
+/// `key_map` with the Thai translation. Lines split on the first `;` (values never
+/// contain one); the key, the `;`, and the exact line terminator are preserved, so a
+/// row with no translation is byte-identical.
+fn rebuild_by_key(
+    content: &str,
+    catalog: &str,
+    key_map: &std::collections::HashMap<(String, String), String>,
+) -> String {
+    let mut out = String::with_capacity(content.len());
+    for line in content.split_inclusive('\n') {
+        // Split the line into its content and its terminator (\n, \r\n, or none).
+        let mut end = line.len();
+        let mut term = "";
+        if line.ends_with('\n') {
+            end -= 1;
+            if line[..end].ends_with('\r') {
+                end -= 1;
+                term = "\r\n";
+            } else {
+                term = "\n";
+            }
+        }
+        let body = &line[..end];
+        match body.split_once(';') {
+            Some((key, _val)) => {
+                if let Some(tr) = key_map.get(&(catalog.to_string(), key.to_string())) {
+                    out.push_str(key);
+                    out.push(';');
+                    out.push_str(tr);
+                } else {
+                    out.push_str(body);
+                }
+            }
+            None => out.push_str(body),
+        }
+        out.push_str(term);
+    }
+    out
+}
+
+/// Every locale folder under `loc` (a subdir with a `meta.txt` and at least one CSV).
+fn locale_dirs(loc: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = match std::fs::read_dir(loc) {
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && p.join("meta.txt").is_file() && !csv_files(p).is_empty())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    out.sort();
+    out
 }
 
 /// A fresh timestamped backup directory under `.rpgtl/backups/`.
@@ -461,10 +611,20 @@ fn json_escape(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Swap the bundled Thai font into every font bundle's Dynamic-atlas source TTF and
-/// clear each bundle's Addressables CRC in `catalog.bin`. Returns a human note.
-fn embed_thai_font(data_dir: &Path, font: &[u8], backup_dir: Option<&Path>) -> Result<String> {
+/// clear each bundle's Addressables CRC. Reads the original bundles + `catalog.bin`
+/// from `data_dir` (the game) and writes the patched copies under `write_dir`
+/// (mirroring `data_dir`'s internal layout): `== data_dir` for an in-place export, or
+/// a mod staging mirror. Returns a human note.
+fn embed_thai_font(
+    data_dir: &Path,
+    write_dir: &Path,
+    font: &[u8],
+    backup_dir: Option<&Path>,
+) -> Result<String> {
     let sw = data_dir.join("StreamingAssets").join("aa").join("StandaloneWindows64");
     let catalog = data_dir.join("StreamingAssets").join("aa").join("catalog.bin");
+    let sw_out = write_dir.join("StreamingAssets").join("aa").join("StandaloneWindows64");
+    let catalog_out = write_dir.join("StreamingAssets").join("aa").join("catalog.bin");
     let bundles = font_bundles(&sw);
     if bundles.is_empty() {
         return Err(anyhow!("no font bundle found under {}", sw.display()));
@@ -477,7 +637,15 @@ fn embed_thai_font(data_dir: &Path, font: &[u8], backup_dir: Option<&Path>) -> R
     let ttf = temp_path("font", "ttf");
     std::fs::write(&ttf, font).context("writing the Thai font for the font helper")?;
 
-    // Back up the catalog once (all CRC patches land in it).
+    // The CRC patches all land in one catalog. For a mod, stage a copy of the game's
+    // catalog under write_dir and patch that (game untouched); in-place, patch it live.
+    if catalog_out != catalog {
+        if let Some(parent) = catalog_out.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&catalog, &catalog_out).context("staging catalog.bin into the mod")?;
+    }
+    // Back up the catalog once (only in-place; a mod never touches the game).
     if let Some(bk) = backup_dir {
         backup_into(bk, data_dir, &catalog)?;
     }
@@ -487,8 +655,8 @@ fn embed_thai_font(data_dir: &Path, font: &[u8], backup_dir: Option<&Path>) -> R
         if let Some(bk) = backup_dir {
             backup_into(bk, data_dir, bundle)?;
         }
-        // Sidecar writes the modified bundle to a temp path (UnityPy holds the input
-        // open while saving), which we then move over the original.
+        // Sidecar reads the game bundle and writes the modified bundle to a temp path
+        // (UnityPy holds the input open while saving); we then move it into write_dir.
         let out = temp_path("bundle", "tmp");
         let args: Vec<OsString> = vec![
             "swap-font".into(),
@@ -497,10 +665,14 @@ fn embed_thai_font(data_dir: &Path, font: &[u8], backup_dir: Option<&Path>) -> R
             out.clone().into(),
         ];
         let run = super::unity::run_sidecar(&args);
+        let bundle_out = sw_out.join(bundle.file_name().unwrap_or_default());
         let done = (|| {
             run?;
-            std::fs::copy(&out, bundle)
-                .with_context(|| format!("installing patched {}", bundle.display()))?;
+            if let Some(parent) = bundle_out.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&out, &bundle_out)
+                .with_context(|| format!("installing patched {}", bundle_out.display()))?;
             Ok::<(), anyhow::Error>(())
         })();
         let _ = std::fs::remove_file(&out);
@@ -508,8 +680,8 @@ fn embed_thai_font(data_dir: &Path, font: &[u8], backup_dir: Option<&Path>) -> R
 
         // Clear this bundle's CRC so Addressables loads the modified bytes.
         if let Some(hash) = bundle_hash(bundle) {
-            patch_catalog_crc(&catalog, &hash)
-                .with_context(|| format!("clearing Addressables CRC for {}", bundle.display()))?;
+            patch_catalog_crc(&catalog_out, &hash)
+                .with_context(|| format!("clearing Addressables CRC for {}", bundle_out.display()))?;
         }
         swapped += 1;
     }
@@ -747,7 +919,7 @@ mod tests {
                 u.status = crate::model::Status::Translated;
             }
         }
-        let ex = export_locale(root, &data, &units, "Thai", false, false).unwrap();
+        let ex = export_locale(root, &data, &units, "Thai", false, false, None).unwrap();
         let thai = data.join("StreamingAssets/Localization/thai");
         assert!(thai.join("meta.txt").is_file());
         assert!(thai.join("dialogs.csv").is_file()); // copied verbatim (no translation)
@@ -762,6 +934,56 @@ mod tests {
         .unwrap();
         assert!(eng.contains("menu_new_game;New Game\r\n"));
         assert!(ex.files >= 2);
+    }
+
+    #[test]
+    fn rebuild_by_key_replaces_only_mapped_values_and_keeps_crlf() {
+        let mut m = std::collections::HashMap::new();
+        m.insert(("dialogs.csv".to_string(), "k1".to_string()), "แปล".to_string());
+        let content = "k1;hello\r\nk2;world\r\nno_semicolon_line\r\n";
+        // Right catalog: only k1 is replaced; CRLF + other rows preserved.
+        assert_eq!(
+            rebuild_by_key(content, "dialogs.csv", &m),
+            "k1;แปล\r\nk2;world\r\nno_semicolon_line\r\n"
+        );
+        // Wrong catalog name → nothing matches → byte-identical.
+        assert_eq!(rebuild_by_key(content, "ui.csv", &m), content);
+    }
+
+    #[test]
+    fn export_mod_overwrites_every_locale_by_key_leaving_the_game_untouched() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        make_game(root);
+        let data = root.join("Game_Data");
+        let mut units = UnityCsvEngine.extract(root, &ExtractOpts::default()).unwrap();
+        // The key 67e9_p_ceea exists in BOTH english/ and russian/ dialogs.csv.
+        for u in &mut units {
+            if u.context.as_deref() == Some("67e9_p_ceea") {
+                u.translation = Some("อีกวัน".into());
+                u.status = crate::model::Status::Translated;
+            }
+        }
+        let mod_dir = tempfile::tempdir().unwrap();
+        let ex =
+            export_locale(root, &data, &units, "Thai", false, false, Some(mod_dir.path())).unwrap();
+        assert!(ex.backup_dir.is_none());
+
+        // Both locales in the mod carry the Thai value for the shared key.
+        let base = "Game_Data/StreamingAssets/Localization";
+        for loc in ["english", "russian"] {
+            let c = std::fs::read_to_string(mod_dir.path().join(format!("{base}/{loc}/dialogs.csv")))
+                .unwrap();
+            assert!(c.contains("67e9_p_ceea;อีกวัน\r\n"), "{loc} should be Thai by key");
+        }
+        // No new `thai/` folder — it overwrites existing locales in place (in the mod).
+        assert!(!mod_dir.path().join(format!("{base}/thai")).exists());
+        // The real game is never modified.
+        let game = std::fs::read_to_string(
+            data.join("StreamingAssets/Localization/english/dialogs.csv"),
+        )
+        .unwrap();
+        assert!(game.contains("67e9_p_ceea;Another day.\r\n"));
     }
 
     #[test]

@@ -231,6 +231,7 @@ pub fn export_sheet(
             if let Err(e) = super::mvmz::MvMzEngine.embed_font(
                 root,
                 &data,
+                &data,
                 super::TARGET_FONT,
                 backup_dir.as_deref().map(Path::new),
             ) {

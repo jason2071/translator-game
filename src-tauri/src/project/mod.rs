@@ -189,6 +189,7 @@ pub fn export(project: &Project, make_backup: bool, embed_font: bool) -> Result<
             &lang,
             make_backup,
             embed_font,
+            None, // in-place export into the game
         )?;
         return Ok(ExportResult {
             files_written: ex.files,
@@ -313,8 +314,10 @@ pub fn export(project: &Project, make_backup: bool, embed_font: bool) -> Result<
     // files (e.g. MZ's System.json). Best-effort: a font error must not fail the
     // export, which already wrote the translations.
     let note = if embed_font {
+        // In-place: read from and write to the same live data dir.
         match eng.embed_font(
             &project.root,
+            &project.data_dir,
             &project.data_dir,
             engine::TARGET_FONT,
             backup_dir.as_deref().map(Path::new),
@@ -332,4 +335,155 @@ pub fn export(project: &Project, make_backup: bool, embed_font: bool) -> Result<
         backup_dir,
         note,
     })
+}
+
+/// Result of a mod export.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModResult {
+    /// Absolute path to the written `.zip`.
+    pub zip_path: String,
+    pub files_written: usize,
+    pub units_applied: usize,
+    pub note: Option<String>,
+}
+
+/// Export the translation as a distributable **mod `.zip`** that mirrors the game
+/// root's layout and holds only the changed/added files — the user unzips it over
+/// their game. The **game is never modified**. The overlay is built so the game shows
+/// the translation with **no in-game language switch** (locale games overwrite every
+/// shipped locale; single-locale games are translated directly).
+///
+/// Supported engines: `unity-csvloc` (overwrite-all-locales, safe because in-place
+/// export is additive so the source locales stay pristine) and `rpgmaker-mvmz`
+/// (structural JSON pointers, so reading a possibly-already-exported game is
+/// idempotent). Other engines return an actionable error until their pristine-read
+/// path is added.
+pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
+    let eng = engine::detect(&project.root)
+        .ok_or_else(|| anyhow!("engine no longer detected for this project"))?;
+    let units = db::all_units(&project.conn)?;
+    let applied: Vec<_> = units.iter().filter(|u| u.status.is_applied()).collect();
+    let lang = db::get_meta(&project.conn, "target_lang")?
+        .unwrap_or_else(|| "translated".to_string());
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mods_root = rpgtl_dir(&project.root).join("mods");
+    let staging = mods_root.join(format!("staging-{ts}"));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+
+    // Build the mod tree under `staging`, per engine.
+    let build = (|| -> Result<(usize, String)> {
+        match eng.id() {
+            "unity-csvloc" => {
+                let ex = engine::unity_csv::export_locale(
+                    &project.root,
+                    &project.data_dir,
+                    &units,
+                    &lang,
+                    false,
+                    embed_font,
+                    Some(&staging),
+                )?;
+                Ok((ex.files, ex.note))
+            }
+            "rpgmaker-mvmz" => {
+                // Mirror the data dir under staging (staging/<data-rel>), so the zip's
+                // paths match how the user overlays it onto the game root.
+                let data_rel = project
+                    .data_dir
+                    .strip_prefix(&project.root)
+                    .unwrap_or(Path::new(""));
+                let staging_data = staging.join(data_rel);
+                std::fs::create_dir_all(&staging_data)?;
+                eng.inject(&project.root, &units, &staging_data)?;
+                let touched = applied.iter().map(|u| u.file.clone()).collect::<std::collections::BTreeSet<_>>();
+                let mut note = format!("Injected {} translated file(s) into the mod.", touched.len());
+                if embed_font {
+                    match eng.embed_font(
+                        &project.root,
+                        &project.data_dir,
+                        &staging_data,
+                        engine::TARGET_FONT,
+                        None,
+                    ) {
+                        Ok(Some(fnote)) => note.push_str(&format!(" {fnote}")),
+                        Ok(None) => {}
+                        Err(e) => note.push_str(&format!(" (font embed failed: {e})")),
+                    }
+                }
+                Ok((touched.len(), note))
+            }
+            _ => Err(anyhow!(
+                "Mod export isn't supported for the {} engine yet — use “Export → game”.",
+                eng.name()
+            )),
+        }
+    })();
+
+    let (files_written, note) = match build {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+    };
+
+    // Zip the staging mirror, then discard staging.
+    let zip_path = mods_root.join(format!("{}-{ts}.zip", lang_slug(&lang)));
+    let zip_res = zip_dir(&staging, &zip_path);
+    let _ = std::fs::remove_dir_all(&staging);
+    zip_res?;
+
+    Ok(ModResult {
+        zip_path: zip_path.to_string_lossy().to_string(),
+        files_written,
+        units_applied: applied.len(),
+        note: Some(note),
+    })
+}
+
+/// A filesystem-safe slug for the zip name (`ไทย (TH)` → `mod`, `Thai` → `thai`).
+fn lang_slug(lang: &str) -> String {
+    let s: String = lang
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    let s = s.trim_matches('-').to_string();
+    if s.is_empty() { "mod".to_string() } else { format!("{s}-mod") }
+}
+
+/// Zip everything under `src` into `dest` (deflated), storing paths relative to `src`
+/// with forward slashes. Streams file bodies so large font bundles don't load fully
+/// into memory.
+fn zip_dir(src: &Path, dest: &Path) -> Result<()> {
+    use zip::write::SimpleFileOptions;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::File::create(dest).context("creating the mod zip")?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for entry in walkdir::WalkDir::new(src).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let rel = match path.strip_prefix(src) {
+            Ok(r) if !r.as_os_str().is_empty() => r,
+            _ => continue,
+        };
+        let name = rel.to_string_lossy().replace('\\', "/");
+        if path.is_dir() {
+            zip.add_directory(format!("{name}/"), opts)?;
+        } else if path.is_file() {
+            zip.start_file(name, opts)?;
+            let mut f = std::fs::File::open(path)?;
+            std::io::copy(&mut f, &mut zip).context("zipping a mod file")?;
+        }
+    }
+    zip.finish().context("finalizing the mod zip")?;
+    Ok(())
 }

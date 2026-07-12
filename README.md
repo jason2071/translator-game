@@ -30,6 +30,13 @@ Project-based workflow — the original game is never touched until you export:
    fills them in, so the original scripts are never modified, nothing recompiles,
    and the translation becomes a selectable in-game language (with the same font
    drop-in so it renders).
+4. **Export as mod (.zip)** *(alternative to step 3)* → package the translation as a
+   distributable `.zip` that mirrors the game's paths, holding only the changed/added
+   files — copy it over the game (or share it) **without the app touching the
+   original**. It's built to be the target language with **no in-game language
+   switch** (multi-locale games get every locale overwritten; single-locale games are
+   translated directly). Supported for **Unity (CSV localization)** and **RPGMaker
+   MV/MZ**.
 
 Features: a **windowed** grid that stays light on huge projects (holds only the
 visible slice — scales to ~1M strings), translation memory (auto-fills
