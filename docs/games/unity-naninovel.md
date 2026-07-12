@@ -92,18 +92,22 @@ Phase-0 PoC + Phase-1 engine both green on **My MILF Stepmom**:
 
 ## Known gaps / next
 
-- **Story dialogue is out of reach.** In a compiled-script Naninovel game (like
-  Stepmom) the dialogue lives in `Naninovel.Script` MonoBehaviours whose typetrees are
-  **stripped**. It *is* reachable via typetree-from-DLL (TypeTreeGeneratorAPI loads the
-  Managed DLLs, e.g. `get_nodes("…Naninovel.Runtime","Naninovel.Script")` → 31 nodes),
-  but the script lines are `[SerializeReference]` polymorphic subclasses
-  (`CommandScriptLine` / `GenericTextScriptLine` / `CommentScriptLine`), and UnityPy
-  1.25.2 + generator 0.0.10 can't resolve the per-line ref types ("Failed to get ref
-  type node"). So the engine translates **UI / managed text only** — a script-heavy
-  game gets its menus / names / gallery, not its story; a Naninovel game localized the
-  *proper* way (managed script-localization docs) is fully covered. The detect warning
-  says so. A fix needs a different toolchain (AssetsTools.NET + Cpp2IL, or a
-  ref-type-capable generator) — large and fragile per Naninovel version.
+- **Story dialogue — not in the shipped engine (but reachable).** In a
+  compiled-script Naninovel game (like Stepmom) the dialogue lives in
+  `Naninovel.Script` MonoBehaviours whose typetrees are **stripped**, and the script
+  lines are `[SerializeReference]` polymorphic subclasses (`CommandScriptLine` /
+  `GenericTextScriptLine` / `CommentScriptLine`) that UnityPy 1.25.2 + generator 0.0.10
+  can't resolve via typetree ("Failed to get ref type node"). So the *shipped* engine
+  translates **UI / managed text only** — a script-heavy game gets its menus / names /
+  gallery, not its story (the detect warning says so); a Naninovel game localized the
+  *proper* way (managed script-localization docs) is fully covered. **A raw byte-splice
+  path is proven, though:** those dialogue strings are ordinary length-prefixed UTF-8
+  (`[i32 len][utf8][pad 4]`) inside the raw MonoBehaviour blob, editable *without* a
+  typetree (`get_raw_data` → splice → `set_raw_data` → `env.file.save()`), and a marker
+  appended to ~1900 lines showed **on-screen in-game** (2026-07-12) — so the
+  SerializeReference wall is a non-issue. That's the planned **Phase 3a dialogue tier**;
+  the remaining work is *robust string enumeration* (the linear scan desyncs / the CJK
+  heuristic won't generalize) + a Thai TMP font, not the typetree.
 - **Thai glyphs** — Naninovel renders via TMPro; the stock font likely lacks Thai →
   tofu. Injecting a TMP SDF font with Thai glyphs is materially harder than the
   Ren'Py/RPGMaker font swap. Deferred; prove the pipeline with a font-safe marker
