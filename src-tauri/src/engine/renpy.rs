@@ -1419,10 +1419,22 @@ const TL_FONT: &[u8] = super::TARGET_FONT;
 
 /// Write the bundled font into the game.
 fn copy_target_font(dst: &Path) -> Result<()> {
+    // Already in place with the same bytes (a re-export) — skip the write. Besides
+    // saving work, this keeps a re-export from failing when the game is *running* and
+    // holding the font open (a Windows sharing violation): the font is already there,
+    // so there's nothing to do.
+    if std::fs::read(dst).is_ok_and(|b| b == TL_FONT) {
+        return Ok(());
+    }
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(dst, TL_FONT).with_context(|| format!("writing font {}", dst.display()))?;
+    std::fs::write(dst, TL_FONT).with_context(|| {
+        format!(
+            "writing the Thai font {} — if the game is open, close it and export again",
+            dst.display()
+        )
+    })?;
     Ok(())
 }
 
