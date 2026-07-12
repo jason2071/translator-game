@@ -1,7 +1,8 @@
 # RPGMaker Translator
 
 Desktop app to translate RPG / visual-novel games — **RPGMaker MV/MZ**,
-**Ren'Py**, **TyranoScript**, **KiriKiri**, and **Godot** (`.po`/`.csv`) — with an
+**Ren'Py**, **TyranoScript**, **KiriKiri**, **Godot** (`.po`/`.csv`), and
+**Unity (Naninovel)** (managed text — UI / names / gallery) — with an
 engine-plugin architecture ready for more (VX Ace, 2000/2003, HTML/Twine, …).
 Translate by hand or with AI (Local / Claude / OpenAI / Gemini / OpenRouter / any
 OpenAI-compatible endpoint).
@@ -45,7 +46,8 @@ and API keys stored in the OS keychain (never on disk).
 ```
 src-tauri/src/
   engine/        GameEngine trait + registry; mvmz / renpy / tyrano / kirikiri /
-                 godot, codes.rs, protect.rs, encoding.rs (KiriKiri Shift-JIS/UTF-16)
+                 godot / unity (Naninovel, bundled UnityPy helper), codes.rs,
+                 protect.rs, encoding.rs (KiriKiri Shift-JIS/UTF-16)
   project/       SQLite store (db.rs), open/create + backup/export (mod.rs)
   ai/            TranslationProvider trait; openai/anthropic/gemini; prompt + retry
   keys.rs        OS keychain (keyring)

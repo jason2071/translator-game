@@ -25,6 +25,11 @@ graphify-out/
 src-tauri/target/
 src-tauri/gen/
 
+# Frozen Unity (Naninovel) helper — a large, platform-specific build artifact
+# produced by scripts/freeze-unity-sidecar.ps1 and embedded by build.rs. Not
+# committed; regenerate for a release build (absent → engine uses system Python).
+src-tauri/resources/unity/rpgtl-unity.exe
+
 # Secrets / env — never commit API keys
 .env
 .env.*

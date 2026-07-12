@@ -4,11 +4,14 @@
 //! Unity stores such strings in the built-in **`TextAsset`** class, whose layout is
 //! stable and needs no game DLL / typetree to read — so, like the AnvilNext text
 //! engines, the binary work is done by an external tool and this engine only shuttles
-//! plain records to and from it. Here the tool is a bundled **Python + UnityPy**
-//! helper (`resources/unity/rpgtl_unity.py`), driven the way [`super::renpy`] drives
-//! the vendored unrpyc decompiler — Unity games ship no Python, so a later phase
-//! bundles a frozen interpreter; Phase 1 uses the system `python` and degrades with
-//! an actionable error when it (or UnityPy) is missing.
+//! plain records to and from it. Here the tool is a **UnityPy** helper
+//! (`resources/unity/rpgtl_unity.py`), driven the way [`super::renpy`] drives the
+//! vendored unrpyc decompiler. Unity games ship no Python, so the release build
+//! embeds a frozen interpreter (`rpgtl-unity.exe`, built by
+//! `scripts/freeze-unity-sidecar.ps1`, `include_bytes!`d through `build.rs`) and
+//! runs it directly. A build without that exe (a plain `cargo build`, CI, or a
+//! non-Windows host) falls back to the system `python` + the plain script and
+//! degrades with an actionable error when it (or UnityPy) is missing.
 //!
 //! ## Pointer & round-trip
 //!
@@ -284,8 +287,33 @@ fn sidecar_script() -> Result<PathBuf> {
     Ok(path)
 }
 
-/// First working Python interpreter on PATH (Phase 1: the system interpreter; a later
-/// phase bundles a frozen one so there's no system dependency).
+/// Materialize the embedded frozen helper exe into a version-stamped temp cache and
+/// return its path, or `None` when this build embedded no exe (the zero-byte
+/// placeholder `build.rs` stages when the artifact hasn't been frozen) — then the
+/// caller uses the system-Python fallback. Reused across runs; refreshed when absent
+/// or a different size (a release upgrade, or a dev re-freeze at the same version).
+fn bundled_sidecar() -> Result<Option<PathBuf>> {
+    static EXE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rpgtl-unity.exe"));
+    if EXE.is_empty() {
+        return Ok(None);
+    }
+    let dir = std::env::temp_dir()
+        .join("rpgtl-unity")
+        .join(env!("CARGO_PKG_VERSION"));
+    let path = dir.join("rpgtl-unity.exe");
+    // Size alone detects a stale copy: the version stamp separates releases, and a
+    // re-freeze at the same version changes the byte count. Avoids reading ~70 MB
+    // back on every call just to compare.
+    let fresh = std::fs::metadata(&path).map(|m| m.len()).ok() == Some(EXE.len() as u64);
+    if !fresh {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&path, EXE).context("writing the bundled Unity helper exe")?;
+    }
+    Ok(Some(path))
+}
+
+/// First working Python interpreter on PATH — the fallback when this build embedded
+/// no frozen helper (dev / CI / non-Windows).
 fn find_python() -> Option<PathBuf> {
     for name in ["python", "python3", "py"] {
         let ok = Command::new(name)
@@ -300,21 +328,30 @@ fn find_python() -> Option<PathBuf> {
     None
 }
 
-/// Run the helper `<python> rpgtl_unity.py <args…>`, turning a non-zero exit into an
-/// actionable error (including the "install UnityPy" hint).
+/// Run the helper with `args`, turning a non-zero exit into an actionable error
+/// (including the "install UnityPy" hint). Prefers the embedded frozen exe
+/// (`<exe> <args…>`, no system dependency) and falls back to a system Python +
+/// the plain script (`<python> rpgtl_unity.py <args…>`) when no exe is embedded.
 fn run_sidecar(args: &[OsString]) -> Result<()> {
-    let script = sidecar_script()?;
-    let python = find_python().ok_or_else(|| {
-        anyhow!(
-            "Unity (Naninovel) support needs Python 3 with UnityPy installed, but no \
-             `python` was found on PATH. Install Python 3 and run: pip install UnityPy"
-        )
-    })?;
-    let output = Command::new(&python)
-        .arg(&script)
+    // (program, leading args before the sidecar's own args).
+    let (program, pre_args): (PathBuf, Vec<OsString>) = match bundled_sidecar()? {
+        Some(exe) => (exe, Vec::new()),
+        None => {
+            let python = find_python().ok_or_else(|| {
+                anyhow!(
+                    "Unity (Naninovel) support needs the bundled helper, which this \
+                     build does not include, and no system `python` was found on PATH \
+                     as a fallback. Install Python 3 and run: pip install UnityPy"
+                )
+            })?;
+            (python, vec![sidecar_script()?.into_os_string()])
+        }
+    };
+    let output = Command::new(&program)
+        .args(&pre_args)
         .args(args)
         .output()
-        .with_context(|| format!("running the Unity helper via {}", python.display()))?;
+        .with_context(|| format!("running the Unity helper via {}", program.display()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let hint = if stderr.contains("UnityPy") || stderr.contains("ModuleNotFoundError") {

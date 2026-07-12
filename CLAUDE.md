@@ -4,10 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Desktop app to translate RPG / visual-novel games by hand or via AI. Five engines
+Desktop app to translate RPG / visual-novel games by hand or via AI. Six engines
 ship: **RPGMaker MV/MZ** (JSON), **Ren'Py** (`.rpy`), **TyranoScript** (`.ks`,
-UTF-8), **KiriKiri** (`.ks`, Shift-JIS/UTF-16), and **Godot** (gettext `.po` /
-translation `.csv`). Tauri v2 (Rust core) + React/Vite/TypeScript. The Rust side owns all heavy logic (parse, extract, inject,
+UTF-8), **KiriKiri** (`.ks`, Shift-JIS/UTF-16), **Godot** (gettext `.po` /
+translation `.csv`), and **Unity (Naninovel)** (managed-text `TextAsset`s via a
+bundled UnityPy helper — UI / names / gallery only; compiled story dialogue is out
+of scope). Tauri v2 (Rust core) + React/Vite/TypeScript. The Rust side owns all heavy logic (parse, extract, inject,
 DB, AI orchestration, keychain); the frontend is a thin view over Tauri `invoke`
 commands + events.
 
@@ -65,7 +67,20 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   unrpyc dir + a relative `unrpyc.py` so its sibling `import decompiler` resolves
   (the bundled Ren'Py Python doesn't add an absolute script's dir to `sys.path`). If
   no Python is found or unrpyc fails, import degrades to the original actionable
-  "decompile with unrpyc" error — never a silent empty project.
+  "decompile with unrpyc" error — never a silent empty project. `unity.rs` is the
+  **Unity (Naninovel)** engine: Naninovel managed-text `TextAsset`s (UI, character
+  names, gallery) via a **UnityPy helper** (`resources/unity/rpgtl_unity.py`) driven
+  like unrpyc — pointer `"<file>#<pathId>#<key>"`, round-trip relaxed to
+  **load-faithful** (like KiriKiri's UTF-16 exception, since UnityPy re-serializes
+  the whole `SerializedFile`). It detects a `<name>_Data/` dir with `resources.assets`
+  + a `*Naninovel*.dll`, declining plain Unity games; compiled **story dialogue**
+  (stripped-typetree `Naninovel.Script`, `[SerializeReference]` script-lines) is out
+  of scope, so a script-heavy game gets only its UI translated (the detect warning
+  says so). Unity games ship no Python, so the release build embeds a **frozen exe**
+  (`rpgtl-unity.exe`, PyInstaller via `scripts/freeze-unity-sidecar.ps1`,
+  `include_bytes!`d through `build.rs` — a git-ignored artifact, `cargo build`
+  succeeds without it); a build lacking the exe falls back to the system `python` +
+  the plain script.
 - **`project/`** — SQLite persistence (`db.rs`) and project lifecycle (`mod.rs`):
   open/create the sidecar store, backup, and export.
 - **`ai/`** — one `TranslationProvider` trait, providers behind it, plus prompt

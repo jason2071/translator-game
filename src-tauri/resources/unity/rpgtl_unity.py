@@ -27,6 +27,28 @@ docs, it falls back to the source docs (base language becomes the translation).
 """
 import sys, os, glob, json, re
 
+# The frozen build (PyInstaller, driven by `scripts/freeze-unity-sidecar.ps1`)
+# excludes UnityPy's texture dependencies (PIL, numpy, astc_encoder, …) — this
+# engine only touches `TextAsset` and never decodes an image, and those libs are
+# ~60 MB of the frozen size. But `import UnityPy` eagerly imports its legacy
+# texture patches, which `from PIL import Image` at module load. So under a frozen
+# build only, register empty stand-ins for the unused texture libs; the patched
+# functions are never called, so the stubs are enough for `import UnityPy` to
+# succeed. Under system Python (`sys.frozen` unset) nothing is stubbed and the
+# real libraries are used.
+if getattr(sys, "frozen", False):
+    import types
+
+    def _stub(name):
+        mod = types.ModuleType(name)
+        mod.__path__ = []
+        sys.modules.setdefault(name, mod)
+        return sys.modules[name]
+
+    _stub("PIL").Image = _stub("PIL.Image")
+    for _name in ("numpy", "astc_encoder", "texture2ddecoder", "etcpak"):
+        _stub(_name)
+
 import UnityPy
 
 # Header of a localization doc: "; Chinese (S) <zh-CN> to English <en> localization
