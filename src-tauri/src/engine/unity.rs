@@ -51,25 +51,54 @@ const LOCALE: &str = "en";
 
 pub struct UnityEngine;
 
-/// One record from the helper's `export` manifest.
+/// One record from the helper's `export` manifest — a managed-text record or a
+/// dialogue line, tagged by `t` (see the sidecar's module doc).
 #[derive(Deserialize)]
-struct ExportRec {
-    file: String,
-    #[serde(rename = "pathId")]
-    path_id: i64,
-    name: String,
-    key: String,
-    source: String,
+#[serde(tag = "t")]
+enum ExportRec {
+    /// Naninovel managed text: a `TextAsset` doc's `key`.
+    #[serde(rename = "mt")]
+    Mt {
+        file: String,
+        #[serde(rename = "pathId")]
+        path_id: i64,
+        name: String,
+        key: String,
+        source: String,
+    },
+    /// Compiled story dialogue: the `idx`-th spoken line in a script MonoBehaviour,
+    /// `char` = the speaker's author id (kept out of `source`, re-attached on import).
+    #[serde(rename = "dlg")]
+    Dlg {
+        file: String,
+        #[serde(rename = "pathId")]
+        path_id: i64,
+        idx: i64,
+        char: Option<String>,
+        source: String,
+    },
 }
 
-/// One record fed to the helper's `import` step.
+/// One record fed to the helper's `import` step, tagged to match [`ExportRec`].
 #[derive(Serialize)]
-struct PatchRec {
-    file: String,
-    #[serde(rename = "pathId")]
-    path_id: i64,
-    key: String,
-    translation: String,
+#[serde(tag = "t")]
+enum PatchRec {
+    #[serde(rename = "mt")]
+    Mt {
+        file: String,
+        #[serde(rename = "pathId")]
+        path_id: i64,
+        key: String,
+        translation: String,
+    },
+    #[serde(rename = "dlg")]
+    Dlg {
+        file: String,
+        #[serde(rename = "pathId")]
+        path_id: i64,
+        idx: i64,
+        translation: String,
+    },
 }
 
 impl GameEngine for UnityEngine {
@@ -94,10 +123,11 @@ impl GameEngine for UnityEngine {
             file_count: assets_count(&data),
             warnings: vec![
                 "Unity (Naninovel) support is experimental. It translates Naninovel \
-                 managed text — menus, character names, gallery text — via a Python + \
-                 UnityPy helper. Story dialogue compiled into the game's scripts is \
-                 NOT translated (those use stripped-typetree serialization this engine \
-                 can't reach), so a script-heavy game gets only its UI translated."
+                 managed text (menus, character names, gallery) and the compiled story \
+                 dialogue, both via a bundled UnityPy helper. Dialogue is extracted \
+                 heuristically from the game's scripts, so a few non-dialogue lines may \
+                 appear in the grid — verify in-game. Text in a script the game's font \
+                 can't render (e.g. Thai) shows as blank boxes until a font is embedded."
                     .to_string(),
             ],
         })
@@ -123,10 +153,28 @@ impl GameEngine for UnityEngine {
 
         let units = recs
             .into_iter()
-            .map(|r| {
-                let pointer = format!("{}#{}#{}", r.file, r.path_id, r.key);
-                TransUnit::new(&r.file, pointer, kind_for(&r.name, &r.key), &r.source)
-                    .with_context(Some(r.key))
+            .map(|r| match r {
+                ExportRec::Mt {
+                    file,
+                    path_id,
+                    name,
+                    key,
+                    source,
+                } => {
+                    let pointer = format!("{}#{}#{}", file, path_id, key);
+                    TransUnit::new(&file, pointer, kind_for(&name, &key), &source)
+                        .with_context(Some(key))
+                }
+                ExportRec::Dlg {
+                    file,
+                    path_id,
+                    idx,
+                    char,
+                    source,
+                } => {
+                    let pointer = format!("dlg#{}#{}#{}", file, path_id, idx);
+                    TransUnit::new(&file, pointer, UnitKind::Dialogue, &source).with_context(char)
+                }
             })
             .collect();
         Ok(units)
@@ -138,14 +186,11 @@ impl GameEngine for UnityEngine {
         let mut patch = Vec::new();
         for u in units {
             if u.status.is_applied() && u.translation.is_some() {
-                let (file, path_id, key) = parse_pointer(&u.pointer)
-                    .ok_or_else(|| anyhow!("bad unity pointer {}", u.pointer))?;
-                patch.push(PatchRec {
-                    file,
-                    path_id,
-                    key,
-                    translation: u.translation.clone().unwrap_or_default(),
-                });
+                let translation = u.translation.clone().unwrap_or_default();
+                patch.push(
+                    patch_rec(&u.pointer, translation)
+                        .ok_or_else(|| anyhow!("bad unity pointer {}", u.pointer))?,
+                );
             }
         }
         if patch.is_empty() {
@@ -206,17 +251,37 @@ fn kind_for(name: &str, key: &str) -> UnitKind {
     }
 }
 
-/// Split a `"<file>#<pathId>#<key>"` pointer. Naninovel keys are dotted identifiers
-/// and the file is a bare `.assets` name, so neither carries a `#`.
-fn parse_pointer(p: &str) -> Option<(String, i64, String)> {
-    let mut it = p.splitn(3, '#');
+/// Build the `import` patch record for a translated unit from its pointer.
+/// A dialogue pointer is `"dlg#<file>#<pathId>#<idx>"`; a managed-text pointer is
+/// `"<file>#<pathId>#<key>"`. A Naninovel key is a dotted identifier (never a bare
+/// integer) and the file is a `.assets` name, so a managed-text pointer never
+/// collides with the `dlg#` tag and neither part carries a stray `#`.
+fn patch_rec(pointer: &str, translation: String) -> Option<PatchRec> {
+    if let Some(rest) = pointer.strip_prefix("dlg#") {
+        let mut it = rest.splitn(3, '#');
+        let file = it.next()?.to_string();
+        let path_id = it.next()?.parse().ok()?;
+        let idx = it.next()?.parse().ok()?;
+        return Some(PatchRec::Dlg {
+            file,
+            path_id,
+            idx,
+            translation,
+        });
+    }
+    let mut it = pointer.splitn(3, '#');
     let file = it.next()?.to_string();
     let path_id = it.next()?.parse().ok()?;
     let key = it.next()?.to_string();
     if key.is_empty() {
         return None;
     }
-    Some((file, path_id, key))
+    Some(PatchRec::Mt {
+        file,
+        path_id,
+        key,
+        translation,
+    })
 }
 
 /// The `<name>_Data` directory of a Unity **Naninovel** game under `root`, or `None`.
@@ -419,16 +484,45 @@ mod tests {
     }
 
     #[test]
-    fn pointer_round_trips() {
-        let (f, id, k) = parse_pointer("resources.assets#576#CGGallery.Title").unwrap();
-        assert_eq!(f, "resources.assets");
-        assert_eq!(id, 576);
-        assert_eq!(k, "CGGallery.Title");
-        // A key with dots/underscores/dashes survives (only the first two `#` split).
-        let (_f, _id, k2) = parse_pointer("resources.assets#12#Caroline_Story_1_Descript").unwrap();
-        assert_eq!(k2, "Caroline_Story_1_Descript");
-        assert!(parse_pointer("resources.assets#576").is_none());
-        assert!(parse_pointer("resources.assets#notanumber#key").is_none());
+    fn patch_rec_routes_managed_text_and_dialogue_pointers() {
+        // Managed text: "<file>#<pathId>#<key>", key survives dots/underscores.
+        match patch_rec("resources.assets#576#CGGallery.Title", "T".into()).unwrap() {
+            PatchRec::Mt {
+                file,
+                path_id,
+                key,
+                translation,
+            } => {
+                assert_eq!(file, "resources.assets");
+                assert_eq!(path_id, 576);
+                assert_eq!(key, "CGGallery.Title");
+                assert_eq!(translation, "T");
+            }
+            _ => panic!("expected a managed-text patch"),
+        }
+        let mt = patch_rec("resources.assets#12#Caroline_Story_1_Descript", "x".into()).unwrap();
+        assert!(matches!(mt, PatchRec::Mt { key, .. } if key == "Caroline_Story_1_Descript"));
+
+        // Dialogue: "dlg#<file>#<pathId>#<idx>".
+        match patch_rec("dlg#resources.assets#7107#42", "T".into()).unwrap() {
+            PatchRec::Dlg {
+                file,
+                path_id,
+                idx,
+                translation,
+            } => {
+                assert_eq!(file, "resources.assets");
+                assert_eq!(path_id, 7107);
+                assert_eq!(idx, 42);
+                assert_eq!(translation, "T");
+            }
+            _ => panic!("expected a dialogue patch"),
+        }
+
+        // Malformed pointers are rejected.
+        assert!(patch_rec("resources.assets#576", "x".into()).is_none());
+        assert!(patch_rec("resources.assets#notanumber#key", "x".into()).is_none());
+        assert!(patch_rec("dlg#resources.assets#7107#notanumber", "x".into()).is_none());
     }
 
     #[test]

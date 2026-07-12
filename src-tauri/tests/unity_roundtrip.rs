@@ -11,7 +11,7 @@
 //!     `RPGTL_UNITY_GAME` points at a game root. See `docs/games/unity-naninovel.md`.
 
 use app_lib::engine::{self, ExtractOpts};
-use app_lib::model::Status;
+use app_lib::model::{Status, UnitKind};
 use std::path::{Path, PathBuf};
 
 fn touch(p: &Path) {
@@ -69,10 +69,19 @@ fn extract_inject_roundtrip_on_a_real_game() {
             return;
         }
     };
-    assert!(!units.is_empty(), "a Naninovel game should yield managed-text units");
+    assert!(!units.is_empty(), "a Naninovel game should yield units");
+    // Two tiers: managed text ("<file>#<pathId>#<key>", 3 parts) and dialogue
+    // ("dlg#<file>#<pathId>#<idx>", the dlg# tag + 3 parts).
     assert!(
-        units.iter().all(|u| u.pointer.split('#').count() == 3),
-        "every pointer is <file>#<pathId>#<key>"
+        units.iter().all(|u| {
+            let core = u.pointer.strip_prefix("dlg#").unwrap_or(&u.pointer);
+            core.split('#').count() == 3
+        }),
+        "pointers are managed-text or dlg# dialogue"
+    );
+    assert!(
+        units.iter().any(|u| u.kind == UnitKind::Dialogue),
+        "the dialogue tier should yield compiled story lines"
     );
 
     // Translate every unit with a reversible marker.
@@ -110,5 +119,10 @@ fn extract_inject_roundtrip_on_a_real_game() {
     assert!(
         re.iter().any(|u| u.source.starts_with("[RT]")),
         "the injected marker must survive the binary round-trip"
+    );
+    assert!(
+        re.iter()
+            .any(|u| u.kind == UnitKind::Dialogue && u.source.starts_with("[RT]")),
+        "a compiled dialogue line's translation must survive the raw byte-splice"
     );
 }

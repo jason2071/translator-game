@@ -7,9 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Desktop app to translate RPG / visual-novel games by hand or via AI. Six engines
 ship: **RPGMaker MV/MZ** (JSON), **Ren'Py** (`.rpy`), **TyranoScript** (`.ks`,
 UTF-8), **KiriKiri** (`.ks`, Shift-JIS/UTF-16), **Godot** (gettext `.po` /
-translation `.csv`), and **Unity (Naninovel)** (managed-text `TextAsset`s via a
-bundled UnityPy helper — UI / names / gallery only; compiled story dialogue is out
-of scope). Tauri v2 (Rust core) + React/Vite/TypeScript. The Rust side owns all heavy logic (parse, extract, inject,
+translation `.csv`), and **Unity (Naninovel)** (managed text — UI / names / gallery
+— **and** the compiled story dialogue, both via a bundled UnityPy helper). Tauri v2 (Rust core) + React/Vite/TypeScript. The Rust side owns all heavy logic (parse, extract, inject,
 DB, AI orchestration, keychain); the frontend is a thin view over Tauri `invoke`
 commands + events.
 
@@ -68,15 +67,20 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   (the bundled Ren'Py Python doesn't add an absolute script's dir to `sys.path`). If
   no Python is found or unrpyc fails, import degrades to the original actionable
   "decompile with unrpyc" error — never a silent empty project. `unity.rs` is the
-  **Unity (Naninovel)** engine: Naninovel managed-text `TextAsset`s (UI, character
-  names, gallery) via a **UnityPy helper** (`resources/unity/rpgtl_unity.py`) driven
-  like unrpyc — pointer `"<file>#<pathId>#<key>"`, round-trip relaxed to
-  **load-faithful** (like KiriKiri's UTF-16 exception, since UnityPy re-serializes
-  the whole `SerializedFile`). It detects a `<name>_Data/` dir with `resources.assets`
-  + a `*Naninovel*.dll`, declining plain Unity games; compiled **story dialogue**
-  (stripped-typetree `Naninovel.Script`, `[SerializeReference]` script-lines) is out
-  of scope, so a script-heavy game gets only its UI translated (the detect warning
-  says so). Unity games ship no Python, so the release build embeds a **frozen exe**
+  **Unity (Naninovel)** engine, via a **UnityPy helper** (`resources/unity/rpgtl_unity.py`)
+  driven like unrpyc; two tiers. **Tier 1 — managed text** (UI, names, gallery):
+  `TextAsset` `Key: Value` docs, pointer `"<file>#<pathId>#<key>"`. **Tier 2 —
+  compiled story dialogue**: the `Naninovel.Script` MonoBehaviours are
+  stripped-typetree with `[SerializeReference]` script-lines UnityPy can't read
+  structurally, but the spoken text is plain length-prefixed UTF-8 in the raw blob, so
+  the helper enumerates it at 4-byte-aligned offsets and **splices on the bytes** (no
+  typetree), pointer `"dlg#<file>#<pathId>#<idx>"` (idx into a deterministic
+  enumeration). Both tiers are **locale-aware**: they target the game's `en`
+  localization (Naninovel `translate` docs / per-script `zh→en` localization MBs), so
+  a Thai user translates the existing **English → Thai**. Round-trip relaxed to
+  **load-faithful** (like KiriKiri's UTF-16 exception, since UnityPy re-serializes the
+  whole `SerializedFile`). Detects a `<name>_Data/` dir with `resources.assets` + a
+  `*Naninovel*.dll`, declining plain Unity games. Unity games ship no Python, so the release build embeds a **frozen exe**
   (`rpgtl-unity.exe`, PyInstaller via `scripts/freeze-unity-sidecar.ps1`,
   `include_bytes!`d through `build.rs` — a git-ignored artifact, `cargo build`
   succeeds without it); a build lacking the exe falls back to the system `python` +
