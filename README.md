@@ -1,8 +1,11 @@
 # RPGMaker Translator
 
 Desktop app to translate RPG / visual-novel games — **RPGMaker MV/MZ**,
-**Ren'Py**, **TyranoScript**, **KiriKiri**, **Godot** (`.po`/`.csv`), and
-**Unity (Naninovel)** (managed text — UI / names / gallery) — with an
+**Ren'Py**, **TyranoScript**, **KiriKiri**, **Godot** (`.po`/`.csv`),
+**Unity (Naninovel)** (managed text + compiled dialogue), and
+**Unity (CSV localization)** (IL2CPP + Addressables games whose text lives in
+`StreamingAssets/Localization/<lang>/*.csv`, translated into a new locale folder
+with an automatic Thai-font swap) — with an
 engine-plugin architecture ready for more (VX Ace, 2000/2003, HTML/Twine, …).
 Translate by hand or with AI (Local / Claude / OpenAI / Gemini / OpenRouter / any
 OpenAI-compatible endpoint).

@@ -25,6 +25,7 @@ pub mod rpa;
 pub mod renpy_tl;
 pub mod tyrano;
 pub mod unity;
+pub mod unity_csv;
 pub mod unrpyc;
 
 use crate::model::TransUnit;
@@ -119,6 +120,11 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // Naninovel runtime assembly — a fingerprint no other engine shares, so
         // order is immaterial. Plain (non-Naninovel) Unity games are declined.
         Box::new(unity::UnityEngine),
+        // Unity (CSV localization): a different Unity storage method — text in
+        // `StreamingAssets/Localization/<lang>/*.csv`. Its fingerprint (a locale
+        // folder with meta.txt + CSVs) is unique, so it never overlaps Naninovel
+        // or plain Unity; registered after Naninovel for tidiness.
+        Box::new(unity_csv::UnityCsvEngine),
         // Forger `.acod` string tables (Assassin's Creed). Unique extension +
         // UTF-16LE BOM fingerprint, so it never overlaps the others; order is
         // immaterial. Kept last as the most specialized/niche target.

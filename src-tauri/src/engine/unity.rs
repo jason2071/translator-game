@@ -397,7 +397,10 @@ fn find_python() -> Option<PathBuf> {
 /// (including the "install UnityPy" hint). Prefers the embedded frozen exe
 /// (`<exe> <args…>`, no system dependency) and falls back to a system Python +
 /// the plain script (`<python> rpgtl_unity.py <args…>`) when no exe is embedded.
-fn run_sidecar(args: &[OsString]) -> Result<()> {
+///
+/// Shared with [`super::unity_csv`], which drives the same helper for its `swap-font`
+/// command (both Unity engines ship the one bundled `rpgtl_unity.py` / frozen exe).
+pub(super) fn run_sidecar(args: &[OsString]) -> Result<()> {
     // (program, leading args before the sidecar's own args).
     let (program, pre_args): (PathBuf, Vec<OsString>) = match bundled_sidecar()? {
         Some(exe) => (exe, Vec::new()),

@@ -24,6 +24,7 @@ section in [[ROADMAP]].
 | [[anvilnext-forger]] | AnvilNext — AC Origins / Odyssey / Valhalla (`.acod` via Forger) | 🟢 Easy (text layer) + external Forger/FontForge | **implemented** (branch `engine-forger-acod`) — engine + protect + tests green; pending real EN `.acod` validation |
 | [[anvilnext-locpackage-format]] | AC Origins `.Localization_Package` → `aclocexport` text | 🟢 Easy (community `aclocexport`/`aclocimport` do the binary; app owns a UTF-8 `Id:`/text format) | **implemented** — `ac-loctext` engine (branch `engine-forger-acod`); format confirmed on 33 787 real Origins records; tests green. Supersedes the binary-RE idea |
 | [[unity-naninovel]] | Unity (Mono) — Naninovel managed-text `TextAsset`s (e.g. My MILF Stepmom) | 🟢 Easy (built-in `TextAsset`, no typetree) via bundled UnityPy helper; 🔴 stripped-typetree custom Unity games declined | **implemented** (Phase 1) — `unity` engine + `mask_unity` + tests green; validated in-game. Ships behind system Python until the frozen-helper bundle (Phase 2) |
+| [[unity-csv-localization]] | Unity (IL2CPP + Addressables) — plaintext `StreamingAssets/Localization/<lang>/*.csv` (e.g. Milf Plaza) | 🟢 Easy text (plaintext CSV, parallel-locale export); 🟠 fonts via dynamic-fallback TTF swap + Addressables CRC-zero | **implemented** — `unity-csvloc` engine + `swap-font` sidecar cmd + CRC patch; text/font/CRC all validated in-game |
 
 ## Backlog ideas (not yet researched)
 

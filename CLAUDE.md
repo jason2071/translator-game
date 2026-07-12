@@ -4,11 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Desktop app to translate RPG / visual-novel games by hand or via AI. Six engines
+Desktop app to translate RPG / visual-novel games by hand or via AI. Seven engines
 ship: **RPGMaker MV/MZ** (JSON), **Ren'Py** (`.rpy`), **TyranoScript** (`.ks`,
 UTF-8), **KiriKiri** (`.ks`, Shift-JIS/UTF-16), **Godot** (gettext `.po` /
-translation `.csv`), and **Unity (Naninovel)** (managed text — UI / names / gallery
-— **and** the compiled story dialogue, both via a bundled UnityPy helper). Tauri v2 (Rust core) + React/Vite/TypeScript. The Rust side owns all heavy logic (parse, extract, inject,
+translation `.csv`), **Unity (Naninovel)** (managed text — UI / names / gallery
+— **and** the compiled story dialogue, both via a bundled UnityPy helper), and
+**Unity (CSV localization)** (a different Unity storage method — plaintext
+`StreamingAssets/Localization/<lang>/*.csv` catalogs in IL2CPP + Addressables games,
+translated into a new locale folder + a Thai-font swap into the game's font bundle).
+Tauri v2 (Rust core) + React/Vite/TypeScript. The Rust side owns all heavy logic (parse, extract, inject,
 DB, AI orchestration, keychain); the frontend is a thin view over Tauri `invoke`
 commands + events.
 
@@ -84,7 +88,24 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   (`rpgtl-unity.exe`, PyInstaller via `scripts/freeze-unity-sidecar.ps1`,
   `include_bytes!`d through `build.rs` — a git-ignored artifact, `cargo build`
   succeeds without it); a build lacking the exe falls back to the system `python` +
-  the plain script.
+  the plain script. `unity_csv.rs` is a **second, unrelated Unity engine** —
+  **Unity (CSV localization)** (id `unity-csvloc`) — for IL2CPP + Addressables games
+  (e.g. Milfarion/Texic's Milf Plaza) that keep all text in plaintext
+  `StreamingAssets/Localization/<lang>/*.csv` catalogs (`;`-delimited `key;value`,
+  values never quoted / never containing `;`, each locale folder with a `meta.txt`
+  `{"_visibleName":…}`). The game **folder-scans** `Localization/` to build its
+  language menu, so export is **additive** (like Ren'Py's `tl/`): `export_locale`
+  writes a new `<lang>/` locale folder (source locales untouched) that becomes an
+  in-game selectable language. Pointer is the value's **byte span** `"start:len"`
+  into the source-locale CSV (Godot-style splice) → true byte-identity round-trip.
+  **Fonts** are the hard part: the stock TMPro fonts have no Thai, but every font
+  chains to a **Dynamic-atlas** TMP_FontAsset (`m_AtlasPopulationMode == 1`) that
+  rasterizes glyphs at runtime from an in-bundle source `Font`, so `embed_font` swaps
+  that Font's TTF for the bundled Sarabun via the shared `rpgtl_unity.py`
+  **`swap-font`** command (no SDF atlas baking) and then zeroes the bundle's CRC in
+  `catalog.bin` — a pure-Rust byte patch (locate the 16-byte content hash from the
+  bundle filename → `Crc u32` at hash offset **+60** → `0`), without which
+  Addressables' CRC check rejects the modified bundle and hangs the game at load.
 - **`project/`** — SQLite persistence (`db.rs`) and project lifecycle (`mod.rs`):
   open/create the sidecar store, backup, and export.
 - **`ai/`** — one `TranslationProvider` trait, providers behind it, plus prompt

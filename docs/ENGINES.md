@@ -32,7 +32,9 @@ and are much riskier.
 | **RAGS** | `.rag` (binary DB) | binary | 🔴 Hard |
 | **Flash** | `.swf` (compiled ActionScript) | binary | 🔴 Hard (legacy/EOL) |
 | **Java** | `.jar` (`.properties` or hardcoded in `.class`) | mixed | 🟡 Medium if `.properties`, else 🔴 |
-| **Unity** | IL2CPP / Mono DLL, TextMeshPro, `resources.assets` | binary | ⚫ Out of scope (use XUnity) |
+| **Unity (Naninovel)** | Naninovel managed text + compiled dialogue in `.assets` (via UnityPy) | binary | ✅ Supported (`unity`) — see [[unity-naninovel]] |
+| **Unity (CSV localization)** | plaintext `StreamingAssets/Localization/<lang>/*.csv` (IL2CPP + Addressables, e.g. Milf Plaza) | text (+ font bundle swap) | ✅ Supported (`unity-csvloc`) — see [[unity-csv-localization]] |
+| **Unity** (other) | custom stripped-typetree MonoBehaviour, IL2CPP-hardcoded, TMP-only | binary | ⚫ Out of scope (use XUnity.AutoTranslator) |
 | **Unreal Engine** | `.locres` localization table | binary (documented) | 🟡 Medium |
 | **AnvilNext** (AC Origins/Odyssey/Valhalla) | `.forge` archive → Forger `.acod` (UTF-16LE `ID=text`) **or** `aclocexport` text (UTF-8 `Id: [0x…]`) | binary archive / **text once exported** | ✅ Supported: `.acod` + `ac-loctext` (needs external Forger or Delutto+aclocexport) |
 | **WebGL** | build target — usually Unity WebGL or HTML5 | — | see Unity / HTML |

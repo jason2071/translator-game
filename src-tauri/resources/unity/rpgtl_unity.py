@@ -36,6 +36,14 @@ Subcommands (driven by `engine/unity.rs`):
       caller may pass out_dir == data_dir; UnityPy still holds the source open, so
       writing a distinct dir avoids a Windows sharing violation).
 
+  swap-font <bundle_in> <font.ttf> <bundle_out>
+      For the Unity CSV-localization engine (`engine/unity_csv.rs`): in an
+      Addressables font bundle, replace the source TTF of every **Dynamic-atlas**
+      TMP_FontAsset (`m_AtlasPopulationMode == 1`) with <font.ttf>, then write the
+      modified bundle to <bundle_out>. Dynamic mode rasterizes glyphs at runtime from
+      that font, so swapping it in a fallback font makes the game render a script the
+      baked atlases lack (e.g. Thai) — no SDF atlas baking. Prints the swap count.
+
 `locale` (default "en") selects the managed-text localization docs whose header
 target is that locale. Dialogue is enumerated from every script regardless of
 locale (a compiled-script game like this one ships no per-locale scripts).
@@ -387,9 +395,62 @@ def cmd_import(data_dir, patch_json, out_dir, locale):
     print(f"import: wrote {written} file(s), locale={locale!r}")
 
 
+def cmd_swap_font(bundle_in, ttf_path, bundle_out):
+    """Replace the source TTF of every Dynamic-atlas TMP_FontAsset in an Addressables
+    font bundle, so a fallback font renders a script the baked atlases lack."""
+    import UnityPy
+
+    with open(ttf_path, "rb") as f:
+        font = f.read()
+    env = UnityPy.load(bundle_in)
+
+    # 1) collect the in-bundle source Font path_ids of dynamic-mode TMP font assets.
+    src_ids = set()
+    for obj in env.objects:
+        if obj.type.name != "MonoBehaviour":
+            continue
+        try:
+            tree = obj.read_typetree()
+        except Exception:
+            continue
+        if not isinstance(tree, dict) or tree.get("m_AtlasPopulationMode") != 1:
+            continue
+        src = tree.get("m_SourceFontFile") or {}
+        pid = src.get("m_PathID") if isinstance(src, dict) else None
+        fid = src.get("m_FileID") if isinstance(src, dict) else None
+        if pid and fid in (0, None):
+            src_ids.add(pid)
+
+    # 2) swap those Font objects' embedded TTF bytes.
+    swapped = 0
+    for obj in env.objects:
+        if obj.type.name == "Font" and obj.path_id in src_ids:
+            d = obj.read()
+            d.m_FontData = font
+            d.save()
+            swapped += 1
+
+    # 3) write the bundle. Prefer LZ4 (keeps it ~compressed like the original); fall
+    #    back to uncompressed if this UnityPy build can't repack LZ4.
+    blob = None
+    for packer in ("lz4", "none"):
+        try:
+            blob = env.file.save(packer=packer)
+            break
+        except Exception as e:
+            print(f"swap-font: packer {packer} failed: {e}", file=sys.stderr)
+    if blob is None:
+        sys.exit("swap-font: could not repack the bundle")
+    with open(bundle_out, "wb") as f:
+        f.write(blob)
+    print(f"swap-font: swapped {swapped} dynamic font source(s) in {os.path.basename(bundle_in)}")
+    if swapped == 0:
+        sys.exit("swap-font: no dynamic-atlas TMP font asset found to swap")
+
+
 def main(argv):
     if len(argv) < 2:
-        sys.exit("usage: rpgtl_unity.py export|import ...")
+        sys.exit("usage: rpgtl_unity.py export|import|swap-font ...")
     cmd = argv[1]
     if cmd == "export":
         locale = argv[4] if len(argv) > 4 else "en"
@@ -397,6 +458,8 @@ def main(argv):
     elif cmd == "import":
         locale = argv[5] if len(argv) > 5 else "en"
         cmd_import(argv[2], argv[3], argv[4], locale)
+    elif cmd == "swap-font":
+        cmd_swap_font(argv[2], argv[3], argv[4])
     else:
         sys.exit(f"unknown command {cmd!r}")
 

@@ -175,6 +175,29 @@ pub fn export(project: &Project, make_backup: bool, embed_font: bool) -> Result<
         }
     }
 
+    // Unity (CSV localization): additive like Ren'Py — write a new
+    // `Localization/<lang>/` locale folder (source locales untouched) that the game
+    // picks up as a selectable language, and (when embedding the font) swap the Thai
+    // font into the game's font bundle(s) and clear their Addressables CRC.
+    if eng.id() == "unity-csvloc" {
+        let lang = db::get_meta(&project.conn, "target_lang")?
+            .unwrap_or_else(|| "translated".to_string());
+        let ex = engine::unity_csv::export_locale(
+            &project.root,
+            &project.data_dir,
+            &units,
+            &lang,
+            make_backup,
+            embed_font,
+        )?;
+        return Ok(ExportResult {
+            files_written: ex.files,
+            units_applied: applied.len(),
+            backup_dir: ex.backup_dir,
+            note: Some(ex.note),
+        });
+    }
+
     // Hendrix Localization: like Ren'Py, export is additive and not a plain
     // in-place splice. Append a Thai column to `game_messages.csv`, register the
     // language in the plugin (so it appears in the in-game menu), and embed the

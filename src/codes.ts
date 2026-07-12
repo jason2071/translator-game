@@ -32,7 +32,7 @@ function codeRe(engineId?: string | null): RegExp {
   if (engineId === "godot") return GODOT_RE;
   if (engineId === "forger-acod") return FORGER_RE;
   if (engineId === "ac-loctext") return AC_LOCTEXT_RE;
-  if (engineId === "unity") return UNITY_RE;
+  if (engineId === "unity" || engineId === "unity-csvloc") return UNITY_RE;
   return RPGMAKER_RE;
 }
 
