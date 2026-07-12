@@ -37,6 +37,21 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install
 
+      # The Unity (Naninovel) engine embeds a frozen UnityPy helper, a git-ignored
+      # build artifact. Freeze it here so build.rs `include_bytes!`s a real exe; if
+      # this is skipped the engine ships but falls back to system Python at runtime.
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Freeze Unity (Naninovel) sidecar
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install "UnityPy==1.25.2" pyinstaller
+          ./scripts/freeze-unity-sidecar.ps1
+
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
