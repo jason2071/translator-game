@@ -264,6 +264,7 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
             if trimmed.starts_with("new ") {
                 if let Some(old) = pending_old.take() {
                     if let Some(tr) = lookup(&old) {
+                        let tr = escape_percent(&tr);
                         push_line(&mut out, &format!("{indent}new \"{}\"", quote_unicode(&tr)), nl);
                         continue;
                     }
@@ -283,7 +284,7 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
                 if let Some(tr) = lookup(src) {
                     let mut rebuilt = String::new();
                     rebuilt.push_str(&body[..s - 1]); // up to and incl. the opening quote's position
-                    rebuilt.push_str(&encode_say_string(&tr));
+                    rebuilt.push_str(&encode_say_string(&escape_percent(&tr)));
                     rebuilt.push_str(&body[s + l + 1..]); // after the closing quote
                     push_line(&mut out, &rebuilt, nl);
                     continue;
@@ -291,6 +292,27 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
             }
         }
         push_line(&mut out, body, nl);
+    }
+    out
+}
+
+/// Double every literal `%` in a translation. Ren'Py runs displayed text through
+/// `%`-substitution (`config.new_substitutions`), so a bare `%` — e.g. `10%` the AI
+/// produced from a full-width `％` — is read as a format spec and crashes at runtime
+/// (`unsupported format character` when a Thai letter follows). A literal percent must
+/// be `%%`. Idempotent: an already-escaped `%%` stays `%%`.
+fn escape_percent(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '%' {
+            out.push_str("%%");
+            if it.peek() == Some(&'%') {
+                it.next(); // consume the pair so `%%` doesn't become `%%%%`
+            }
+        } else {
+            out.push(c);
+        }
     }
     out
 }
@@ -407,6 +429,22 @@ translate thai start_abc:
         let skel = "translate thai x_1:\n\n    e \"Untranslated.\"\n";
         let got = fill(skel, &[]);
         assert_eq!(got, skel); // no lookup -> unchanged
+    }
+
+    #[test]
+    fn escape_percent_is_idempotent() {
+        assert_eq!(escape_percent("10%"), "10%%");
+        assert_eq!(escape_percent("10%%"), "10%%"); // already escaped -> unchanged
+        assert_eq!(escape_percent("no percent"), "no percent");
+        assert_eq!(escape_percent("a%b%c"), "a%%b%%c");
+    }
+
+    #[test]
+    fn fill_escapes_percent_so_renpy_doesnt_format_it() {
+        let skel = "translate thai x_1:\n\n    e \"orig\"\n";
+        // A translation with a bare % must ship as %% (Ren'Py %-substitutes say text).
+        let got = fill(skel, &[("orig", "เหลือ 10% นะ")]);
+        assert!(got.contains("e \"เหลือ 10%% นะ\""), "got: {got}");
     }
 
     #[test]
