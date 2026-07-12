@@ -42,12 +42,21 @@ fn extract_finds_dialogue_not_code() {
     assert!(texts.contains(&"Options"));
     assert!(texts.contains(&"Progress saved."));
 
-    // Asset names, unwrapped screen/UI text, python code, and defines are NOT.
+    // Asset names, unwrapped screen/UI text, and python code are NOT extracted.
     assert!(!texts.contains(&"audio/hello.ogg"));
     assert!(!texts.contains(&"HUD text, not dialogue."));
     assert!(!texts.contains(&"Menu button"));
     assert!(!texts.contains(&"python code string"));
-    assert!(!texts.iter().any(|t| t.contains("Eileen")));
+
+    // A Character's display name IS extracted (so it can be translated) — as a Name
+    // unit keyed to the character variable.
+    let eileen = units
+        .iter()
+        .find(|u| u.source == "Eileen")
+        .expect("Character name extracted");
+    assert_eq!(eileen.kind, UnitKind::Name);
+    assert_eq!(eileen.context.as_deref(), Some("e"));
+    assert!(eileen.pointer.starts_with("name#"));
 
     // The game/tl/<lang>/ translation tree is another language, not source —
     // never extracted, so the project stays single-language.

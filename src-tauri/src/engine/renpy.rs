@@ -97,25 +97,33 @@ impl GameEngine for RenpyEngine {
             ));
         }
         let mut units = Vec::new();
+        let mut files: Vec<(String, String)> = Vec::new();
         for path in rpys {
             let rel = rel_path(&dir, &path);
             let content =
                 std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
             extract_rpy(&rel, &content, &mut units);
+            files.push((rel, content));
         }
+        // Character names — a cross-file pass, since `define c = Character(name_var)`
+        // and `name_var = "…"` can live in different files.
+        extract_character_names(&files, &mut units);
         Ok(units)
     }
 
     fn inject(&self, root: &Path, units: &[TransUnit], out_dir: &Path) -> Result<()> {
         let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
 
-        // Group applied units by file.
+        // Group applied units by file. Character-name units (pointer `name#<char>`)
+        // aren't byte spans — they're applied via the `tl/` zzz Character re-define,
+        // not an in-place splice — so skip them here.
         let mut by_file: BTreeMap<&str, Vec<&TransUnit>> = BTreeMap::new();
         for u in units {
-            if u.status.is_applied() {
-                if u.translation.is_some() {
-                    by_file.entry(u.file.as_str()).or_default().push(u);
-                }
+            if u.status.is_applied()
+                && u.translation.is_some()
+                && !u.pointer.starts_with("name#")
+            {
+                by_file.entry(u.file.as_str()).or_default().push(u);
             }
         }
 
@@ -800,6 +808,147 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
     }
 }
 
+/// A double-quoted Python string literal for `s`, keeping Unicode verbatim (only
+/// `"`, `\`, and the usual control chars are escaped). Unlike Rust's `{:?}`, it never
+/// turns a Thai combining mark into `\u{…}` (invalid Python).
+fn py_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// A Python identifier: non-empty, `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_ident(s: &str) -> bool {
+    let mut cs = s.chars();
+    match cs.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Position of a simple assignment `=` in `s` — the first `=` that isn't part of
+/// `==`, `<=`, `>=`, `!=`, `+=`, … so `if x == y` / `a += 1` don't look like one.
+fn assign_eq(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    for i in 0..b.len() {
+        if b[i] == b'=' && b.get(i + 1) != Some(&b'=') {
+            let prev = if i == 0 { b' ' } else { b[i - 1] };
+            if !matches!(prev, b'!' | b'<' | b'>' | b'=' | b'+' | b'-' | b'*' | b'/' | b'%') {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+/// Extract the display names of `Character(...)` definitions so they can be
+/// translated. Ren'Py's `translate` never touches a bare `define c = Character("…")`
+/// or its `name_var = "…"` (they aren't say-statements or `_()` strings), so a
+/// Japanese name stays Japanese — and turns to tofu boxes once its font is remapped to
+/// a Thai-only face. Each is surfaced as a [`UnitKind::Name`] unit keyed
+/// (`pointer = "name#<char>"`, `context = <char>`) to the character's variable, and
+/// [`setup_language`] re-defines that character with the translation on export.
+///
+/// Handles both shapes seen in the wild — `Character("literal", …)` and
+/// `Character(name_var, …)` with `name_var = "literal"` (possibly in another file).
+/// Skips `Character(_("…"))` (already translatable via the strings path), `None`, and
+/// interpolated `"[var]"` names.
+fn extract_character_names(files: &[(String, String)], out: &mut Vec<TransUnit>) {
+    // Pass 1: every simple `<ident> = "literal"` assignment → (file, literal). The RHS
+    // must be exactly one quoted string (a plain string-valued variable).
+    let mut vars: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
+    for (file, content) in files {
+        for raw in content.lines() {
+            let t = raw.trim_start();
+            if t.is_empty() || t.starts_with('#') {
+                continue;
+            }
+            let body = t
+                .strip_prefix("define ")
+                .or_else(|| t.strip_prefix("default "))
+                .unwrap_or(t);
+            let Some(eq) = assign_eq(body) else { continue };
+            let ident = body[..eq].trim();
+            if !is_ident(ident) {
+                continue;
+            }
+            let rhs = body[eq + 1..].trim_start();
+            if !(rhs.starts_with('"') || rhs.starts_with('\'')) {
+                continue;
+            }
+            let Some((ir, il, after)) = first_string(rhs) else { continue };
+            let tail = rhs[after..].trim_start();
+            if !tail.is_empty() && !tail.starts_with('#') {
+                continue; // RHS is more than a lone string — not a name variable
+            }
+            vars.entry(ident.to_string())
+                .or_insert_with(|| (file.clone(), rhs[ir..ir + il].to_string()));
+        }
+    }
+
+    // Pass 2: `define <char> = Character(<first arg>, …)`.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (file, content) in files {
+        for raw in content.lines() {
+            let t = raw.trim_start();
+            let Some(after) = t.strip_prefix("define ") else { continue };
+            let Some(eq) = after.find('=') else { continue };
+            let cident = after[..eq].trim();
+            if !is_ident(cident) || seen.contains(cident) {
+                continue;
+            }
+            let rhs = after[eq + 1..].trim_start();
+            let Some(rest) = rhs.strip_prefix("Character") else { continue };
+            let rest = rest.trim_start();
+            let Some(args) = rest.strip_prefix('(').map(str::trim_start) else { continue };
+            if args.starts_with("_(") {
+                continue; // gettext name — already translatable via the strings path
+            }
+            let (name_file, name) = if args.starts_with('"') || args.starts_with('\'') {
+                let Some((ir, il, _)) = first_string(args) else { continue };
+                if il == 0 {
+                    continue;
+                }
+                (file.clone(), args[ir..ir + il].to_string())
+            } else {
+                let arg = args
+                    .split([',', ')', ' ', '\t'])
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if !is_ident(arg) || arg == "None" {
+                    continue;
+                }
+                match vars.get(arg) {
+                    Some((f, txt)) => (f.clone(), txt.clone()),
+                    None => continue,
+                }
+            };
+            if name.trim().is_empty() || name.starts_with('[') {
+                continue; // empty or interpolated "[var]" — nothing to translate
+            }
+            seen.insert(cident.to_string());
+            out.push(
+                TransUnit::new(name_file, format!("name#{cident}"), UnitKind::Name, name)
+                    .with_context(Some(cident.to_string())),
+            );
+        }
+    }
+}
+
 /// One Ren'Py say statement, located and identified for `tl/<lang>/` output.
 #[derive(Debug, Clone)]
 pub struct DiaBlock {
@@ -1125,9 +1274,17 @@ pub fn export_tl(
         }
     }
 
+    // Character names — re-`define` each translated Character under the language
+    // (Ren'Py's `translate` never touches a bare `Character("…")` name).
+    let names: Vec<(String, String)> = units
+        .iter()
+        .filter(|u| u.kind == UnitKind::Name && u.status.is_applied())
+        .filter_map(|u| Some((u.context.clone()?, u.translation.clone()?)))
+        .collect();
+
     // Make the language selectable (default to it) and remap the game's fonts to a
     // glyph-capable one so the translation isn't rendered as "NO GLYPH" boxes.
-    setup_language(data_dir, &lang, &language_label(target_lang, &lang))?;
+    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &names)?;
 
     Ok(Some(TlExport { files, dir }))
 }
@@ -1195,7 +1352,12 @@ fn add_language_option(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
 /// language of its own and (2) — when a target-language font is available —
 /// remaps every font the game uses to it, scoped to `lang` via a
 /// `translate <lang> python:` block so English is unaffected.
-fn setup_language(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
+fn setup_language(
+    data_dir: &Path,
+    lang: &str,
+    label: &str,
+    names: &[(String, String)],
+) -> Result<()> {
     // Add the language to the game's own Settings language menu, if it has one.
     add_language_option(data_dir, lang, label)?;
 
@@ -1206,6 +1368,20 @@ fn setup_language(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
     s.push_str(&format!(
         "init 1000 python:\n    if config.language is None:\n        config.language = \"{lang}\"\n\n"
     ));
+
+    // Re-define each translated Character under the language, inheriting the original
+    // via `kind=` so its colour/outlines/etc. carry over — only the name changes. Runs
+    // when the language is selected, so the store variable the say-statements reference
+    // now points at the translated character.
+    if !names.is_empty() {
+        s.push_str(&format!("translate {lang} python:\n"));
+        for (ch, name) in names {
+            // A Python string literal that keeps Unicode verbatim — Rust's `{:?}` would
+            // escape Thai combining marks to `\u{…}`, which isn't valid Python.
+            s.push_str(&format!("    {ch} = Character({}, kind={ch})\n", py_str(name)));
+        }
+        s.push('\n');
+    }
 
     // The bundled font (Sarabun) covers Thai + Latin, so only remap fonts for a
     // Thai target — other scripts (CJK, etc.) would render as NO GLYPH in it.
@@ -1220,6 +1396,12 @@ fn setup_language(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
             s.push_str(&format!("        {r:?},\n"));
         }
         s.push_str("    ]\n");
+        // Point every game font at the bundled Thai face. (A FontGroup that kept the
+        // original font for non-Thai glyphs would be cleaner for untranslated CJK, but
+        // Ren'Py's `config.font_replacement_map` only accepts a font *string*, not a
+        // FontGroup — passing one crashes `load_face`. Untranslated Japanese names are
+        // instead handled by translating the names themselves; see
+        // `extract_character_names`.)
         s.push_str("    for _f in _tl_fonts:\n");
         s.push_str("        for _b in (False, True):\n");
         s.push_str("            for _i in (False, True):\n");
@@ -1279,7 +1461,11 @@ fn collect_font_refs(data_dir: &Path) -> Vec<String> {
     }
     // Don't remap our own font onto itself.
     refs.remove("fonts/tl_font.ttf");
-    refs.into_iter().collect()
+    // Drop build globs like "game/**.ttf" (from a `build.classify` line) — they're not
+    // real font names, so remapping them is dead weight.
+    refs.into_iter()
+        .filter(|r| !r.contains('*') && !r.contains('?'))
+        .collect()
 }
 
 /// Quoted font paths (`"…​.ttf"` / `.otf` / `.ttc`) referenced in a `.rpy` script.
@@ -1656,5 +1842,48 @@ label start:
         assert_eq!(units[0].source, "She said \\\"hi\\\" softly.");
         let (start, len) = parse_pointer(&units[0].pointer).unwrap();
         assert_eq!(&src[start..start + len], "She said \\\"hi\\\" softly.");
+    }
+
+    #[test]
+    fn extracts_character_names_literal_and_var_and_skips_the_rest() {
+        let defs = "\
+init python:
+    rin_name = \"\u{308a}\u{3093}\"
+    p_name=\"\u{7fd4}\u{592a}\"
+    unused = \"nope\"
+define rin = Character(rin_name, color=\"#FF69B4\")
+define p = Character(p_name)
+define e = Character(\"Eileen\")
+define narrator = Character(None)
+define g = Character(_(\"Gwen\"))
+";
+        let files = vec![("01_definitions.rpy".to_string(), defs.to_string())];
+        let mut units = Vec::new();
+        extract_character_names(&files, &mut units);
+
+        let got: std::collections::HashMap<&str, &str> = units
+            .iter()
+            .map(|u| (u.context.as_deref().unwrap(), u.source.as_str()))
+            .collect();
+        assert_eq!(got.get("rin"), Some(&"\u{308a}\u{3093}")); // via name variable
+        assert_eq!(got.get("p"), Some(&"\u{7fd4}\u{592a}"));
+        assert_eq!(got.get("e"), Some(&"Eileen")); // literal
+        assert!(!got.contains_key("narrator")); // Character(None)
+        assert!(!got.contains_key("g")); // Character(_()) — strings path
+        // A string var not used by any Character isn't emitted.
+        assert!(!units.iter().any(|u| u.source == "nope"));
+        assert!(units.iter().all(|u| u.kind == UnitKind::Name));
+        assert!(units.iter().all(|u| u.pointer.starts_with("name#")));
+    }
+
+    #[test]
+    fn setup_language_writes_character_name_overrides() {
+        let d = tempfile::tempdir().unwrap();
+        let names = vec![("rin".to_string(), "\u{e23}\u{e34}\u{e19}".to_string())];
+        setup_language(d.path(), "thai", "\u{e44}\u{e17}\u{e22}", &names).unwrap();
+        let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
+        assert!(zzz.contains("translate thai python:"));
+        // Re-defines the character inheriting the original via kind=.
+        assert!(zzz.contains("rin = Character(\"\u{e23}\u{e34}\u{e19}\", kind=rin)"));
     }
 }
