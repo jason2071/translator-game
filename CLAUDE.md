@@ -183,11 +183,16 @@ projects.
   `unity_csv::export_locale` gained an `out_base`). A mod is built to be the target
   language **without an in-game language switch**: `unity-csvloc` overwrites *every*
   shipped source locale by key (keys are shared across locales), single-locale
-  engines are inherently the target. Supported so far: `unity-csvloc` (safe — in-place
-  is additive so source locales stay pristine) and `rpgmaker-mvmz` (structural JSON
-  pointers → reading an already-exported game is idempotent). Byte-span text engines
-  (godot/tyrano/kirikiri) and the Ren'Py/Hendrix multi-locale specials still return
-  "use Export → game" until their pristine-read path is added.
+  engines are inherently the target. Coverage: `unity-csvloc` (overwrite-all-locales)
+  and every single-locale text/JSON engine (`rpgmaker-mvmz`, `godot`, `tyrano`,
+  `kirikiri`, `forger-acod`, `ac-loctext`) via `build_mod_via_inject` — which injects
+  from a **pristine read-root** (`pristine_read_root`: per touched file, the
+  `.rpgtl/source/` snapshot if present, else the live game) so a byte-span splice stays
+  valid even after a prior in-place export. **Ren'Py** and **Hendrix** are export-to-game
+  only (they build the translation *additively into the game* — Ren'Py runs the game's
+  own Ren'Py to write `tl/<lang>/`, Hendrix appends a column + registers the language —
+  so a "game untouched" mod isn't available; their in-place output is already an
+  additive overlay).
 - **Export must be idempotent.** A `pointer` is a byte offset into the *original*
   file, but export injects in place, so a naive second export would splice
   original offsets into already-translated bytes — cutting multi-byte characters

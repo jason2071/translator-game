@@ -35,8 +35,9 @@ Project-based workflow — the original game is never touched until you export:
    files — copy it over the game (or share it) **without the app touching the
    original**. It's built to be the target language with **no in-game language
    switch** (multi-locale games get every locale overwritten; single-locale games are
-   translated directly). Supported for **Unity (CSV localization)** and **RPGMaker
-   MV/MZ**.
+   translated directly). Available for every engine except **Ren'Py** and **Hendrix**,
+   which build their translation additively into the game (their in-place export is
+   already an additive overlay).
 
 Features: a **windowed** grid that stays light on huge projects (holds only the
 visible slice — scales to ~1M strings), translation memory (auto-fills

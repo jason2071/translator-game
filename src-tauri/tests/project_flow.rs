@@ -128,3 +128,67 @@ fn export_mod_zips_the_translation_without_touching_the_game() {
     let val: serde_json::Value = serde_json::from_str(&buf).unwrap();
     assert_eq!(val.pointer("/gameTitle").unwrap().as_str().unwrap(), "ทดสอบเควส");
 }
+
+/// A minimal Godot project (byte-span text engine) for the generic mod path.
+fn godot_game() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("game");
+    std::fs::create_dir_all(root.join("loc")).unwrap();
+    std::fs::write(root.join("project.godot"), b"config_version=5\n").unwrap();
+    std::fs::write(root.join("loc").join("ui.csv"), b"keys,en\nGREET,Hello\nBYE,Goodbye\n").unwrap();
+    (tmp, root)
+}
+
+fn zip_entry(zip_path: &str, name: &str) -> String {
+    use std::io::Read;
+    let f = std::fs::File::open(zip_path).unwrap();
+    let mut zip = zip::ZipArchive::new(f).unwrap();
+    let mut e = zip.by_name(name).unwrap_or_else(|_| panic!("{name} in zip"));
+    let mut s = String::new();
+    e.read_to_string(&mut s).unwrap();
+    s
+}
+
+#[test]
+fn export_mod_byte_span_engine_leaves_the_game_untouched() {
+    let (_tmp, root) = godot_game();
+    let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+    let units = project::db::list_units(&proj.conn, &UnitFilter::default()).unwrap();
+    let greet = units.iter().find(|u| u.source == "Hello").unwrap();
+    project::db::update_unit(&proj.conn, greet.id, Some("สวัสดี"), Status::Translated.as_str())
+        .unwrap();
+
+    let csv = root.join("loc").join("ui.csv");
+    let before = std::fs::read(&csv).unwrap();
+    let r = project::export_mod(&proj, false).unwrap();
+
+    // The mod zip carries the translated CSV; the game CSV is unchanged.
+    let s = zip_entry(&r.zip_path, "loc/ui.csv");
+    assert!(s.contains("GREET,สวัสดี"), "mod carries the translation");
+    assert!(s.contains("BYE,Goodbye"), "untranslated row intact");
+    assert_eq!(std::fs::read(&csv).unwrap(), before, "mod export must not touch the game");
+}
+
+#[test]
+fn export_mod_reads_pristine_bytes_after_a_prior_inplace_export() {
+    let (_tmp, root) = godot_game();
+    let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+    let units = project::db::list_units(&proj.conn, &UnitFilter::default()).unwrap();
+    let greet = units.iter().find(|u| u.source == "Hello").unwrap();
+    project::db::update_unit(&proj.conn, greet.id, Some("สวัสดี"), Status::Translated.as_str())
+        .unwrap();
+
+    // In-place export first: the game CSV is now translated (byte layout changed).
+    project::export(&proj, true, false).unwrap();
+    let game = std::fs::read_to_string(root.join("loc").join("ui.csv")).unwrap();
+    assert!(game.contains("GREET,สวัสดี"));
+
+    // Mod export must splice into the PRISTINE original (from .rpgtl/source), not the
+    // already-translated game — else the byte span would cut into multi-byte Thai.
+    let r = project::export_mod(&proj, false).unwrap();
+    let s = zip_entry(&r.zip_path, "loc/ui.csv");
+    assert!(s.contains("GREET,สวัสดี"), "mod carries the translation");
+    assert!(s.contains("BYE,Goodbye"), "untranslated row intact");
+    assert_eq!(s.matches("สวัสดี").count(), 1, "exactly one clean splice (no doubling/corruption)");
+    // The result is valid UTF-8 already (read_to_string above would have failed otherwise).
+}

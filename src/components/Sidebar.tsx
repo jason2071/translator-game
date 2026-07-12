@@ -41,7 +41,17 @@ export function Sidebar({
   // on export. Default on when translating to Thai. Shown for the engines whose
   // `embed_font` does something (Ren'Py embeds its own font inside its tl/ path).
   const FONT_ENGINES = ["rpgmaker-mvmz", "unity-csvloc", "rpgmaker-hendrix"];
-  const MOD_ENGINES = ["unity-csvloc", "rpgmaker-mvmz"];
+  // Engines whose translation can be packaged as a non-destructive overlay .zip.
+  // Ren'Py + Hendrix build additively into the game, so they're export-to-game only.
+  const MOD_ENGINES = [
+    "unity-csvloc",
+    "rpgmaker-mvmz",
+    "godot",
+    "tyrano",
+    "kirikiri",
+    "forger-acod",
+    "ac-loctext",
+  ];
   const fontCapable = FONT_ENGINES.includes(project.engineId);
   const modCapable = MOD_ENGINES.includes(project.engineId);
   const [embedFont, setEmbedFont] = useState(() => /thai/i.test(project.targetLang ?? ""));

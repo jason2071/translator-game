@@ -379,6 +379,9 @@ pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
     // Build the mod tree under `staging`, per engine.
     let build = (|| -> Result<(usize, String)> {
         match eng.id() {
+            // Locale-folder engine: overwrite every shipped locale by key (see
+            // unity_csv::export_locale's mod branch). Additive in-place → source
+            // locales are pristine, so it reads them directly.
             "unity-csvloc" => {
                 let ex = engine::unity_csv::export_locale(
                     &project.root,
@@ -391,37 +394,22 @@ pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
                 )?;
                 Ok((ex.files, ex.note))
             }
-            "rpgmaker-mvmz" => {
-                // Mirror the data dir under staging (staging/<data-rel>), so the zip's
-                // paths match how the user overlays it onto the game root.
-                let data_rel = project
-                    .data_dir
-                    .strip_prefix(&project.root)
-                    .unwrap_or(Path::new(""));
-                let staging_data = staging.join(data_rel);
-                std::fs::create_dir_all(&staging_data)?;
-                eng.inject(&project.root, &units, &staging_data)?;
-                let touched = applied.iter().map(|u| u.file.clone()).collect::<std::collections::BTreeSet<_>>();
-                let mut note = format!("Injected {} translated file(s) into the mod.", touched.len());
-                if embed_font {
-                    match eng.embed_font(
-                        &project.root,
-                        &project.data_dir,
-                        &staging_data,
-                        engine::TARGET_FONT,
-                        None,
-                    ) {
-                        Ok(Some(fnote)) => note.push_str(&format!(" {fnote}")),
-                        Ok(None) => {}
-                        Err(e) => note.push_str(&format!(" (font embed failed: {e})")),
-                    }
-                }
-                Ok((touched.len(), note))
-            }
-            _ => Err(anyhow!(
-                "Mod export isn't supported for the {} engine yet — use “Export → game”.",
+            // Ren'Py and Hendrix build their translation additively into the game
+            // (Ren'Py runs the game's own Ren'Py to generate tl/<lang>/; Hendrix
+            // appends a language column + registers it in the plugin). Their outputs
+            // can't be cleanly redirected to a staging tree without touching the game,
+            // so a "game untouched" mod isn't available — their in-place export is
+            // already an additive, selectable-language overlay.
+            "renpy" | "rpgmaker-hendrix" => Err(anyhow!(
+                "Mod export isn't available for the {} engine — its translation is generated \
+                 additively into the game. Use “Export → game”; that output is already an \
+                 additive overlay you can copy or zip.",
                 eng.name()
             )),
+            // Everything else (RPGMaker MV/MZ, Godot, TyranoScript, KiriKiri, Forger,
+            // AC loctext) is a single-locale text/JSON engine whose `inject` writes a
+            // mirrored tree — build the mod by injecting pristine originals into staging.
+            _ => build_mod_via_inject(project, eng.as_ref(), &staging, &units, &applied, embed_font),
         }
     })();
 
@@ -445,6 +433,81 @@ pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
         units_applied: applied.len(),
         note: Some(note),
     })
+}
+
+/// Build a mod for a single-locale text/JSON engine: inject the **pristine** originals
+/// into a staging mirror (so byte-span pointers stay valid even after a prior in-place
+/// export), then redirect the font hook (if any) into staging. The game is untouched.
+fn build_mod_via_inject(
+    project: &Project,
+    eng: &dyn engine::GameEngine,
+    staging: &Path,
+    units: &[crate::model::TransUnit],
+    applied: &[&crate::model::TransUnit],
+    embed_font: bool,
+) -> Result<(usize, String)> {
+    let mut touched: Vec<String> = applied.iter().map(|u| u.file.clone()).collect();
+    touched.sort();
+    touched.dedup();
+
+    // staging/<data-rel> mirrors the game's data dir, so the zip's paths match how the
+    // user overlays it onto the game root.
+    let data_rel = project.data_dir.strip_prefix(&project.root).unwrap_or(Path::new(""));
+    let staging_data = staging.join(data_rel);
+    std::fs::create_dir_all(&staging_data)?;
+
+    // Inject reads original bytes from a pristine mirror (snapshot-preferred), never
+    // the possibly-already-translated live game.
+    let read_root = pristine_read_root(project, &touched)?;
+    let inject_res = eng.inject(&read_root, units, &staging_data);
+    let _ = std::fs::remove_dir_all(&read_root);
+    inject_res?;
+
+    let mut note = format!("Injected {} translated file(s) into the mod.", touched.len());
+    if embed_font {
+        match eng.embed_font(
+            &project.root,
+            &project.data_dir,
+            &staging_data,
+            engine::TARGET_FONT,
+            None,
+        ) {
+            Ok(Some(fnote)) => note.push_str(&format!(" {fnote}")),
+            Ok(None) => {}
+            Err(e) => note.push_str(&format!(" (font embed failed: {e})")),
+        }
+    }
+    Ok((touched.len(), note))
+}
+
+/// A temp mirror of the game root holding **pristine** copies of `files` (each relative
+/// to the data dir). Prefers each file's `.rpgtl/source/` snapshot (the original bytes
+/// saved before the first in-place export) over the live game file, so a mod injects
+/// original bytes even if the game was already exported in place. Layout matches the
+/// game root, so `eng.inject(mirror, …)` resolves reads exactly as it would on the game.
+fn pristine_read_root(project: &Project, files: &[String]) -> Result<PathBuf> {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let root = rpgtl_dir(&project.root).join("mods").join(format!("pristine-{ts}"));
+    let _ = std::fs::remove_dir_all(&root);
+    let data_rel = project.data_dir.strip_prefix(&project.root).unwrap_or(Path::new(""));
+    let source_dir = rpgtl_dir(&project.root).join("source");
+    for file in files {
+        let snap = source_dir.join(file);
+        let live = project.data_dir.join(file);
+        let src = if snap.exists() { snap } else { live };
+        if !src.exists() {
+            continue;
+        }
+        let dst = root.join(data_rel).join(file);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&src, &dst).with_context(|| format!("staging pristine {file}"))?;
+    }
+    Ok(root)
 }
 
 /// A filesystem-safe slug for the zip name (`ไทย (TH)` → `mod`, `Thai` → `thai`).
