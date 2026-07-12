@@ -116,6 +116,23 @@ pub fn strip_codes(engine_id: &str, s: &str) -> String {
     out
 }
 
+/// Replace the CJK bracket punctuation the bundled Thai font can't render — corner
+/// `「」『』`, lenticular `【】`, tortoise `〔〕`, angle `〈〉《》`, and full-width
+/// parens `（）` — with ASCII parentheses `( )`. A translation into a non-CJK script
+/// otherwise shows these as "tofu" boxes. Parentheses are chosen because they're safe
+/// in every engine (unlike `[ ]`, which Ren'Py reads as variable interpolation, or
+/// `{ }`, a TMPro/Ren'Py tag). Openers → `(`, closers → `)`; all other characters are
+/// left untouched. Only apply for a non-CJK target — a CJK target keeps these.
+pub fn normalize_cjk_brackets(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '「' | '『' | '【' | '〔' | '〈' | '《' | '（' => '(',
+            '」' | '』' | '】' | '〕' | '〉' | '》' | '）' => ')',
+            other => other,
+        })
+        .collect()
+}
+
 /// Replace Godot placeholders with `⟦k⟧` sentinels: BBCode `[tag]`, `String`
 /// format braces `{0}`/`{name}`, printf `%s`/`%d`/`%.2f`/`%1$s`, and backslash
 /// escapes (`\n`, `\t`, `\"`). Restores via the shared [`restore`].
@@ -870,5 +887,14 @@ mod tests {
         let m = mask_tyrano("Hi[l][r]there");
         assert_eq!(m.tokens, vec!["[l]", "[r]"]);
         assert_eq!(m.text, "Hi\u{27E6}0\u{27E7}\u{27E6}1\u{27E7}there");
+    }
+
+    #[test]
+    fn normalize_cjk_brackets_maps_to_parens_and_leaves_text() {
+        assert_eq!(normalize_cjk_brackets("「マスター」"), "(マスター)");
+        assert_eq!(normalize_cjk_brackets("『主人様』"), "(主人様)");
+        assert_eq!(normalize_cjk_brackets("【注意】〔a〕〈b〉《c》（d）"), "(注意)(a)(b)(c)(d)");
+        // Thai/ASCII text and existing parens are untouched.
+        assert_eq!(normalize_cjk_brackets("สวัสดี (ok) [x]"), "สวัสดี (ok) [x]");
     }
 }

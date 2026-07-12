@@ -140,7 +140,12 @@ projects.
   `lib.rs::translate_units` calls `protect::mask_for(engine_id, …)` (codes →
   `⟦n⟧` sentinels) before building a batch and `protect::restore` after. If
   `restore` reports a missing/mangled sentinel, that unit is counted failed and
-  **not written** — do not store partially-restored text.
+  **not written** — do not store partially-restored text. After a successful
+  restore, into a **non-CJK target** (`is_cjk_lang` — not zh/ja/ko) the stored text
+  is run through `protect::normalize_cjk_brackets`, which rewrites CJK bracket
+  punctuation (`「」『』【】〔〕〈〉《》（）`) to ASCII parens `( )` — the bundled Thai
+  font can't render them, and parens are safe in every engine (unlike `[ ]` in Ren'Py
+  or `{ }` in TMPro). Applies to new translations only.
 - **Async commands must not hold the project lock across `.await`.**
   `AppState.project` is `Mutex<Option<Project>>` and its guard is `!Send`.
   `translate_units` gathers work under the lock, drops it, does all HTTP with no

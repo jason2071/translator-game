@@ -536,6 +536,17 @@ fn cancel_translation(state: tauri::State<AppState>) {
     state.cancel.store(true, Ordering::SeqCst);
 }
 
+/// True if the target language is Chinese / Japanese / Korean — a CJK script whose
+/// font renders `「」『』…` natively, so we must NOT rewrite those to parens.
+/// Matches the picker's display names and the common ISO codes.
+fn is_cjk_lang(lang: &str) -> bool {
+    let l = lang.trim().to_lowercase();
+    matches!(l.as_str(), "zh" | "ja" | "ko" | "zh-tw" | "zh-cn" | "zh-hant" | "zh-hans")
+        || l.contains("chin")
+        || l.contains("japan")
+        || l.contains("korea")
+}
+
 /// Translate the selected units with the given provider. Async: emits
 /// `translate://progress` events and can be cancelled via `cancel_translation`.
 #[tauri::command]
@@ -858,6 +869,14 @@ async fn translate_units(
                     // set no longer matches the source's, so we never store text
                     // carrying another unit's markup.
                     Ok(t) if protect::codes_match(&engine_id, &g.source, &t) => {
+                        // Into a non-CJK script, swap CJK brackets (「」『』…) the bundled
+                        // Thai font can't render for ASCII parens, so they don't ship as
+                        // tofu boxes. A CJK target keeps them (its font renders them).
+                        let t = if is_cjk_lang(&target_lang) {
+                            t
+                        } else {
+                            protect::normalize_cjk_brackets(&t)
+                        };
                         writes.push((g.ids.clone(), g.source.clone(), t));
                         continue;
                     }
@@ -1219,4 +1238,19 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_cjk_lang;
+
+    #[test]
+    fn cjk_targets_keep_their_brackets() {
+        for t in ["Chinese", "Japanese", "Korean", "zh", "ja", "ko", "zh-TW"] {
+            assert!(is_cjk_lang(t), "{t} should be CJK");
+        }
+        for t in ["Thai", "English", "Vietnamese", "th", "en"] {
+            assert!(!is_cjk_lang(t), "{t} should not be CJK");
+        }
+    }
 }
