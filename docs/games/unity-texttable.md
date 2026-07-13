@@ -25,9 +25,59 @@ Engine id **`unity-textbl`**, name **Unity (TextTable)**
 `resources/unity/rpgtl_unity.py` (`texttable-export` / `texttable-import` /
 `catalog-crc`, plus the existing `swap-font`).
 
-> **Status: implemented.** Rust engine + helper commands + protect/codes mirror +
-> env-gated test all in; text / font / CRC all validated technically (PoC below).
-> Pending: a real in-game launch to confirm the Default column shows Thai.
+> **Status: implemented + in-game verified (2026-07-13).** The whole game renders Thai
+> (menu / items / bios / help / dialogue / SFX), fonts render, no crash. Sections below
+> from the design phase remain as history; the summary here is the shipped state.
+
+## Shipped state (as of 2026-07-13)
+
+**Three text tiers**, all driven by the shared helper:
+
+1. **`tbl#`** — the bundle `TextTable` MonoBehaviours (UI / names / bubble SFX), read+write
+   via **typetree** (`texttable-export` / `texttable-import`). Sets the `Default` column.
+2. **`ds#`** — the **PixelCrushers `DialogueDatabase`** story dialogue in a `.assets`
+   (stripped typetree → raw-string enumerate + splice, `dsdb-export` / `dsdb-import`). Each
+   line's speaker is resolved from the entry's `Actor` id → actor name (1-based actors
+   section) and kept as the unit **context**, so the AI can pick gendered Thai particles
+   (see the gender-particles feature).
+3. **`uitbl#`** — the **I2 Localization "Text Table"** `LanguageSource` (menus, options,
+   day/time, tutorials, item names + descriptions, character bios). A *different*
+   stripped-typetree class in a `.assets`, so it is raw-spliced, not typetree'd. Per-term
+   layout is `Term · Languages_index int[] · Languages str[]` where `value[k]` belongs to
+   language `mLanguages[index[k]]` (**permuted per term**; langs `Default,ja,zh,zh-tw,ko`).
+   `Default` (index 0) is the source; import overwrites every **non-Default** value slot,
+   so the game shows the translation whatever non-Default language it renders. NTR reads
+   the **`ko`** column (registry `Language = ko`); the DS tier reads the base field, so
+   dialogue is Thai on any language.
+
+`ds#` and `uitbl#` can share one `.assets` file (NTR keeps both in `sharedassets0`), so a
+single **`assets-import`** pass loads each file once and applies both (and the read side
+is one **`assets-export`** scan) — two separate whole-file writes would clobber each other.
+
+**Fonts** — pre-baked SDF, so Thai is **baked** (`bake-font`), not swapped (see the *Fonts —
+SDF baking* section). Hard-won specifics: (a) a **multi-atlas** font (851tegaki ships 8
+atlas textures) must keep every atlas in `m_AtlasTextures` — a glyph pointing past the
+array crashes the whole text object (`TMP_MaterialManager.GetFallbackMaterial`
+`IndexOutOfRange` → the label goes blank); `_apply_tables` guards this. (b) Font detection
+must not use `endswith(" SDF")` — it misses variants like `… SDF - Fallback` /
+`… SDF WhiteOutline`. (c) Line height: **do not** inflate the face metrics for Thai — on a
+fixed auto-sizing box it just shrinks the text; a box drawn as tight as 851tegaki
+(`LineHeight == PointSize`) can't fit Thai's ~1.4×-taller stacked marks at a readable size
+no matter the metric — an inherent CJK→Thai limit, best fixed per-game in the UI.
+
+**Gender particles** — the per-line speaker (context) + a per-project speaker→gender map
+drive gendered Thai (ครับ/ค่ะ, ผม/ฉัน). See the gender-particles feature.
+
+**Rescan** — the Characters panel's "Rescan game" (`rescan_project` → `db::merge_units`)
+re-extracts and merges into an existing project: new tiers become new units, and existing
+lines get their speaker backfilled, keeping all translations — needed because a project
+made before a tier existed won't otherwise see it.
+
+**Export speed** — the SDF bake is skipped on re-export when the font is unchanged
+(`.rpgtl/fonts_embedded` fingerprint), and the in-place export writes TextTable bundles
+**uncompressed** (LZ4 on a ~1 GB bundle dominated the export); the distributable mod stays
+compact. The `.assets` re-serialize itself is cheap (~0.6 s for 311 MB — UnityPy copies
+unchanged objects).
 
 ## Game facts (NTR Soccer)
 
@@ -140,14 +190,11 @@ typetree hides the structure, not the strings.
 - **9 `TMP_FontAsset`** in `s.event` bundle + two `LocalizedFonts` MBs (`Localized
   Fonts`, `Soccer Localized Fonts`) that map language → TMP font, with a
   `defaultTextMeshProFont` for the base/`en`/Default column.
-- **RESOLVED — both Default fonts are Dynamic-atlas** (`m_AtlasPopulationMode == 1`):
-  `PlaypenSans-VariableFont_wght SDF` and `851tegaki_zatsu_normal_0883 SDF`. Dynamic
-  mode rasterizes glyphs at runtime from an in-bundle source `Font`, so the existing
-  `rpgtl_unity.py` **`swap-font`** (swap the source TTF → bundled Sarabun) makes Thai
-  render — **no SDF baking**, same as [[unity-csv-localization]]. (Only
-  `NotoSansJP-Regular SDF` is static, mode 0 — the JP column, which we don't target.)
-  `embed_font` sweeps `swap-font` over every bundle; a bundle with no dynamic font
-  writes no output and is skipped.
+- **⚠ SUPERSEDED — this early "just swap-font" read was WRONG.** The fonts ship
+  **pre-baked** SDF atlases and the runtime does **not** rasterize new glyphs, so a TTF
+  swap leaves Thai as tofu. Thai must be **SDF-baked** into the atlas + tables offline.
+  See *Fonts — the dynamic-swap approach does NOT work here; SDF baking does* below for
+  the real, shipped approach (`bake-font`).
 
 ## Proposed engine design
 
@@ -261,7 +308,15 @@ for now (open item). Reference + standalone scripts: `scripts/unity-sdf-bake/`.
 - [x] `tests/unity_textbl_roundtrip.rs` (env-gated real-game: `RPGTL_TEXTBL_GAME` /
       `RPGTL_TEXTBL_WRITE`) + lib unit tests (detect, pointer).
 - [x] Row in [[games]] index; `status: implemented`.
-- [ ] **Launch NTR Soccer after a real export** to confirm Thai shows + renders.
+- [x] **Launched NTR Soccer** — Thai shows + renders across the whole game (menu / items /
+      bios / help / dialogue / SFX); no crash.
+- [x] **Tier 3 `uitbl#`** (I2 Localization UI table) + unified `assets-export`/`assets-import`.
+- [x] **SDF `bake-font`** (multi-atlas atlas-index guard; no line-height inflation).
+- [x] **Gender particles** — speaker → gender → gendered Thai (see the gender-particles feature).
+- [x] **Rescan** (`rescan_project`) to merge new tiers + backfill speakers into a project.
+- [x] **Export perf** — skip unchanged SDF bake; uncompressed in-place bundles.
+- [ ] Bundle the SDF deps (freetype/numpy/scipy/PIL) into the frozen sidecar (dev-only now).
+- [ ] Wire per-line speaker → context for the other engines (Ren'Py / Naninovel / mvmz).
 - [ ] Add rows to [[ENGINES]] + [[ROADMAP]].
 
 ## Appendix — probe scripts
