@@ -111,6 +111,13 @@ export interface Character {
   gender: string;
 }
 
+// Result of re-scanning the game into an existing project.
+export interface RescanResult {
+  added: number;
+  contextFilled: number;
+  total: number;
+}
+
 export interface LintWarning {
   unitId: number;
   file: string;
@@ -260,6 +267,8 @@ export const api = {
     invoke<string>("suggest_game_context", { config }),
   glossaryAddBulk: (items: [string, string][]) =>
     invoke<number>("glossary_add_bulk", { items }),
+
+  rescanProject: () => invoke<RescanResult>("rescan_project"),
 
   charactersList: () => invoke<Character[]>("characters_list"),
   characterSet: (name: string, gender: string) =>

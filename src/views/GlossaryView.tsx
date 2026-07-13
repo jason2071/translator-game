@@ -220,10 +220,34 @@ function CharactersPanel() {
   const glossaryConfig = useSettings((s) => s.glossaryConfig);
   const [chars, setChars] = useState<Character[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [rescanning, setRescanning] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   async function reload() {
     setChars(await api.charactersList());
+  }
+
+  // Re-scan the game into this project: pick up tiers the engine gained since the
+  // project was created + backfill speaker context on existing lines (so the cast
+  // shows up here), keeping every translation.
+  async function rescan() {
+    setRescanning(true);
+    setMsg(null);
+    try {
+      const r = await api.rescanProject();
+      await useStore.getState().refreshMeta();
+      await useStore.getState().reloadUnits();
+      await reload();
+      setMsg(
+        r.added > 0 || r.contextFilled > 0
+          ? `Rescanned: +${r.added} new line(s), filled ${r.contextFilled} speaker(s).`
+          : "Rescanned — nothing new in the game.",
+      );
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setRescanning(false);
+    }
   }
   useEffect(() => {
     reload().catch(() => setChars([]));
@@ -272,11 +296,19 @@ function CharactersPanel() {
           Characters <span className="hint">(gender → Thai ครับ/ค่ะ · this project)</span>
         </label>
         <div className="gloss-context-actions">
+          <button
+            className="ghost"
+            onClick={rescan}
+            disabled={rescanning || busy}
+            title="Re-scan the game: pull in new text the engine now supports + fill in speakers on existing lines (keeps translations)"
+          >
+            {rescanning ? "Rescanning…" : "Rescan game"}
+          </button>
           {!empty && (
             <button
               className="ghost"
               onClick={clearAll}
-              disabled={busy}
+              disabled={busy || rescanning}
               title="Remove every character (e.g. to redo the AI find from scratch)"
             >
               Clear

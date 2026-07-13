@@ -114,6 +114,42 @@ pub fn insert_units(conn: &mut Connection, units: &[TransUnit]) -> Result<usize>
     Ok(inserted)
 }
 
+/// Merge a fresh extraction into an existing project (a "rescan"): insert any new
+/// `(file, pointer)` units — e.g. a tier the engine gained since the project was created —
+/// and **backfill `context`** on existing units that have none but the fresh scan now
+/// resolves one (e.g. a speaker name), all WITHOUT touching an existing unit's
+/// translation or status. Returns `(inserted, context_filled)`.
+pub fn merge_units(conn: &mut Connection, units: &[TransUnit]) -> Result<(usize, usize)> {
+    let tx = conn.transaction()?;
+    let mut inserted = 0usize;
+    let mut filled = 0usize;
+    {
+        let mut ins = tx.prepare(
+            "INSERT OR IGNORE INTO unit(file, pointer, kind, context, grp, source, translation, status)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        // Only fills an empty context — never overwrites one the user (or a prior scan) set.
+        let mut upd = tx.prepare(
+            "UPDATE unit SET context = ?3
+             WHERE file = ?1 AND pointer = ?2 AND (context IS NULL OR context = '')",
+        )?;
+        for u in units {
+            let n = ins.execute(params![
+                u.file, u.pointer, u.kind.as_str(), u.context, u.group, u.source, u.translation, u.status.as_str()
+            ])?;
+            inserted += n;
+            if n == 0 {
+                // Existing row: backfill its context if the fresh scan resolved one.
+                if let Some(ctx) = u.context.as_deref().filter(|c| !c.trim().is_empty()) {
+                    filled += upd.execute(params![u.file, u.pointer, ctx])?;
+                }
+            }
+        }
+    }
+    tx.commit()?;
+    Ok((inserted, filled))
+}
+
 
 /// Filter/paginate the unit grid. All fields optional.
 #[derive(Debug, Default, Clone, Deserialize)]

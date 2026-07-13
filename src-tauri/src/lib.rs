@@ -102,6 +102,28 @@ fn close_project(state: tauri::State<AppState>) {
     *state.project.lock().unwrap() = None;
 }
 
+/// Result of a rescan: units added, existing units whose speaker context was filled in,
+/// and the new total.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RescanResult {
+    added: usize,
+    context_filled: usize,
+    total: i64,
+}
+
+/// Re-scan the game and merge into the open project — pick up engine tiers added since
+/// the project was created (new units) and backfill speaker context on existing units,
+/// keeping all translations. Safe to run repeatedly.
+#[tauri::command]
+fn rescan_project(state: tauri::State<AppState>) -> Result<RescanResult, String> {
+    with_project_mut(&state, |p| {
+        let (added, context_filled) = project::rescan(p)?;
+        let total = project::db::unit_count(&p.conn)?;
+        Ok(RescanResult { added, context_filled, total })
+    })
+}
+
 /// Change the source/target languages used for AI translation (persisted).
 #[tauri::command]
 fn set_languages(
@@ -1333,6 +1355,7 @@ pub fn run() {
             detect_game,
             open_project,
             close_project,
+            rescan_project,
             set_languages,
             set_game_context,
             set_era,

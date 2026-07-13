@@ -111,6 +111,17 @@ pub fn open_or_create(
     ))
 }
 
+/// Re-scan the game and merge into the open project: pick up any tier the engine has
+/// gained since the project was created (added as new units) and backfill speaker
+/// context on existing units, keeping every translation and status. Returns
+/// `(added, context_filled)`.
+pub fn rescan(project: &mut Project) -> Result<(usize, usize)> {
+    let eng = engine::detect(&project.root)
+        .ok_or_else(|| anyhow!("the game folder is no longer recognized"))?;
+    let units = eng.extract(&project.root, &ExtractOpts::default())?;
+    db::merge_units(&mut project.conn, &units)
+}
+
 impl Project {
     pub fn info(&self, freshly_extracted: bool) -> Result<ProjectInfo> {
         Ok(ProjectInfo {
