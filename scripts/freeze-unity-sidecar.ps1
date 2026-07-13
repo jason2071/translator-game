@@ -70,9 +70,14 @@ if ($WithFontBake) {
     }
     # scipy/numpy pull in data + many submodules PyInstaller misses via static analysis;
     # collect-all is the robust way. freetype-py ships a native DLL — collect-all grabs it.
+    # Decoding the atlas Texture2D pulls in UnityPy's native texture/audio deps (their DLLs
+    # aren't caught by --collect-submodules), so collect-all them too or the read fails
+    # (e.g. "Failed to load fmod.dll") and every font is skipped → no baking.
     $pyi += @(
         "--collect-all", "numpy", "--collect-all", "scipy",
         "--collect-all", "PIL", "--collect-all", "freetype",
+        "--collect-all", "fmod_toolkit", "--collect-all", "astc_encoder",
+        "--collect-all", "texture2ddecoder", "--collect-all", "etcpak",
         "--hidden-import", "freetype"
     )
 } else {
