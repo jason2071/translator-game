@@ -871,8 +871,46 @@ def cmd_uitbl_import(data_dir, patch_json, out_dir):
 # `assets-import` pass that loads each file once and applies every raw-splice tier to it
 # before saving. Records carry a `t` discriminator (`"ds"` / `"uitbl"`).
 
+_DS_LOCALE_SUFFIX = re.compile(r"(^| )(ja|zh|zh-tw|ko)$")
+
+
+def _ds_is_locale_title(s):
+    return s in ("ja", "zh", "zh-tw", "ko") or bool(_DS_LOCALE_SUFFIX.search(s))
+
+
+def _ds_has_cjk(s):
+    return any(0x4E00 <= ord(c) <= 0x9FFF or 0x3040 <= ord(c) <= 0x30FF
+               or 0xAC00 <= ord(c) <= 0xD7A3 for c in s)
+
+
+def _empty_ds_locales(raw):
+    """Blank every CJK/Korean *localized* field value in a DialogueDatabase blob so the game
+    falls back to the (translated) **base** field on ANY in-game language.
+
+    We translate the base `Dialogue Text` / `Menu Text` → Thai, but a PixelCrushers entry can
+    also carry per-locale copies of a field, stored as `[<locale> title][value]
+    [CustomFieldType_Localization]` (e.g. a `zh` field with the original Chinese). If the
+    player picks that language the game shows the original CJK — which the Thai-baked font
+    can't render (→ blank). Emptying the localized value makes the field fall back to the
+    translated base. Only CJK/Korean values under a locale-suffixed title are touched (never
+    a base value or a Latin/Thai one), so it's safe and idempotent."""
+    strs = enum_strings(raw)
+    texts = [t for _, _, t in strs]
+    spans = []
+    for i, t in enumerate(texts):
+        if t != "CustomFieldType_Localization" or i < 2:
+            continue
+        pos, blen, val = strs[i - 1]
+        if _ds_is_locale_title(texts[i - 2]) and not _ds_is_locale_title(val) and _ds_has_cjk(val):
+            spans.append((pos, blen))
+    for pos, blen in sorted(spans, key=lambda s: -s[0]):   # back-to-front
+        raw = splice_string(raw, pos, blen, "")
+    return raw, len(spans)
+
+
 def _apply_ds_edits(raw, per):
-    """Splice the given `{idx: translation}` Dialogue System edits into `raw`."""
+    """Splice the given `{idx: translation}` Dialogue System edits into `raw`, then neutralize
+    localized variants so the translated base shows on any in-game language."""
     units = _ds_units(raw)
     n = 0
     for idx in sorted(per, reverse=True):     # back-to-front: earlier spans stay valid
@@ -880,6 +918,7 @@ def _apply_ds_edits(raw, per):
             pos, blen, _title, _text, _spk = units[idx]
             raw = splice_string(raw, pos, blen, per[idx])
             n += 1
+    raw, _ = _empty_ds_locales(raw)
     return raw, n
 
 
