@@ -1,10 +1,20 @@
 # Unity TMP SDF font baking (Thai) — reference tooling
 
-Working reference for baking **Thai glyphs into a Unity TextMeshPro (TMP) SDF font**
-whose game (e.g. NTR Soccer, `unity-textbl` engine) uses **pre-baked atlases** and
-does **not** rasterize glyphs dynamically at runtime. Proven in-game: Thai dialogue
-renders cleanly. Not yet integrated into the app — this is the reference for a future
-`embed_font` SDF-bake path.
+Reference for baking **Thai glyphs into a Unity TextMeshPro (TMP) SDF font** whose game
+(e.g. NTR Soccer, `unity-textbl` engine) uses **pre-baked atlases** and does **not**
+rasterize glyphs dynamically at runtime. Proven in-game: Thai dialogue + UI render
+cleanly.
+
+> **Now integrated** as the helper's **`bake-font`** command
+> (`resources/unity/rpgtl_unity.py`), which `unity_textbl::embed_font` calls at export.
+> `bake-font` generalizes these scripts: it discovers every pre-baked TMP font, uses a
+> readable bundle copy as the **donor** typetree, **drops the dead CJK** glyphs to free
+> atlas space (keeping the game font's Latin), packs the new glyphs into the genuine
+> free space, and transplants the blob into the stripped-typetree copy. It auto-calibrates
+> the SDF slope + point size per font. The standalone scripts below remain the annotated
+> reference (and work when the app doesn't). **Caveat:** the SDF deps (freetype/numpy/
+> scipy/PIL) aren't in the frozen sidecar yet, so `bake-font` runs only under system
+> Python for now.
 
 ## Why the simple swap-font (Milf Plaza) approach fails here
 

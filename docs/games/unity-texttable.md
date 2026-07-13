@@ -224,11 +224,19 @@ glyph/char entries; set the font Static).
 `PlaypenSans-VariableFont_wght SDF` exists in `s.event`, `characterpose`, **and
 `sharedassets0.assets` (pid 3527) with a stripped typetree** — and the stripped one is
 what renders dialogue. Editing the two bundle copies changed nothing; the fix is a
-**raw-blob transplant** onto pid 3527 (build the 176-char font blob from a bundle copy's
-full typetree, fix its PPtrs to `sharedassets0`'s atlas/material/source-font/script,
-`set_raw_data`), plus baking the Thai SDF into that file's atlas. Not yet an app feature
-(freetype/scipy weight + stripped-transplant generality are the open productization
-questions); other UI fonts (`851tegaki…`) still need the same treatment.
+**raw-blob transplant** onto pid 3527 (build the font blob from a bundle copy's full
+typetree, fix its PPtrs to `sharedassets0`'s atlas/material/source-font/script,
+`set_raw_data`), plus baking the Thai SDF into that file's atlas.
+
+**Now a helper command — `bake-font`** (`resources/unity/rpgtl_unity.py`), called by
+`unity_textbl::embed_font`. It discovers every pre-baked TMP SDF font, uses a readable
+bundle copy as the **donor** typetree, **drops the dead CJK** glyphs (base is Thai, not
+JP) to free atlas space while keeping the game font's Latin, packs the new glyphs into
+the genuine free space (a first-fit scan, robust on a densely-baked atlas), and
+transplants the blob into the stripped-typetree copies. Auto-calibrates the SDF slope +
+point size per font. Validated on NTR (dialogue + UI Thai render in-game). The SDF deps
+(freetype/numpy/scipy/PIL) aren't in the frozen sidecar yet → runs under system Python
+for now (open item). Reference + standalone scripts: `scripts/unity-sdf-bake/`.
 
 ## Resolved notes
 

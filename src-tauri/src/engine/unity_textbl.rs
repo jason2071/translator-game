@@ -484,21 +484,9 @@ pub fn export_bundles(
         note.push_str(" Saved the originals under .rpgtl/source/ (used to revert / re-export).");
     }
     if embed_font {
-        // The font swap overwrites EVERY bundle carrying a dynamic TMP font — including
-        // ones no text unit touched (so not in `edited_bundles`). Snapshot every
-        // StandaloneWindows64 bundle first (idempotent, skips ones already saved) so the
-        // originals are recoverable and re-export stays deterministic.
-        for bundle in bundle_files(&sw) {
-            let name = bundle.file_name().unwrap_or_default();
-            let snap = sw64(&src_aa).join(name);
-            if bundle.is_file() && !snap.is_file() {
-                if let Some(parent) = snap.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::copy(&bundle, &snap)
-                    .with_context(|| format!("snapshotting {}", bundle.display()))?;
-            }
-        }
+        // `bake-font` reads the bundles read-only (as font donors) and rewrites the
+        // `.assets` fonts — the same `sharedassets0.assets` the DS tier already
+        // snapshots — so no extra bundle snapshot is needed here.
         match embed_thai_font(data_dir, data_dir, super::TARGET_FONT) {
             Ok(n) => note.push_str(&format!(" {n}")),
             Err(e) => note.push_str(&format!(" Font embedding failed: {e}")),
@@ -513,66 +501,56 @@ pub fn export_bundles(
 }
 
 // ---------------------------------------------------------------------------
-// Fonts: swap the dynamic TMP source TTF in every bundle + clear the CRC
+// Fonts: SDF-bake the target script into the game's pre-baked TMP fonts
 // ---------------------------------------------------------------------------
 
-/// Swap the bundled Thai font into every bundle's Dynamic-atlas TMP source TTF and
-/// clear the catalog CRC. Reads each bundle from `out_dir` if it was already injected
-/// there (so text + font end up in one bundle), else from `data_dir`; writes the
-/// patched bundle under `out_dir`. Bundles with no dynamic font are skipped. Returns a
-/// human note.
+/// SDF-bake the Thai font into the game's TMP fonts via the helper's `bake-font`
+/// command. Unlike the [`super::unity_csv`] dynamic swap-font (which only helps fonts
+/// that rasterize at runtime), these games ship pre-baked SDF atlases and never add
+/// glyphs at runtime, so `bake-font` renders Thai SDF glyphs into each font's atlas +
+/// glyph tables offline (dropping the dead CJK to make room, keeping the game font's
+/// Latin), transplanting into the stripped-typetree font copies the game actually uses.
+/// The helper writes the changed `.assets` to a temp dir; we relocate them under
+/// `out_dir` (mirroring the data-dir root). `.assets` are not Addressables bundles, so
+/// no catalog CRC is involved. Needs the SDF-capable helper (system Python + freetype/
+/// numpy/scipy/PIL, or a future frozen build that bundles them).
 fn embed_thai_font(data_dir: &Path, out_dir: &Path, font: &[u8]) -> Result<String> {
-    let sw_read = sw64(&aa_dir(data_dir));
-    let sw_out = sw64(&aa_dir(out_dir));
-    if !sw_read.is_dir() {
-        return Err(anyhow!("no bundle dir at {}", sw_read.display()));
-    }
-    std::fs::create_dir_all(&sw_out)?;
-
     let ttf = temp_path("font", "ttf");
     std::fs::write(&ttf, font).context("writing the Thai font for the helper")?;
+    let temp_out = temp_bake_dir();
+    let _ = std::fs::remove_dir_all(&temp_out);
+    std::fs::create_dir_all(&temp_out)?;
 
-    let mut swapped = 0usize;
-    for bundle in bundle_files(&sw_read) {
-        let name = bundle.file_name().unwrap_or_default();
-        // Prefer an already-injected copy in out_dir so text edits are kept.
-        let injected = sw_out.join(name);
-        let read_from = if injected.is_file() { injected.clone() } else { bundle.clone() };
-
-        let out = temp_path("bundle", "tmp");
-        let _ = std::fs::remove_file(&out);
-        let args: Vec<OsString> = vec![
-            "swap-font".into(),
-            read_from.into(),
-            ttf.clone().into(),
-            out.clone().into(),
-        ];
-        let run = run_sidecar(&args);
-        let done = (|| {
-            run?;
-            // The helper only writes an output when it actually swapped a font; a bundle
-            // with none leaves `out` absent, so we skip it (keeping any injected copy).
-            if out.is_file() {
-                std::fs::copy(&out, &sw_out.join(name))
-                    .with_context(|| format!("installing patched {}", name.to_string_lossy()))?;
-                swapped += 1;
+    let args: Vec<OsString> = vec![
+        "bake-font".into(),
+        data_dir.into(),
+        ttf.clone().into(),
+        temp_out.clone().into(),
+    ];
+    let run = run_sidecar(&args);
+    let relocate = (|| {
+        run?;
+        let mut n = 0usize;
+        for e in std::fs::read_dir(&temp_out).context("reading the bake-font output")? {
+            let p = e?.path();
+            if p.is_file() {
+                let dst = out_dir.join(p.file_name().unwrap());
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&p, &dst).with_context(|| format!("installing {}", dst.display()))?;
+                n += 1;
             }
-            Ok::<(), anyhow::Error>(())
-        })();
-        let _ = std::fs::remove_file(&out);
-        done?;
-    }
+        }
+        Ok::<usize, anyhow::Error>(n)
+    })();
+    let _ = std::fs::remove_dir_all(&temp_out);
     let _ = std::fs::remove_file(&ttf);
-
-    // Ensure the (possibly out-of-place) catalog has zeroed CRCs for the font edits too.
-    clear_catalog_crc(&aa_dir(data_dir), &aa_dir(out_dir))?;
-
-    if swapped == 0 {
-        return Err(anyhow!("no dynamic-atlas TMP font found to swap"));
+    let n = relocate?;
+    if n == 0 {
+        return Err(anyhow!("bake-font changed no files (no font with a usable donor?)"));
     }
-    Ok(format!(
-        "Embedded the Thai font into {swapped} bundle(s) and cleared the Addressables CRC."
-    ))
+    Ok(format!("Baked the Thai font into {n} game file(s)."))
 }
 
 fn temp_json(tag: &str) -> PathBuf {
@@ -585,6 +563,10 @@ fn temp_out_dir() -> PathBuf {
 
 fn temp_out_dir2() -> PathBuf {
     std::env::temp_dir().join(format!("rpgtl-textbl-ds-{}", std::process::id()))
+}
+
+fn temp_bake_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("rpgtl-textbl-bake-{}", std::process::id()))
 }
 
 fn temp_path(tag: &str, ext: &str) -> PathBuf {
