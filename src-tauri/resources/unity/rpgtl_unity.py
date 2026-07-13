@@ -456,7 +456,11 @@ def cmd_texttable_export(aa_dir, out):
     print(f"texttable-export: {len(recs)} field(s) from {aa_dir}")
 
 
-def cmd_texttable_import(aa_dir, patch_json, out_dir):
+def cmd_texttable_import(aa_dir, patch_json, out_dir, fast=False):
+    # `fast` writes the repacked bundle uncompressed (no LZ4). LZ4-compressing a
+    # multi-hundred-MB bundle is the slow part of an export; uncompressed is much faster
+    # to write (bigger on disk) and the game loads it fine since its catalog CRC is zeroed.
+    packers = ("none",) if fast else ("lz4", "none")
     with open(patch_json, encoding="utf-8") as f:
         patch = json.load(f)
     edits = {}                                # (file, pathId) -> {idx: translation}
@@ -488,7 +492,7 @@ def cmd_texttable_import(aa_dir, patch_json, out_dir):
                         n += 1
             obj.save_typetree(tree)
         blob = None
-        for packer in ("lz4", "none"):
+        for packer in packers:
             try:
                 blob = env.file.save(packer=packer)
                 break
@@ -1353,7 +1357,7 @@ def main(argv):
     elif cmd == "texttable-export":
         cmd_texttable_export(argv[2], argv[3])
     elif cmd == "texttable-import":
-        cmd_texttable_import(argv[2], argv[3], argv[4])
+        cmd_texttable_import(argv[2], argv[3], argv[4], fast=(len(argv) > 5 and argv[5] == "fast"))
     elif cmd == "dsdb-export":
         cmd_dsdb_export(argv[2], argv[3])
     elif cmd == "dsdb-import":
