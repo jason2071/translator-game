@@ -520,12 +520,30 @@ pub fn export_bundles(
         note.push_str(" Saved the originals under .rpgtl/source/ (used to revert / re-export).");
     }
     if embed_font {
-        // `bake-font` reads the bundles read-only (as font donors) and rewrites the
-        // `.assets` fonts — the same `sharedassets0.assets` the DS tier already
-        // snapshots — so no extra bundle snapshot is needed here.
-        match embed_thai_font(data_dir, data_dir, super::TARGET_FONT) {
-            Ok(n) => note.push_str(&format!(" {n}")),
-            Err(e) => note.push_str(&format!(" Font embedding failed: {e}")),
+        // The SDF bake is the slow part of an export (it loads every .assets/bundle and
+        // rasterizes the font), yet the font never changes between two exports of the same
+        // project — so re-baking on every re-export is wasted time. Record a fingerprint of
+        // the embedded font under `.rpgtl/`; skip the bake when it already matches. A font
+        // change (different TARGET_FONT) or a deleted marker forces a fresh bake.
+        let marker = root.join(".rpgtl").join("fonts_embedded");
+        let want = font_fingerprint(super::TARGET_FONT);
+        let already = std::fs::read_to_string(&marker).map(|s| s.trim() == want).unwrap_or(false);
+        if already {
+            note.push_str(
+                " Fonts already embedded — skipped the SDF bake (delete .rpgtl/fonts_embedded \
+                 to force a re-bake).",
+            );
+        } else {
+            // `bake-font` reads the bundles read-only (as font donors) and rewrites the
+            // `.assets` fonts — the same `sharedassets0.assets` the DS tier already
+            // snapshots — so no extra bundle snapshot is needed here.
+            match embed_thai_font(data_dir, data_dir, super::TARGET_FONT) {
+                Ok(n) => {
+                    let _ = std::fs::write(&marker, &want); // mark done; failure just re-bakes next time
+                    note.push_str(&format!(" {n}"));
+                }
+                Err(e) => note.push_str(&format!(" Font embedding failed: {e}")),
+            }
         }
     }
 
@@ -539,6 +557,16 @@ pub fn export_bundles(
 // ---------------------------------------------------------------------------
 // Fonts: SDF-bake the target script into the game's pre-baked TMP fonts
 // ---------------------------------------------------------------------------
+
+/// A cheap, stable fingerprint of the embedded font's bytes (length + hash), stored in
+/// `.rpgtl/fonts_embedded` so a re-export can tell the same font is already baked in and
+/// skip the slow SDF bake. Changing the font changes the fingerprint → a fresh bake.
+fn font_fingerprint(font: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    font.hash(&mut h);
+    format!("{}-{:016x}", font.len(), h.finish())
+}
 
 /// SDF-bake the Thai font into the game's TMP fonts via the helper's `bake-font`
 /// command. Unlike the [`super::unity_csv`] dynamic swap-font (which only helps fonts
