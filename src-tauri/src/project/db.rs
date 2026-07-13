@@ -501,6 +501,11 @@ pub fn characters_set_bulk(conn: &mut Connection, items: &[(String, String)]) ->
     Ok(n)
 }
 
+/// Delete every stored character→gender row (a fresh start before re-classifying).
+pub fn characters_clear(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute("DELETE FROM character", [])? )
+}
+
 /// Distinct speaker names seen on Dialogue units (the `context` field), so the UI
 /// and the auto-classify pass know who speaks. Skips empties.
 pub fn distinct_speakers(conn: &Connection) -> Result<Vec<String>> {

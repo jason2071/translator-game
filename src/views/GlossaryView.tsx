@@ -243,12 +243,23 @@ function CharactersPanel() {
     try {
       const updated = await api.classifyGenders(glossaryConfig());
       setChars(updated);
-      setMsg("Classified from sample lines — fix any that look wrong.");
+      setMsg("Found from the game — fix any that look wrong.");
     } catch (e) {
       setMsg(String(e));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function clearAll() {
+    if (!(await ask("Remove every character and gender from this project?", {
+      title: "Clear characters?",
+      kind: "warning",
+    })))
+      return;
+    await api.charactersClear();
+    await reload();
+    setMsg(null);
   }
 
   const unset = (chars ?? []).filter((c) => !c.gender).length;
@@ -261,6 +272,16 @@ function CharactersPanel() {
           Characters <span className="hint">(gender → Thai ครับ/ค่ะ · this project)</span>
         </label>
         <div className="gloss-context-actions">
+          {!empty && (
+            <button
+              className="ghost"
+              onClick={clearAll}
+              disabled={busy}
+              title="Remove every character (e.g. to redo the AI find from scratch)"
+            >
+              Clear
+            </button>
+          )}
           <button
             className="ghost"
             onClick={classify}

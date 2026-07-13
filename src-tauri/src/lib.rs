@@ -268,6 +268,12 @@ fn character_set(name: String, gender: String, state: tauri::State<AppState>) ->
     with_project(&state, |p| project::db::character_set(&p.conn, &name, &gender))
 }
 
+/// Delete every stored character row (before a clean re-classify).
+#[tauri::command]
+fn characters_clear(state: tauri::State<AppState>) -> Result<(), String> {
+    with_project(&state, |p| project::db::characters_clear(&p.conn).map(|_| ()))
+}
+
 /// AI-**find** the game's person characters and label each one's gender, then store
 /// the result. Candidates come from dialogue speakers (the `context` column) AND from
 /// mined proper nouns — so this works even when the engine attaches no per-line speaker
@@ -279,7 +285,13 @@ async fn classify_genders(
     config: ProviderConfig,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<project::db::Character>, String> {
-    let todo: Vec<(String, String)> = {
+    // `trusted` = names that ARE characters by construction (dialogue speakers) — kept
+    // with whatever gender the model returns, including neutral (a narrator/system voice).
+    // Everything else is a MINED proper noun (which surfaces capitalized common words like
+    // "Although"/"Besides" too), so it's kept only if the model gives it a real gender —
+    // a neutral label there means "not a person", and we drop it. This keeps the panel to
+    // actual characters instead of English function words.
+    let (todo, trusted): (Vec<(String, String)>, std::collections::HashSet<String>) = {
         let guard = state.project.lock().unwrap();
         let p = guard.as_ref().ok_or("no project open")?;
         let have: std::collections::HashSet<String> = project::db::characters_list(&p.conn)
@@ -287,36 +299,35 @@ async fn classify_genders(
             .into_iter()
             .map(|c| c.name)
             .collect();
-        // Speakers → their own sample lines (the strongest signal when present).
         let samples: std::collections::HashMap<String, String> =
             project::db::speaker_samples(&p.conn, 4)
                 .map_err(|e| e.to_string())?
                 .into_iter()
                 .collect();
-        // Candidate names: dialogue speakers first, then mined proper nouns (so games
-        // whose engine doesn't tag speakers still get their cast found). Deduped,
-        // capped so the classify call stays one cheap request.
         let engine_id = project::db::get_meta(&p.conn, "engine_id").ok().flatten().unwrap_or_default();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut trusted: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut todo: Vec<(String, String)> = Vec::new();
-        let mut push = |name: String, sample: String, todo: &mut Vec<(String, String)>| {
-            let key = name.trim().to_lowercase();
-            if name.trim().is_empty() || have.contains(name.trim()) || !seen.insert(key) {
-                return;
+        let speakers = project::db::distinct_speakers(&p.conn).map_err(|e| e.to_string())?;
+        for n in &speakers {
+            let key = n.trim().to_lowercase();
+            if n.trim().is_empty() || have.contains(n.trim()) || !seen.insert(key) {
+                continue;
             }
-            todo.push((name.trim().to_string(), sample));
-        };
-        for n in project::db::distinct_speakers(&p.conn).map_err(|e| e.to_string())? {
-            let s = samples.get(&n).cloned().unwrap_or_default();
-            push(n, s, &mut todo);
+            trusted.insert(n.trim().to_string());
+            todo.push((n.trim().to_string(), samples.get(n).cloned().unwrap_or_default()));
         }
         for c in project::db::mine_glossary_candidates(&p.conn, &engine_id, 120)
             .map_err(|e| e.to_string())?
         {
-            push(c.term, c.example, &mut todo);
+            let key = c.term.trim().to_lowercase();
+            if c.term.trim().is_empty() || have.contains(c.term.trim()) || !seen.insert(key) {
+                continue;
+            }
+            todo.push((c.term.trim().to_string(), c.example));
         }
         todo.truncate(150);
-        todo
+        (todo, trusted)
     };
     if todo.is_empty() {
         return with_project(&state, |p| project::db::characters_list(&p.conn));
@@ -337,7 +348,12 @@ async fn classify_genders(
         .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
         .await
         .map_err(|e| e.to_string())?;
-    let pairs = ai::prompt::parse_gender_classify(&raw);
+    // Keep a dialogue speaker with any label; keep a mined name only if it got a real
+    // gender (a neutral mined candidate is almost always a non-person word — drop it).
+    let pairs: Vec<(String, String)> = ai::prompt::parse_gender_classify(&raw)
+        .into_iter()
+        .filter(|(name, gender)| trusted.contains(name) || gender != "neutral")
+        .collect();
 
     with_project_mut(&state, |p| {
         project::db::characters_set_bulk(&mut p.conn, &pairs)?;
@@ -1339,6 +1355,7 @@ pub fn run() {
             glossary_add_bulk,
             characters_list,
             character_set,
+            characters_clear,
             classify_genders,
             translate_units,
             translate_texts,

@@ -264,6 +264,7 @@ export const api = {
   charactersList: () => invoke<Character[]>("characters_list"),
   characterSet: (name: string, gender: string) =>
     invoke<void>("character_set", { name, gender }),
+  charactersClear: () => invoke<void>("characters_clear"),
   classifyGenders: (config: ProviderConfig) =>
     invoke<Character[]>("classify_genders", { config }),
 
