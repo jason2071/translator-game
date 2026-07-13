@@ -1096,17 +1096,34 @@ def _bake_deps():
     return numpy, freetype, ndimage, Image
 
 
-def _sdf_glyph(face, freetype, np, ndimage, cp, point_size, slope, oversample=4, margin=6):
+# Px of real SDF border baked around each glyph's ink. Must be >= the fonts' own
+# m_AtlasPadding (PlaypenSans / 851tegaki, the fonts that render Thai here, use 9) — TMP
+# samples m_AtlasPadding px *around* m_GlyphRect at draw time, so a thinner baked border
+# leaves it sampling the atlas gap and glyph edges soften/garble.
+SDF_MARGIN = 10
+
+
+def _sdf_glyph(face, freetype, np, ndimage, cp, point_size, slope, oversample=4, margin=SDF_MARGIN):
     """(alpha HxW uint8, metrics dict, (w,h)) for a glyph SDF at the atlas encoding
     (edge=128, `alpha = clip(128 + slope*signed_dist_px)`), or (None, metrics, (0,0))
-    for a zero-area glyph. Renders hi-res, distance-transforms, downscales."""
+    for a zero-area glyph. Renders hi-res, distance-transforms, downscales.
+
+    metrics carries the glyph's TRUE ink box (width/height/bearingX/bearingY = the raw
+    freetype values, no margin fudge) plus where that ink sits inside the padded alpha
+    (ox/oy/iw/ih). This lets the packer point m_GlyphRect at the INK, matching the game's
+    own fonts where m_GlyphRect == m_Metrics (the padding lives in m_AtlasPadding, not in
+    the rect). Storing the *padded* box in the rect while metrics hold the ink box (the
+    old bug) makes TMP map a padded UV region onto an ink-sized quad, squishing each glyph
+    by a size-dependent ratio (small marks shrink more than tall letters) → a ragged,
+    uneven baseline."""
     face.set_pixel_sizes(0, point_size * oversample)
     face.load_char(cp, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
     g = face.glyph
     bm = g.bitmap
     adv = g.advance.x / 64.0 / oversample
     if bm.width == 0 or bm.rows == 0:
-        return None, {"width": 0.0, "height": 0.0, "bearingX": 0.0, "bearingY": 0.0, "advance": adv}, (0, 0)
+        return None, {"width": 0.0, "height": 0.0, "bearingX": 0.0, "bearingY": 0.0,
+                      "advance": adv, "ox": 0, "oy": 0, "iw": 0, "ih": 0}, (0, 0)
     hi = np.array(bm.buffer, dtype=np.uint8).reshape(bm.rows, bm.width)
     pad = margin * oversample
     mask = np.zeros((bm.rows + 2 * pad, bm.width + 2 * pad), dtype=bool)
@@ -1116,9 +1133,13 @@ def _sdf_glyph(face, freetype, np, ndimage, cp, point_size, slope, oversample=4,
     signed = signed[:h2, :w2].reshape(h2 // oversample, oversample, w2 // oversample, oversample).mean(axis=(1, 3)) / oversample
     alpha = np.clip(128.0 + slope * signed, 0, 255).astype(np.uint8)
     h, w = alpha.shape
+    # ink sits `margin` px in from the top-left of the padded alpha; clamp so the ink box
+    # stays inside the alpha (block-mean downscale can shave <1px off the bottom/right).
+    iw, ih = int(round(bm.width / oversample)), int(round(bm.rows / oversample))
+    iw, ih = min(iw, w - margin), min(ih, h - margin)
     metrics = {"width": bm.width / oversample, "height": bm.rows / oversample,
-               "bearingX": g.bitmap_left / oversample - margin, "bearingY": g.bitmap_top / oversample + margin,
-               "advance": adv}
+               "bearingX": g.bitmap_left / oversample, "bearingY": g.bitmap_top / oversample,
+               "advance": adv, "ox": margin, "oy": margin, "iw": iw, "ih": ih}
     return alpha, metrics, (w, h)
 
 
@@ -1264,7 +1285,12 @@ def _pack_into_atlas(np, alpha, used_glyphs, keep_gidx, glyphs, W, H, gap=3):
         x, y = spot
         alpha[y:y + h, x:x + w] = a
         used[max(0, y - gap):y + h + gap, max(0, x - gap):x + w + gap] = True
-        placed[cp] = ({"m_X": x, "m_Y": H - (y + h), "m_Width": w, "m_Height": h}, m)
+        # The full padded SDF (w×h) goes into the atlas, but m_GlyphRect points at the INK
+        # sub-box (offset by ox/oy inside the padded alpha) so rect == metrics, matching the
+        # game's own glyphs. TMP then samples m_AtlasPadding px of the surrounding baked SDF.
+        ox, oy, iw, ih = m["ox"], m["oy"], m["iw"], m["ih"]
+        rect = {"m_X": x + ox, "m_Y": H - (y + oy + ih), "m_Width": iw, "m_Height": ih}
+        placed[cp] = (rect, m)
     return placed
 
 
