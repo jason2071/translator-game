@@ -889,6 +889,39 @@ def _apply_uitbl_edits(raw, per):
     return raw, n
 
 
+def cmd_assets_export(data_dir, out):
+    """Scan the `.assets` files ONCE and emit both raw-splice tiers — Dialogue System
+    (`ds`) lines and I2 Localization UI-table (`uitbl`) values — into one manifest. This
+    is the read-side twin of `cmd_assets_import`: `dsdb-export` and `uitbl-export` each
+    open every `.assets` (loading a multi-hundred-MB `sharedassets0` twice), so folding
+    them into a single pass halves the file I/O at extract time."""
+    recs = []
+    for path in assets_files(data_dir):
+        rel = os.path.basename(path)
+        try:
+            env = UnityPy.load(path)
+        except Exception:
+            continue
+        for obj, raw in _ds_databases(env):
+            for idx, (_p, _L, title, text, speaker) in enumerate(_ds_units(raw)):
+                rec = {"t": "ds", "file": rel, "pathId": obj.path_id,
+                       "idx": idx, "title": title, "source": text}
+                if speaker:
+                    rec["speaker"] = speaker
+                recs.append(rec)
+        for obj, raw, langs, terms in _i2_tables(env):
+            di = _i2_default_index(langs)
+            for idx, term in enumerate(terms):
+                src = next((t for (li, _p, _l, t) in term["slots"] if li == di), "")
+                if not src or not src.strip():
+                    continue
+                recs.append({"t": "uitbl", "file": rel, "pathId": obj.path_id,
+                             "idx": idx, "term": term["term"], "source": src})
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(recs, f, ensure_ascii=False, indent=1)
+    print(f"assets-export: {len(recs)} record(s) from {data_dir}")
+
+
 def cmd_assets_import(data_dir, patch_json, out_dir):
     with open(patch_json, encoding="utf-8") as f:
         patch = json.load(f)
@@ -1329,6 +1362,8 @@ def main(argv):
         cmd_uitbl_export(argv[2], argv[3])
     elif cmd == "uitbl-import":
         cmd_uitbl_import(argv[2], argv[3], argv[4])
+    elif cmd == "assets-export":
+        cmd_assets_export(argv[2], argv[3])
     elif cmd == "assets-import":
         cmd_assets_import(argv[2], argv[3], argv[4])
     elif cmd == "catalog-crc":

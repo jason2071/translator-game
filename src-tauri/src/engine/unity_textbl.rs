@@ -63,29 +63,25 @@ struct TblRec {
     source: String,
 }
 
-/// A record from the helper's `dsdb-export` manifest (a Dialogue System line).
+/// A record from the helper's `assets-export` manifest — one `.assets` scan that yields
+/// both raw-splice tiers, tagged by `t`: `"ds"` (a Dialogue System line, with `speaker`)
+/// or `"uitbl"` (an I2 Localization UI value, with `term`).
 #[derive(Deserialize)]
-struct DsRec {
+struct AssetRec {
+    #[serde(rename = "t")]
+    tier: String,
     file: String,
     #[serde(rename = "pathId")]
     path_id: i64,
     idx: i64,
     source: String,
-    /// The speaking actor's name, when the entry's `Actor` resolved — kept as the
-    /// unit's context (who speaks) so the AI can pick gendered Thai particles.
+    /// DS only: the speaking actor's name, kept as the unit's context so the AI can pick
+    /// gendered Thai particles.
     #[serde(default)]
     speaker: Option<String>,
-}
-
-/// A record from the helper's `uitbl-export` manifest (an I2 Localization UI string).
-#[derive(Deserialize)]
-struct UiRec {
-    file: String,
-    #[serde(rename = "pathId")]
-    path_id: i64,
-    idx: i64,
-    term: String,
-    source: String,
+    /// uitbl only: the I2 term key, kept as context when it adds information.
+    #[serde(default)]
+    term: Option<String>,
 }
 
 /// One record fed to a helper import step. `texttable-import` reads only
@@ -149,23 +145,23 @@ impl GameEngine for UnityTextTableEngine {
             TransUnit::new(&r.file, pointer, UnitKind::Message, &r.source).with_context(ctx)
         }));
 
-        // Tier 2 — PixelCrushers Dialogue System story lines in the `.assets`.
-        let ds: Vec<DsRec> = run_export("dsdb-export", data.as_os_str())?;
-        units.extend(ds.into_iter().map(|r| {
-            let pointer = format!("ds#{}#{}#{}", r.file, r.path_id, r.idx);
-            let speaker = r.speaker.filter(|s| !s.trim().is_empty());
-            TransUnit::new(&r.file, pointer, UnitKind::Dialogue, &r.source).with_context(speaker)
-        }));
-
-        // Tier 3 — I2 Localization "Text Table" UI strings in the `.assets` (menus,
-        // options, day/time labels, tutorials). Overwrites every non-Default column so
-        // the game shows the translation whatever non-Default language it renders.
-        let ui: Vec<UiRec> = run_export("uitbl-export", data.as_os_str())?;
-        units.extend(ui.into_iter().map(|r| {
-            let pointer = format!("uitbl#{}#{}#{}", r.file, r.path_id, r.idx);
-            // The I2 term key is context only when it adds information over the source.
-            let ctx = (!r.term.is_empty() && r.term != r.source).then_some(r.term);
-            TransUnit::new(&r.file, pointer, UnitKind::Message, &r.source).with_context(ctx)
+        // Tiers 2 + 3 — PixelCrushers Dialogue System story lines AND I2 Localization
+        // "Text Table" UI strings, both in the `.assets`, gathered in ONE scan (the helper
+        // opens each — possibly multi-hundred-MB — `.assets` once instead of twice).
+        let assets: Vec<AssetRec> = run_export("assets-export", data.as_os_str())?;
+        units.extend(assets.into_iter().filter_map(|r| match r.tier.as_str() {
+            "ds" => {
+                let pointer = format!("ds#{}#{}#{}", r.file, r.path_id, r.idx);
+                let speaker = r.speaker.filter(|s| !s.trim().is_empty());
+                Some(TransUnit::new(&r.file, pointer, UnitKind::Dialogue, &r.source).with_context(speaker))
+            }
+            "uitbl" => {
+                let pointer = format!("uitbl#{}#{}#{}", r.file, r.path_id, r.idx);
+                // The I2 term key is context only when it adds information over the source.
+                let ctx = r.term.filter(|t| !t.trim().is_empty() && *t != r.source);
+                Some(TransUnit::new(&r.file, pointer, UnitKind::Message, &r.source).with_context(ctx))
+            }
+            _ => None,
         }));
 
         Ok(units)
