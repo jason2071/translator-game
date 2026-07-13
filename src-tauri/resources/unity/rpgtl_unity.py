@@ -1195,6 +1195,22 @@ def _apply_tables(t, placed, keep_gidx):
         t["m_CharacterTable"].append({"m_ElementType": 1, "m_Unicode": cp, "m_GlyphIndex": gi, "m_Scale": 1.0})
     t["m_AtlasPopulationMode"] = 0
 
+    # Thai stacks marks two-high above the base (upper vowel + tone) and hangs vowels
+    # below it, so its glyphs are taller than the Latin/CJK the face was measured for. If
+    # the face's ascent/descent/line-height don't cover that, multi-line text overlaps
+    # (a font like 851tegaki ships LineHeight == PointSize, far too tight). Grow the face
+    # metrics to fit the tallest new glyph — only ever upward, so a font already roomy
+    # enough is untouched.
+    tops = [m["bearingY"] for (_r, m) in placed.values()]
+    bots = [m["bearingY"] - m["height"] for (_r, m) in placed.values()]
+    fi = t.get("m_FaceInfo")
+    if tops and isinstance(fi, dict) and "m_LineHeight" in fi:
+        asc = max(fi.get("m_AscentLine", 0.0), max(tops) + 5.0)
+        desc = min(fi.get("m_DescentLine", 0.0), min(bots) - 5.0)
+        fi["m_AscentLine"] = asc
+        fi["m_DescentLine"] = desc
+        fi["m_LineHeight"] = max(fi.get("m_LineHeight", 0.0), asc - desc + 8.0)
+
     # Defensive: TMP renders a glyph via `m_AtlasTextures[glyph.m_AtlasIndex]`, so a glyph
     # whose atlas index is >= the texture-array length crashes the whole text object
     # (IndexOutOfRangeException in TMP_MaterialManager.GetFallbackMaterial → the label
