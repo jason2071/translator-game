@@ -40,7 +40,7 @@ export function Sidebar({
   // Stock game fonts often have no Thai glyphs, so offer to embed a Thai-capable font
   // on export. Default on when translating to Thai. Shown for the engines whose
   // `embed_font` does something (Ren'Py embeds its own font inside its tl/ path).
-  const FONT_ENGINES = ["rpgmaker-mvmz", "unity-csvloc", "rpgmaker-hendrix"];
+  const FONT_ENGINES = ["rpgmaker-mvmz", "unity-csvloc", "unity-textbl", "rpgmaker-hendrix"];
   // Engines whose translation can be packaged as a non-destructive overlay .zip.
   // Ren'Py + Hendrix build additively into the game, so they're export-to-game only.
   const MOD_ENGINES = [

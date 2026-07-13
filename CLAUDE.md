@@ -106,6 +106,20 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   `catalog.bin` — a pure-Rust byte patch (locate the 16-byte content hash from the
   bundle filename → `Crc u32` at hash offset **+60** → `0`), without which
   Addressables' CRC check rejects the modified bundle and hangs the game at load.
+  `unity_textbl.rs` is a **third Unity engine** — **Unity (TextTable)** (id
+  `unity-textbl`) — for **Mono**-backend Addressables games (e.g. NTR Soccer) that keep
+  all text in custom `TextTable` MonoBehaviours (a per-language string matrix:
+  `m_languageKeys` + `m_fieldValues[i].m_values[<lang>]`). Mono ⇒ UnityPy reads **and
+  writes** the typetree, so it sets `m_values[0]` (the `Default`/`en` base column) to
+  the translation via the shared `rpgtl_unity.py` (`texttable-export`/`texttable-import`),
+  pointer `"tbl#<bundle>#<pathId>#<idx>"`, round-trip **load-faithful** (whole-bundle
+  re-serialize, like Naninovel). Fonts reuse **`swap-font`** (the Default TMP fonts are
+  Dynamic-atlas); CRC differs from csvloc — a **`catalog.json`** whose per-bundle
+  `AssetBundleRequestOptions` are **UTF-16LE JSON** in `m_ExtraDataString`, so the helper
+  **`catalog-crc`** decodes it and sets each `m_Crc` to 0 (fixing the length prefix).
+  **In-place export only** (bundles are gigabytes; no mod staging), snapshotting
+  originals to `.rpgtl/source/`. Detects a `<name>_Data/` with `aa/catalog.json` + an
+  `Assembly-CSharp.dll` referencing `TextTable`.
 - **`project/`** — SQLite persistence (`db.rs`) and project lifecycle (`mod.rs`):
   open/create the sidecar store, backup, and export.
 - **`ai/`** — one `TranslationProvider` trait, providers behind it, plus prompt

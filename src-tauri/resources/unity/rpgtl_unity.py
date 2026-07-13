@@ -395,6 +395,158 @@ def cmd_import(data_dir, patch_json, out_dir, locale):
     print(f"import: wrote {written} file(s), locale={locale!r}")
 
 
+# --- TextTable MonoBehaviour engine (unity-textbl) --------------------------
+#
+# Some Unity (Mono-backend) games keep ALL their text in a couple of custom
+# `TextTable` MonoBehaviours inside an Addressables bundle — a per-language string
+# matrix. Because the backend is Mono, UnityPy reads AND writes the typetree, so
+# (unlike the Naninovel dialogue tier) we edit the structured tree, not raw bytes.
+#
+#   TextTable typetree:
+#     m_languageKeys   : ['Default','ja','zh','zh-tw','ko']   # 0 = base column
+#     m_fieldValues[i] : { m_fieldName, m_keys:[0..], m_values:[<per language>] }
+#
+# We translate `m_values[0]` (the Default column) → the target language, so the
+# game shows it whenever its base/Default locale (usually `en`) is active. The
+# fingerprint of a TextTable is simply a typetree carrying both `m_languageKeys`
+# and `m_fieldValues` (no game DLL / script-class read needed).
+
+def _bundles(aa_dir):
+    """The Addressables bundle files under an `aa/` dir (StandaloneWindows64/*.bundle
+    for a Windows build, plus any bundle directly in the dir)."""
+    out = glob.glob(os.path.join(aa_dir, "StandaloneWindows64", "*.bundle"))
+    out += glob.glob(os.path.join(aa_dir, "*.bundle"))
+    return sorted(set(p for p in out if os.path.isfile(p)))
+
+
+def _texttables(env):
+    """[(obj, tree)] for every TextTable MonoBehaviour in a loaded bundle."""
+    tables = []
+    for obj in env.objects:
+        if obj.type.name != "MonoBehaviour":
+            continue
+        try:
+            tree = obj.read_typetree()
+        except Exception:
+            continue
+        if isinstance(tree, dict) and "m_languageKeys" in tree and "m_fieldValues" in tree:
+            tables.append((obj, tree))
+    return tables
+
+
+def cmd_texttable_export(aa_dir, out):
+    recs = []
+    for path in _bundles(aa_dir):
+        rel = os.path.basename(path)
+        try:
+            env = UnityPy.load(path)
+        except Exception:
+            continue
+        for obj, tree in _texttables(env):
+            for idx, fld in enumerate(tree.get("m_fieldValues", [])):
+                vals = fld.get("m_values") or []
+                src = vals[0] if vals else ""
+                if not src or not src.strip():
+                    continue
+                recs.append({"t": "tbl", "file": rel, "pathId": obj.path_id,
+                             "idx": idx, "name": fld.get("m_fieldName", ""),
+                             "source": src})
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(recs, f, ensure_ascii=False, indent=1)
+    print(f"texttable-export: {len(recs)} field(s) from {aa_dir}")
+
+
+def cmd_texttable_import(aa_dir, patch_json, out_dir):
+    with open(patch_json, encoding="utf-8") as f:
+        patch = json.load(f)
+    edits = {}                                # (file, pathId) -> {idx: translation}
+    for r in patch:
+        t = r.get("translation")
+        if t is None:
+            continue
+        edits.setdefault((r["file"], int(r["pathId"])), {})[int(r["idx"])] = t
+    changed_files = {k[0] for k in edits}
+    os.makedirs(out_dir, exist_ok=True)
+
+    written = 0
+    for path in _bundles(aa_dir):
+        rel = os.path.basename(path)
+        if rel not in changed_files:
+            continue
+        env = UnityPy.load(path)
+        n = 0
+        for obj, tree in _texttables(env):
+            per = edits.get((rel, obj.path_id))
+            if not per:
+                continue
+            fvs = tree.get("m_fieldValues", [])
+            for idx, tr in per.items():
+                if 0 <= idx < len(fvs):
+                    vals = fvs[idx].get("m_values")
+                    if vals:
+                        vals[0] = tr
+                        n += 1
+            obj.save_typetree(tree)
+        blob = None
+        for packer in ("lz4", "none"):
+            try:
+                blob = env.file.save(packer=packer)
+                break
+            except Exception as e:
+                print(f"texttable-import: packer {packer} failed: {e}", file=sys.stderr)
+        if blob is None:
+            sys.exit(f"texttable-import: could not repack {rel}")
+        with open(os.path.join(out_dir, rel), "wb") as f:
+            f.write(blob)
+        written += 1
+        print(f"texttable-import: patched {rel} ({n} field(s))")
+    print(f"texttable-import: wrote {written} bundle(s)")
+
+
+def cmd_catalog_crc(catalog_path, out_path=None):
+    """Zero every bundle's CRC in an Addressables **JSON** catalog.
+
+    A modified `.bundle` no longer matches the CRC the catalog records for it, and
+    Addressables then rejects the load (the game hangs at startup) — the same gate the
+    `unity-csvloc` engine defeats in a binary `catalog.bin`. In a JSON catalog the
+    per-bundle `AssetBundleRequestOptions` live in `m_ExtraDataString` (base64) as
+    **UTF-16LE JSON** strings, each preceded by a 4-byte little-endian byte length:
+    `…<i32 len>{"m_Hash":"…","m_Crc":<n>,…}…`. Setting `m_Crc` to 0 disables the check
+    (Addressables treats 0 as "don't verify"). We rewrite each such JSON, fixing its
+    length prefix, then re-base64 the blob. Non-CRC options are preserved verbatim."""
+    import base64 as _b64
+    with open(catalog_path, encoding="utf-8") as f:
+        cat = json.load(f)
+    blob = bytearray(_b64.b64decode(cat.get("m_ExtraDataString", "")))
+    needle = '{"m_Hash"'.encode("utf-16-le")
+    zeroed = 0
+    i = 0
+    while True:
+        j = blob.find(needle, i)
+        if j < 0:
+            break
+        length = struct.unpack_from("<i", blob, j - 4)[0]   # UTF-16 byte length
+        try:
+            obj = json.loads(blob[j:j + length].decode("utf-16-le"))
+        except Exception:
+            i = j + len(needle)
+            continue
+        if obj.get("m_Crc", 0) == 0:
+            i = j + length
+            continue
+        obj["m_Crc"] = 0
+        new = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-16-le")
+        blob[j:j + length] = new
+        struct.pack_into("<i", blob, j - 4, len(new))
+        zeroed += 1
+        i = j + len(new)
+    cat["m_ExtraDataString"] = _b64.b64encode(bytes(blob)).decode("ascii")
+    dst = out_path or catalog_path
+    with open(dst, "w", encoding="utf-8") as f:
+        json.dump(cat, f, ensure_ascii=False, separators=(",", ":"))
+    print(f"catalog-crc: zeroed {zeroed} bundle CRC(s) -> {os.path.basename(dst)}")
+
+
 def cmd_swap_font(bundle_in, ttf_path, bundle_out):
     """Replace the source TTF of every Dynamic-atlas TMP_FontAsset in an Addressables
     font bundle, so a fallback font renders a script the baked atlases lack."""
@@ -430,6 +582,14 @@ def cmd_swap_font(bundle_in, ttf_path, bundle_out):
             d.save()
             swapped += 1
 
+    # No dynamic-atlas font here — nothing to do. Don't write an output; the caller
+    # tests for the output file's existence and keeps the original bundle. (This lets
+    # a caller sweep swap-font over *every* bundle without knowing which hold fonts,
+    # e.g. the unity-textbl engine.) Exit 0 so the sweep continues.
+    if swapped == 0:
+        print(f"swap-font: no dynamic-atlas TMP font in {os.path.basename(bundle_in)} (skipped)")
+        return
+
     # 3) write the bundle. Prefer LZ4 (keeps it ~compressed like the original); fall
     #    back to uncompressed if this UnityPy build can't repack LZ4.
     blob = None
@@ -444,8 +604,6 @@ def cmd_swap_font(bundle_in, ttf_path, bundle_out):
     with open(bundle_out, "wb") as f:
         f.write(blob)
     print(f"swap-font: swapped {swapped} dynamic font source(s) in {os.path.basename(bundle_in)}")
-    if swapped == 0:
-        sys.exit("swap-font: no dynamic-atlas TMP font asset found to swap")
 
 
 def main(argv):
@@ -460,6 +618,12 @@ def main(argv):
         cmd_import(argv[2], argv[3], argv[4], locale)
     elif cmd == "swap-font":
         cmd_swap_font(argv[2], argv[3], argv[4])
+    elif cmd == "texttable-export":
+        cmd_texttable_export(argv[2], argv[3])
+    elif cmd == "texttable-import":
+        cmd_texttable_import(argv[2], argv[3], argv[4])
+    elif cmd == "catalog-crc":
+        cmd_catalog_crc(argv[2], argv[3] if len(argv) > 3 else None)
     else:
         sys.exit(f"unknown command {cmd!r}")
 

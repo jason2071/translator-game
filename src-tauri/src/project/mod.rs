@@ -199,6 +199,26 @@ pub fn export(project: &Project, make_backup: bool, embed_font: bool) -> Result<
         });
     }
 
+    // Unity (TextTable): text lives in custom TextTable MonoBehaviours inside
+    // gigabyte-scale Addressables bundles, so export repacks each edited bundle in
+    // place (snapshotting originals under .rpgtl/source/), clears the bundle CRC, and
+    // optionally swaps the Thai font. In-place only (no mod staging — the bundles are
+    // too large to mirror), like Ren'Py/Hendrix.
+    if eng.id() == "unity-textbl" {
+        let ex = engine::unity_textbl::export_bundles(
+            &project.root,
+            &project.data_dir,
+            &units,
+            embed_font,
+        )?;
+        return Ok(ExportResult {
+            files_written: ex.bundles,
+            units_applied: applied.len(),
+            backup_dir: ex.backup_dir,
+            note: Some(ex.note),
+        });
+    }
+
     // Hendrix Localization: like Ren'Py, export is additive and not a plain
     // in-place splice. Append a Thai column to `game_messages.csv`, register the
     // language in the plugin (so it appears in the in-game menu), and embed the

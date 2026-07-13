@@ -9,7 +9,7 @@ tags:
   - engine/unity-textbl
   - game/ntr-soccer
 created: 2026-07-13
-status: proposed
+status: implemented
 ---
 
 # Unity — TextTable MonoBehaviour (Mono + Addressables)
@@ -17,13 +17,17 @@ status: proposed
 A **fourth, distinct** Unity target next to [[unity-naninovel]] (binary `.assets`
 TextAssets) and [[unity-csv-localization]] (plaintext CSV). Here **all** in-game text
 lives in a small number of **custom `TextTable` MonoBehaviours** — a per-language
-string matrix serialized inside an Addressables bundle. Investigated (not yet built)
+string matrix serialized inside an Addressables bundle. Built and validated end-to-end
 on **NTR Soccer** (otomi-games).
 
-Proposed engine id **`unity-textbl`**, name **Unity (TextTable)**
-(`src-tauri/src/engine/unity_textbl.rs`).
+Engine id **`unity-textbl`**, name **Unity (TextTable)**
+(`src-tauri/src/engine/unity_textbl.rs`), driven by the shared UnityPy helper
+`resources/unity/rpgtl_unity.py` (`texttable-export` / `texttable-import` /
+`catalog-crc`, plus the existing `swap-font`).
 
-> **Status: research complete, engine not started.** Continue from *Next steps*.
+> **Status: implemented.** Rust engine + helper commands + protect/codes mirror +
+> env-gated test all in; text / font / CRC all validated technically (PoC below).
+> Pending: a real in-game launch to confirm the Default column shows Thai.
 
 ## Game facts (NTR Soccer)
 
@@ -111,14 +115,17 @@ whole game. Low text volume, so the value is the **engine**, not the word count.
 
 ## Fonts
 
-- **9 `TMP_FontAsset`** in `s.event` bundle (+ a `LocalizedFonts` MonoBehaviour ×2 that
-  likely swaps font per locale). Stock fonts have no Thai → need a Sarabun swap, same
-  problem class as [[unity-csv-localization]].
-- **Open:** are these TMP assets **dynamic-atlas** (`m_AtlasPopulationMode == 1`, swap
-  source `Font` TTF like Milf Plaza) or **static SDF atlas** (must bake glyphs)? Must
-  check tomorrow. If dynamic, reuse the `rpgtl_unity.py` **`swap-font`** path. The
-  `LocalizedFonts` MB may let us point the `en`/Default locale at a Thai-capable font
-  without touching every asset — inspect it.
+- **9 `TMP_FontAsset`** in `s.event` bundle + two `LocalizedFonts` MBs (`Localized
+  Fonts`, `Soccer Localized Fonts`) that map language → TMP font, with a
+  `defaultTextMeshProFont` for the base/`en`/Default column.
+- **RESOLVED — both Default fonts are Dynamic-atlas** (`m_AtlasPopulationMode == 1`):
+  `PlaypenSans-VariableFont_wght SDF` and `851tegaki_zatsu_normal_0883 SDF`. Dynamic
+  mode rasterizes glyphs at runtime from an in-bundle source `Font`, so the existing
+  `rpgtl_unity.py` **`swap-font`** (swap the source TTF → bundled Sarabun) makes Thai
+  render — **no SDF baking**, same as [[unity-csv-localization]]. (Only
+  `NotoSansJP-Regular SDF` is static, mode 0 — the JP column, which we don't target.)
+  `embed_font` sweeps `swap-font` over every bundle; a bundle with no dynamic font
+  writes no output and is skipped.
 
 ## Proposed engine design
 
@@ -157,32 +164,49 @@ round-trip) rather than the byte-span engines — this is typetree read+**write*
   `{PLAYER_WINS}`, `{OPPONENT_NAME}` (seen in UI fields 167–172) — **must be masked so
   AI never translates them**. Mirror in `src/codes.ts` / `src/messageWidth.ts`.
 
-## Open questions / risks (resolve tomorrow)
+## Validation (PoC, all via the helper on the real game)
 
-1. **Does overwriting `Default` actually show in-game?** Verify the `en` Locale maps to
-   the `Default` column at runtime (the `Locale`↔`languageKeys` mapping: keys are
-   `Default/ja/zh/zh-tw/ko` but Locales are `en/ja/ko/zh/zh-TW` — `en` presumably ⇒
-   `Default`, `zh-TW` ⇒ `zh-tw`). Confirm by a test export + launch.
-2. **Font mode** (dynamic vs static SDF) — decides swap vs bake. Inspect `LocalizedFonts`.
-3. **CRC in `catalog.json`** — needed or not?
-4. **Mixed EN/JP base** — fine for extraction (both are source), but the AI prompt
-   should be told source may be either.
-5. **Writing a 1 GB bundle** — UnityPy re-serializes the whole `s.event` bundle (all the
-   art/audio too). Confirm memory/time are acceptable and the rewritten bundle still
-   loads. (Naninovel already does full-file re-serialize, but on much smaller files.)
+- **`texttable-export`**: **550** non-empty fields, **~5.9 s**. TextTables live in
+  **two** bundles, not one — `s.event` (275) **and** `characterpose` (275). The engine
+  sweeps every `StandaloneWindows64/*.bundle`, so both are covered.
+- **`texttable-import`** (splice `Default` → Thai, repack): **~77.6 s** for the 1 GB
+  `s.event` (+ 91 MB `characterpose`); output `s.event` = 1016 MB and **re-loads**;
+  each spliced field reads back as the Thai value (**load-faithful**). Risk #5 (1 GB
+  repack memory/time) → acceptable.
+- **Font** (see above): both Default fonts are Dynamic → `swap-font` applies.
+- **CRC**: catalog is **`catalog.json`**; per-bundle `AssetBundleRequestOptions` are
+  **UTF-16LE JSON** inside `m_ExtraDataString` (base64), 4-byte LE length-prefixed:
+  `…<i32 len>{"m_Hash":"…","m_Crc":<n>,…}…`. The observed CRCs are **non-zero** (the
+  game verifies), so a modified bundle needs them cleared. `catalog-crc` decodes the
+  blob, sets each `m_Crc` to 0, fixes the length prefix, re-base64s — validated
+  (4 CRCs → 0, hashes intact). *(Contrast [[unity-csv-localization]]: a binary
+  `catalog.bin`, CRC at `hash+60`.)*
+
+## Resolved notes
+
+- **Default = shown column for `en`.** Overwriting `m_values[0]` targets the base
+  column; the `en` Locale maps to `Default`. *(Final in-game confirmation still pending
+  a launch, but this is the design and matches the Milf Plaza overwrite-a-locale UX.)*
+- **Mixed EN/JP base** — the extractor takes `m_values[0]` verbatim (EN or JP); both are
+  "the text to translate". The `unity` mask (TMPro tags + `{TOKEN}`/`{0}`) is reused.
+- **Export is in-place only.** Bundles are gigabyte-scale, so no mod-staging copy is
+  offered (like Ren'Py/Hendrix). Originals are snapshotted under `.rpgtl/source/` on the
+  first export (undo + inject-from-original for idempotent re-export).
 
 ## Next steps (checklist)
 
-- [ ] Confirm font mode + inspect `LocalizedFonts` MB (dynamic ⇒ reuse `swap-font`).
-- [ ] PoC: `texttable-splice` one field's `Default` value → Thai, repack `s.event`
-      bundle, launch NTR Soccer in `en`, verify the string shows Thai (+ renders with a
-      Thai font). This proves the whole chain before writing the engine.
-- [ ] Decide CRC handling from `catalog.json` inspection.
-- [ ] Implement `engine/unity_textbl.rs` (detect/extract/inject/embed_font) + helper
-      subcommands in `resources/unity/rpgtl_unity.py`.
-- [ ] `mask_for` branch + `src/codes.ts` mirror (mask `{TOKENS}` + TMP tags).
-- [ ] Fixture + `tests/unity_textbl_roundtrip.rs` (env-gated real-game like csvloc).
-- [ ] Row in [[games]] index + [[ENGINES]] + [[ROADMAP]]; flip `status:` to implemented.
+- [x] Confirm font mode + inspect `LocalizedFonts` MB → both Default fonts Dynamic.
+- [x] PoC: splice one `Default` → Thai, repack, reload-verify (load-faithful). *(In-game
+      launch confirmation still TODO.)*
+- [x] CRC handling from `catalog.json` → `catalog-crc` (UTF-16 JSON `m_Crc` → 0).
+- [x] Implement `engine/unity_textbl.rs` (detect/extract/inject/embed_font) + helper
+      `texttable-export` / `texttable-import` / `catalog-crc` + tolerant `swap-font`.
+- [x] `mask_for` branch (reuse `mask_unity`) + `src/codes.ts` / `messageWidth.ts` mirror.
+- [x] `tests/unity_textbl_roundtrip.rs` (env-gated real-game: `RPGTL_TEXTBL_GAME` /
+      `RPGTL_TEXTBL_WRITE`) + lib unit tests (detect, pointer).
+- [x] Row in [[games]] index; `status: implemented`.
+- [ ] **Launch NTR Soccer after a real export** to confirm Thai shows + renders.
+- [ ] Add rows to [[ENGINES]] + [[ROADMAP]].
 
 ## Appendix — probe scripts
 

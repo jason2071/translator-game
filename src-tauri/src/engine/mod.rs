@@ -26,6 +26,7 @@ pub mod renpy_tl;
 pub mod tyrano;
 pub mod unity;
 pub mod unity_csv;
+pub mod unity_textbl;
 pub mod unrpyc;
 
 use crate::model::TransUnit;
@@ -134,6 +135,12 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // folder with meta.txt + CSVs) is unique, so it never overlaps Naninovel
         // or plain Unity; registered after Naninovel for tidiness.
         Box::new(unity_csv::UnityCsvEngine),
+        // Unity (TextTable): a third Unity storage method — all text in custom
+        // `TextTable` MonoBehaviours inside an Addressables bundle (Mono backend).
+        // Fingerprinted by an `aa/catalog.json` + a `TextTable`-referencing
+        // Assembly-CSharp.dll, so it never overlaps Naninovel or CSV-localization;
+        // registered after both, which claim their more specific schemes first.
+        Box::new(unity_textbl::UnityTextTableEngine),
         // Forger `.acod` string tables (Assassin's Creed). Unique extension +
         // UTF-16LE BOM fingerprint, so it never overlaps the others; order is
         // immaterial. Kept last as the most specialized/niche target.

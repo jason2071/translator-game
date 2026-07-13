@@ -79,10 +79,11 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         "forger-acod" => mask_forger(input),
         // AC Origins aclocexport text: angle tags + `[…]` audio cues only.
         "ac-loctext" => mask_ac_loctext(input),
-        // Unity/Naninovel managed text and Unity CSV-localization catalogs share
-        // TMPro rich-text tags (`<color>`, `<sprite>`, `<link>`, `<br>`), `{n}` format
-        // args, and `\n` escapes — so both mask the same way.
-        "unity" | "unity-csvloc" => mask_unity(input),
+        // Unity/Naninovel managed text, Unity CSV-localization catalogs, and Unity
+        // TextTable fields share TMPro rich-text tags (`<color>`, `<sprite>`, `<link>`,
+        // `<br>`), `{n}`/`{NAME}` format args, and `\n` escapes — so they mask the same
+        // way. (TextTable UI carries tokens like `{PLAYER_WINS}`/`{OPPONENT_NAME}`.)
+        "unity" | "unity-csvloc" | "unity-textbl" => mask_unity(input),
         _ => mask(input),
     }
 }
