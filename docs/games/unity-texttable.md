@@ -208,6 +208,28 @@ round-trip) rather than the byte-span engines — this is typetree read+**write*
   (4 CRCs → 0, hashes intact). *(Contrast [[unity-csv-localization]]: a binary
   `catalog.bin`, CRC at `hash+60`.)*
 
+## Fonts — the dynamic-swap approach does NOT work here; SDF baking does
+
+Unlike [[unity-csv-localization]] (Milf Plaza), NTR's TMP fonts ship a **pre-baked**
+glyph/character table + atlas and the runtime does **not** rasterize new glyphs
+dynamically (`Player.log`: Thai "not found in [PlaypenSans …] font asset or any potential
+fallbacks", even after swapping the source TTF to a Thai font + clearing the atlas). So
+`swap-font` alone leaves Thai as tofu. Thai must be **baked into the atlas + tables
+offline** (SDF), proven in-game (dialogue renders Thai). Reference tooling +
+calibration: `scripts/unity-sdf-bake/` (freetype render → scipy signed-distance →
+`alpha = clip(128 + 13·dist, 0, 255)`, edge 128; pack into free atlas space; append
+glyph/char entries; set the font Static).
+
+⚠ **The font the subtitle uses is a THIRD copy** —
+`PlaypenSans-VariableFont_wght SDF` exists in `s.event`, `characterpose`, **and
+`sharedassets0.assets` (pid 3527) with a stripped typetree** — and the stripped one is
+what renders dialogue. Editing the two bundle copies changed nothing; the fix is a
+**raw-blob transplant** onto pid 3527 (build the 176-char font blob from a bundle copy's
+full typetree, fix its PPtrs to `sharedassets0`'s atlas/material/source-font/script,
+`set_raw_data`), plus baking the Thai SDF into that file's atlas. Not yet an app feature
+(freetype/scipy weight + stripped-transplant generality are the open productization
+questions); other UI fonts (`851tegaki…`) still need the same treatment.
+
 ## Resolved notes
 
 - **Default = shown column for `en`.** Overwriting `m_values[0]` targets the base
