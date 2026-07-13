@@ -137,6 +137,40 @@ pub fn normalize_cjk_brackets(s: &str) -> String {
         .collect()
 }
 
+/// Abbreviate a standalone Thai month or weekday name to its conventional short form
+/// (มกราคม → ม.ค., วันอาทิตย์ → อา.). Date labels in game UIs sit in fixed-width boxes
+/// drawn for short CJK/Latin tokens, so a full Thai month/day name (มกราคม is 7 glyphs)
+/// overflows or gets auto-shrunk. Only a translation that is *exactly* one date word
+/// (after trimming) is shortened — a date inside a sentence is left alone, so prose reads
+/// naturally. Thai target only (the caller gates on the language).
+pub fn normalize_thai_dates(s: &str) -> String {
+    let abbr = match s.trim() {
+        // months
+        "มกราคม" => "ม.ค.",
+        "กุมภาพันธ์" => "ก.พ.",
+        "มีนาคม" => "มี.ค.",
+        "เมษายน" => "เม.ย.",
+        "พฤษภาคม" => "พ.ค.",
+        "มิถุนายน" => "มิ.ย.",
+        "กรกฎาคม" => "ก.ค.",
+        "สิงหาคม" => "ส.ค.",
+        "กันยายน" => "ก.ย.",
+        "ตุลาคม" => "ต.ค.",
+        "พฤศจิกายน" => "พ.ย.",
+        "ธันวาคม" => "ธ.ค.",
+        // weekdays (with and without the วัน prefix)
+        "วันอาทิตย์" | "อาทิตย์" => "อา.",
+        "วันจันทร์" | "จันทร์" => "จ.",
+        "วันอังคาร" | "อังคาร" => "อ.",
+        "วันพุธ" | "พุธ" => "พ.",
+        "วันพฤหัสบดี" | "พฤหัสบดี" | "วันพฤหัส" | "พฤหัส" => "พฤ.",
+        "วันศุกร์" | "ศุกร์" => "ศ.",
+        "วันเสาร์" | "เสาร์" => "ส.",
+        _ => return s.to_string(),
+    };
+    abbr.to_string()
+}
+
 /// Replace Godot placeholders with `⟦k⟧` sentinels: BBCode `[tag]`, `String`
 /// format braces `{0}`/`{name}`, printf `%s`/`%d`/`%.2f`/`%1$s`, and backslash
 /// escapes (`\n`, `\t`, `\"`). Restores via the shared [`restore`].
@@ -953,5 +987,20 @@ mod tests {
         assert_eq!(normalize_cjk_brackets("【注意】〔a〕〈b〉《c》（d）"), "(注意)(a)(b)(c)(d)");
         // Thai/ASCII text and existing parens are untouched.
         assert_eq!(normalize_cjk_brackets("สวัสดี (ok) [x]"), "สวัสดี (ok) [x]");
+    }
+
+    #[test]
+    fn normalize_thai_dates_abbreviates_standalone_month_and_day() {
+        assert_eq!(normalize_thai_dates("มกราคม"), "ม.ค.");
+        assert_eq!(normalize_thai_dates("ธันวาคม"), "ธ.ค.");
+        // weekday, with and without the วัน prefix
+        assert_eq!(normalize_thai_dates("วันอาทิตย์"), "อา.");
+        assert_eq!(normalize_thai_dates("อาทิตย์"), "อา.");
+        assert_eq!(normalize_thai_dates("วันพฤหัสบดี"), "พฤ.");
+        // surrounding whitespace still matches
+        assert_eq!(normalize_thai_dates("  สิงหาคม \n"), "ส.ค.");
+        // a date inside a sentence, or any non-date text, is left exactly as-is
+        assert_eq!(normalize_thai_dates("ในเดือนมกราคม"), "ในเดือนมกราคม");
+        assert_eq!(normalize_thai_dates("สวัสดี"), "สวัสดี");
     }
 }

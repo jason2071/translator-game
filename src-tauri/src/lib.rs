@@ -688,6 +688,11 @@ fn is_cjk_lang(lang: &str) -> bool {
         || l.contains("korea")
 }
 
+fn is_thai_lang(lang: &str) -> bool {
+    let l = lang.trim().to_lowercase();
+    l == "th" || l.starts_with("th-") || l.contains("thai")
+}
+
 /// Translate the selected units with the given provider. Async: emits
 /// `translate://progress` events and can be cancelled via `cancel_translation`.
 #[tauri::command]
@@ -1024,7 +1029,14 @@ async fn translate_units(
                         let t = if is_cjk_lang(&target_lang) {
                             t
                         } else {
-                            protect::normalize_cjk_brackets(&t)
+                            let t = protect::normalize_cjk_brackets(&t);
+                            // Thai date labels overflow the game's short-token boxes, so
+                            // shorten a standalone month/day name to its usual abbreviation.
+                            if is_thai_lang(&target_lang) {
+                                protect::normalize_thai_dates(&t)
+                            } else {
+                                t
+                            }
                         };
                         writes.push((g.ids.clone(), g.source.clone(), t));
                         continue;
