@@ -621,6 +621,286 @@ def cmd_dsdb_import(data_dir, patch_json, out_dir):
     print(f"dsdb-import: wrote {written} file(s)")
 
 
+# --- I2 Localization "Text Table" language source (unity-textbl tier 3) ------
+#
+# Some TextTable games (e.g. NTR Soccer) also keep their **UI strings** (menus,
+# options, day/time labels, tutorials, character bios) in an **I2 Localization**
+# `LanguageSource` MonoBehaviour — named e.g. `"UI Localization Text Table"` — that
+# lives in a plain `.assets` file (not an Addressables bundle) with a **stripped
+# typetree** (UnityPy can't read it structurally). Unlike the game's bundle
+# `TextTable` (tier 1, Mono typetree) this one must be spliced on the raw bytes,
+# exactly like the Dialogue System tier.
+#
+# Its blob serializes (after the MonoBehaviour header + `m_Name`) as:
+#     mLanguages : string[]   # locale names, e.g. ["Default","ja","zh","zh-tw","ko"]
+#     <int[]>                 # per-language flags/ids (count == #languages)
+#     <int[]>                 # per-term ordering/hash ids (count == #terms)
+#     mTerms.Count : i32
+#     for each term:
+#         Term       : string          # the key, e.g. "Start"
+#         Languages_index : int[]       # value[k] belongs to language mLanguages[index[k]]
+#         Languages       : string[]    # the per-language values (same count as the index[])
+#     <trailing structural bytes>       # preserved verbatim
+#
+# The **Default** column (language index 0) holds the base/English text — our
+# translation source. The game renders whichever language `LocalizationManager`
+# is set to (NTR Soccer ships set to "ko"), and I2 uses that column **literally**
+# (no base fallback like the Dialogue System), so on import we overwrite every
+# **non-Default** value slot of a term with the translation — the game shows the
+# translation regardless of which non-Default language it happens to be set to,
+# while the Default column stays intact as the re-extraction source.
+
+
+def _rd_str_at(raw, off):
+    """(text, payload_pos, payload_len, next_off) for the Unity string at `off`."""
+    n = struct.unpack_from("<i", raw, off)[0]
+    if n < 0 or off + 4 + n > len(raw):
+        raise ValueError(f"bad string length {n} at {off}")
+    text = raw[off + 4:off + 4 + n].decode("utf-8")
+    return text, off + 4, n, off + 4 + n + ((-n) % 4)
+
+
+def _rd_iarr_at(raw, off):
+    """(count, next_off) for an int32 array at `off` (we only need to skip it)."""
+    n = struct.unpack_from("<i", raw, off)[0]
+    if n < 0 or off + 4 + n * 4 > len(raw):
+        raise ValueError(f"bad int-array count {n} at {off}")
+    return n, off + 4 + n * 4
+
+
+def _name_end(raw):
+    """Offset just past `m_Name` in a MonoBehaviour blob (header = m_GameObject PPtr
+    12 + m_Enabled 4 + m_Script PPtr 12 = 28, then the name string)."""
+    _t, _p, _l, nxt = _rd_str_at(raw, 28)
+    return nxt
+
+
+def _i2_parse(raw):
+    """Parse an I2 LanguageSource blob → (languages, terms) or None if it isn't one.
+
+    `terms` is a list of dicts: {"term": key, "slots": [(lang_index, payload_pos,
+    payload_len, text), …]} — one slot per stored language value, in file order."""
+    try:
+        off = _name_end(raw)
+        n = struct.unpack_from("<i", raw, off)[0]          # mLanguages count
+        if not (1 <= n <= 64):
+            return None
+        off += 4
+        langs = []
+        for _ in range(n):
+            s, _pp, _pl, off = _rd_str_at(raw, off)
+            langs.append(s)
+        _cnt, off = _rd_iarr_at(raw, off)                  # per-language int[]
+        _cnt, off = _rd_iarr_at(raw, off)                  # per-term int[]
+        tcount = struct.unpack_from("<i", raw, off)[0]     # mTerms.Count
+        if not (0 <= tcount <= 1_000_000):
+            return None
+        off += 4
+        terms = []
+        for _ in range(tcount):
+            term, _pp, _pl, off = _rd_str_at(raw, off)
+            icount, off = _rd_iarr_at(raw, off)            # Languages_index int[]
+            # recover the index values (map slot k → language mLanguages[index[k]]):
+            # _rd_iarr_at advanced by 4 + icount*4, so the first int is at off-icount*4.
+            idx_start = off - icount * 4
+            indices = list(struct.unpack_from("<%di" % icount, raw, idx_start)) if icount else []
+            vcount = struct.unpack_from("<i", raw, off)[0]
+            off += 4
+            if vcount != icount:
+                return None
+            slots = []
+            for k in range(vcount):
+                text, pp, pl, off = _rd_str_at(raw, off)
+                slots.append((indices[k], pp, pl, text))
+            terms.append({"term": term, "slots": slots})
+        return langs, terms
+    except Exception:
+        return None
+
+
+def _i2_tables(env):
+    """[(obj, raw, languages, terms)] for every I2 LanguageSource MB in a file."""
+    out = []
+    for obj in env.objects:
+        if obj.type.name != "MonoBehaviour":
+            continue
+        try:
+            raw = obj.get_raw_data()
+        except Exception:
+            continue
+        # Cheap pre-filter: the language header carries a "Default" locale name.
+        if b"Default" not in raw:
+            continue
+        parsed = _i2_parse(raw)
+        if parsed and len(parsed[0]) >= 2 and parsed[1]:
+            out.append((obj, raw, parsed[0], parsed[1]))
+    return out
+
+
+def _i2_default_index(langs):
+    """The source column: I2's base language is "Default" (index 0 by convention)."""
+    return langs.index("Default") if "Default" in langs else 0
+
+
+def cmd_uitbl_export(data_dir, out):
+    recs = []
+    for path in assets_files(data_dir):
+        rel = os.path.basename(path)
+        try:
+            env = UnityPy.load(path)
+        except Exception:
+            continue
+        for obj, raw, langs, terms in _i2_tables(env):
+            di = _i2_default_index(langs)
+            for idx, term in enumerate(terms):
+                src = next((t for (li, _p, _l, t) in term["slots"] if li == di), "")
+                if not src or not src.strip():
+                    continue
+                recs.append({"t": "uitbl", "file": rel, "pathId": obj.path_id,
+                             "idx": idx, "term": term["term"], "source": src})
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(recs, f, ensure_ascii=False, indent=1)
+    print(f"uitbl-export: {len(recs)} UI string(s) from {data_dir}")
+
+
+def cmd_uitbl_import(data_dir, patch_json, out_dir):
+    with open(patch_json, encoding="utf-8") as f:
+        patch = json.load(f)
+    edits = {}                                # (file, pathId) -> {idx: translation}
+    for r in patch:
+        t = r.get("translation")
+        if t is None:
+            continue
+        edits.setdefault((r["file"], int(r["pathId"])), {})[int(r["idx"])] = t
+    changed_files = {k[0] for k in edits}
+    os.makedirs(out_dir, exist_ok=True)
+
+    written = 0
+    for path in assets_files(data_dir):
+        rel = os.path.basename(path)
+        if rel not in changed_files:
+            continue
+        env = UnityPy.load(path)
+        n = 0
+        for obj in env.objects:
+            if obj.type.name != "MonoBehaviour":
+                continue
+            per = edits.get((rel, obj.path_id))
+            if not per:
+                continue
+            try:
+                raw = obj.get_raw_data()
+            except Exception:
+                continue
+            parsed = _i2_parse(raw)
+            if not parsed:
+                continue
+            langs, terms = parsed
+            di = _i2_default_index(langs)
+            # Collect every non-Default value slot to overwrite, then splice back-to-front
+            # so earlier byte spans stay valid as later ones grow/shrink.
+            spans = []
+            for idx, tr in per.items():
+                if 0 <= idx < len(terms):
+                    for (li, pp, pl, _txt) in terms[idx]["slots"]:
+                        if li != di:
+                            spans.append((pp, pl, tr))
+            for pp, pl, tr in sorted(spans, key=lambda s: -s[0]):
+                raw = splice_string(raw, pp - 4, pl, tr)   # splice_string wants the length-prefix pos
+                n += 1
+            obj.set_raw_data(raw)
+        with open(os.path.join(out_dir, rel), "wb") as f:
+            f.write(env.file.save())
+        written += 1
+        print(f"uitbl-import: patched {rel} ({n} value slot(s))")
+    print(f"uitbl-import: wrote {written} file(s)")
+
+
+# --- unified `.assets` raw-splice import (Dialogue System + I2 UI table) ------
+#
+# The Dialogue System (`ds`) and I2 UI table (`uitbl`) tiers can live in the **same**
+# `.assets` file (NTR Soccer keeps both in `sharedassets0.assets` — the DialogueDatabase
+# and the "UI Localization Text Table" MBs). Importing them with two separate whole-file
+# writes would make the second clobber the first, so production drives a single
+# `assets-import` pass that loads each file once and applies every raw-splice tier to it
+# before saving. Records carry a `t` discriminator (`"ds"` / `"uitbl"`).
+
+def _apply_ds_edits(raw, per):
+    """Splice the given `{idx: translation}` Dialogue System edits into `raw`."""
+    units = _ds_units(raw)
+    n = 0
+    for idx in sorted(per, reverse=True):     # back-to-front: earlier spans stay valid
+        if 0 <= idx < len(units):
+            pos, blen, _title, _text = units[idx]
+            raw = splice_string(raw, pos, blen, per[idx])
+            n += 1
+    return raw, n
+
+
+def _apply_uitbl_edits(raw, per):
+    """Overwrite every non-Default value slot of each edited I2 term in `raw`."""
+    parsed = _i2_parse(raw)
+    if not parsed:
+        return raw, 0
+    langs, terms = parsed
+    di = _i2_default_index(langs)
+    spans = []
+    for idx, tr in per.items():
+        if 0 <= idx < len(terms):
+            for (li, pp, pl, _txt) in terms[idx]["slots"]:
+                if li != di:
+                    spans.append((pp, pl, tr))
+    n = 0
+    for pp, pl, tr in sorted(spans, key=lambda s: -s[0]):   # back-to-front
+        raw = splice_string(raw, pp - 4, pl, tr)            # pp-4 = the length-prefix pos
+        n += 1
+    return raw, n
+
+
+def cmd_assets_import(data_dir, patch_json, out_dir):
+    with open(patch_json, encoding="utf-8") as f:
+        patch = json.load(f)
+    edits = {}                        # (file, pathId) -> {"ds": {idx:tr}, "uitbl": {idx:tr}}
+    for r in patch:
+        tr = r.get("translation")
+        if tr is None:
+            continue
+        t = r.get("t")
+        if t not in ("ds", "uitbl"):
+            continue
+        edits.setdefault((r["file"], int(r["pathId"])), {}).setdefault(t, {})[int(r["idx"])] = tr
+    changed_files = {k[0] for k in edits}
+    os.makedirs(out_dir, exist_ok=True)
+
+    written = 0
+    for path in assets_files(data_dir):
+        rel = os.path.basename(path)
+        if rel not in changed_files:
+            continue
+        env = UnityPy.load(path)
+        n = 0
+        for obj in env.objects:
+            if obj.type.name != "MonoBehaviour":
+                continue
+            per = edits.get((rel, obj.path_id))
+            if not per:
+                continue
+            try:
+                raw = obj.get_raw_data()
+            except Exception:
+                continue
+            if "ds" in per:
+                raw, c = _apply_ds_edits(raw, per["ds"]); n += c
+            if "uitbl" in per:
+                raw, c = _apply_uitbl_edits(raw, per["uitbl"]); n += c
+            obj.set_raw_data(raw)
+        with open(os.path.join(out_dir, rel), "wb") as f:
+            f.write(env.file.save())
+        written += 1
+        print(f"assets-import: patched {rel} ({n} splice(s))")
+    print(f"assets-import: wrote {written} file(s)")
+
+
 def cmd_catalog_crc(catalog_path, out_path=None):
     """Zero every bundle's CRC in an Addressables **JSON** catalog.
 
@@ -883,6 +1163,21 @@ def _apply_tables(t, placed, keep_gidx):
         t["m_CharacterTable"].append({"m_ElementType": 1, "m_Unicode": cp, "m_GlyphIndex": gi, "m_Scale": 1.0})
     t["m_AtlasPopulationMode"] = 0
 
+    # Defensive: TMP renders a glyph via `m_AtlasTextures[glyph.m_AtlasIndex]`, so a glyph
+    # whose atlas index is >= the texture-array length crashes the whole text object
+    # (IndexOutOfRangeException in TMP_MaterialManager.GetFallbackMaterial → the label
+    # goes blank). We preserve `m_AtlasTextures` (multi-atlas fonts like 851tegaki ship
+    # several), so kept glyphs on secondary atlases stay valid and only atlas 0 gains the
+    # new script; this guard is a backstop that degrades a would-be crash into a merely
+    # missing glyph if any path ever shrinks the array. New glyphs are on atlas 0, always
+    # valid.
+    n_atlas = len(t.get("m_AtlasTextures") or [])
+    if n_atlas:
+        valid = {g["m_Index"] for g in t["m_GlyphTable"] if g.get("m_AtlasIndex", 0) < n_atlas}
+        if len(valid) != len(t["m_GlyphTable"]):
+            t["m_GlyphTable"] = [g for g in t["m_GlyphTable"] if g["m_Index"] in valid]
+            t["m_CharacterTable"] = [c for c in t["m_CharacterTable"] if c["m_GlyphIndex"] in valid]
+
 
 def cmd_swap_font(bundle_in, ttf_path, bundle_out):
     """Replace the source TTF of every Dynamic-atlas TMP_FontAsset in an Addressables
@@ -989,6 +1284,12 @@ def main(argv):
         cmd_dsdb_export(argv[2], argv[3])
     elif cmd == "dsdb-import":
         cmd_dsdb_import(argv[2], argv[3], argv[4])
+    elif cmd == "uitbl-export":
+        cmd_uitbl_export(argv[2], argv[3])
+    elif cmd == "uitbl-import":
+        cmd_uitbl_import(argv[2], argv[3], argv[4])
+    elif cmd == "assets-import":
+        cmd_assets_import(argv[2], argv[3], argv[4])
     elif cmd == "catalog-crc":
         cmd_catalog_crc(argv[2], argv[3] if len(argv) > 3 else None)
     elif cmd == "bake-font":

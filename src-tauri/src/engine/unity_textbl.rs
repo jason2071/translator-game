@@ -73,10 +73,24 @@ struct DsRec {
     source: String,
 }
 
-/// One record fed to the helper's `texttable-import` / `dsdb-import` step (both read
-/// the same `{file,pathId,idx,translation}` shape).
+/// A record from the helper's `uitbl-export` manifest (an I2 Localization UI string).
+#[derive(Deserialize)]
+struct UiRec {
+    file: String,
+    #[serde(rename = "pathId")]
+    path_id: i64,
+    idx: i64,
+    term: String,
+    source: String,
+}
+
+/// One record fed to a helper import step. `texttable-import` reads only
+/// `{file,pathId,idx,translation}`; the unified `assets-import` also reads `t`
+/// (`"ds"` / `"uitbl"`) to pick the splice tier. `t` is harmless to the others.
 #[derive(Serialize)]
 struct PatchRec {
+    #[serde(rename = "t")]
+    tier: &'static str,
     file: String,
     #[serde(rename = "pathId")]
     path_id: i64,
@@ -138,6 +152,17 @@ impl GameEngine for UnityTextTableEngine {
             TransUnit::new(&r.file, pointer, UnitKind::Dialogue, &r.source)
         }));
 
+        // Tier 3 — I2 Localization "Text Table" UI strings in the `.assets` (menus,
+        // options, day/time labels, tutorials). Overwrites every non-Default column so
+        // the game shows the translation whatever non-Default language it renders.
+        let ui: Vec<UiRec> = run_export("uitbl-export", data.as_os_str())?;
+        units.extend(ui.into_iter().map(|r| {
+            let pointer = format!("uitbl#{}#{}#{}", r.file, r.path_id, r.idx);
+            // The I2 term key is context only when it adds information over the source.
+            let ctx = (!r.term.is_empty() && r.term != r.source).then_some(r.term);
+            TransUnit::new(&r.file, pointer, UnitKind::Message, &r.source).with_context(ctx)
+        }));
+
         Ok(units)
     }
 
@@ -150,7 +175,7 @@ impl GameEngine for UnityTextTableEngine {
     fn inject(&self, root: &Path, units: &[TransUnit], out_dir: &Path) -> Result<()> {
         let data = textbl_data_dir(root).ok_or_else(|| anyhow!("not a Unity TextTable game"))?;
         inject_bundles(&aa_dir(&data), &aa_dir(out_dir), units)?;
-        inject_dsdb(&data, out_dir, units)
+        inject_assets(&data, out_dir, units)
     }
 
     fn embed_font(
@@ -283,22 +308,27 @@ fn inject_bundles(aa_read: &Path, aa_write: &Path, units: &[TransUnit]) -> Resul
     done
 }
 
-/// Splice the applied Dialogue System (`ds#`) lines into the `.assets` files, reading
-/// originals from `data_read` and writing the changed `.assets` under `out_data`
-/// (mirroring the data-dir layout). A no-op when no `ds#` unit is applied.
-fn inject_dsdb(data_read: &Path, out_data: &Path, units: &[TransUnit]) -> Result<()> {
-    let patch = patch_for("ds", units);
+/// Splice the applied raw-`.assets` tiers — Dialogue System (`ds#`) lines and I2
+/// Localization UI-table (`uitbl#`) values — into the `.assets` files in a **single**
+/// helper pass, reading originals from `data_read` and writing the changed `.assets`
+/// under `out_data` (mirroring the data-dir layout). One pass matters because both tiers
+/// can live in the same file (NTR keeps the DialogueDatabase + the UI table both in
+/// `sharedassets0.assets`), so two separate whole-file writes would clobber each other.
+/// A no-op when no `ds#`/`uitbl#` unit is applied.
+fn inject_assets(data_read: &Path, out_data: &Path, units: &[TransUnit]) -> Result<()> {
+    let mut patch = patch_for("ds", units);
+    patch.extend(patch_for("uitbl", units));
     if patch.is_empty() {
         return Ok(());
     }
-    let patch_path = temp_json("dspatch");
+    let patch_path = temp_json("assetspatch");
     std::fs::write(&patch_path, serde_json::to_vec(&patch)?)
-        .context("writing the Dialogue System patch file")?;
+        .context("writing the `.assets` patch file")?;
     let temp_out = temp_out_dir2();
     let _ = std::fs::remove_dir_all(&temp_out);
     std::fs::create_dir_all(&temp_out)?;
     let args: Vec<OsString> = vec![
-        "dsdb-import".into(),
+        "assets-import".into(),
         data_read.into(),
         patch_path.clone().into(),
         temp_out.clone().into(),
@@ -307,7 +337,7 @@ fn inject_dsdb(data_read: &Path, out_data: &Path, units: &[TransUnit]) -> Result
     let done = (|| {
         run?;
         std::fs::create_dir_all(out_data)?;
-        for e in std::fs::read_dir(&temp_out).context("reading the DS helper output")? {
+        for e in std::fs::read_dir(&temp_out).context("reading the `.assets` helper output")? {
             let p = e?.path();
             if p.is_file() {
                 let dst = out_data.join(p.file_name().unwrap());
@@ -321,15 +351,16 @@ fn inject_dsdb(data_read: &Path, out_data: &Path, units: &[TransUnit]) -> Result
     done
 }
 
-/// Build the `{file,pathId,idx,translation}` patch records for applied units whose
-/// pointer carries the given `kind` prefix (`"tbl"` or `"ds"`).
-fn patch_for(kind: &str, units: &[TransUnit]) -> Vec<PatchRec> {
+/// Build the `{t,file,pathId,idx,translation}` patch records for applied units whose
+/// pointer carries the given `kind` prefix (`"tbl"`, `"ds"`, or `"uitbl"`).
+fn patch_for(kind: &'static str, units: &[TransUnit]) -> Vec<PatchRec> {
     units
         .iter()
         .filter(|u| u.status.is_applied() && u.translation.is_some())
         .filter_map(|u| {
             let (k, file, path_id, idx) = parse_pointer(&u.pointer)?;
             (k == kind).then(|| PatchRec {
+                tier: kind,
                 file,
                 path_id,
                 idx,
@@ -359,12 +390,12 @@ fn clear_catalog_crc(aa_read: &Path, aa_write: &Path) -> Result<()> {
 }
 
 /// Parse a `"<kind>#<file>#<pathId>#<idx>"` pointer into `(kind, file, pathId, idx)`.
-/// `kind` is `"tbl"` (a TextTable field in a bundle) or `"ds"` (a Dialogue System line
-/// in a `.assets`). The file name carries no `#`, so splitting the last two fields from
-/// the right is unambiguous.
+/// `kind` is `"tbl"` (a TextTable field in a bundle), `"ds"` (a Dialogue System line in a
+/// `.assets`), or `"uitbl"` (an I2 Localization UI string in a `.assets`). The file name
+/// carries no `#`, so splitting the last two fields from the right is unambiguous.
 fn parse_pointer(p: &str) -> Option<(String, String, i64, i64)> {
     let (kind, rest) = p.split_once('#')?;
-    if kind != "tbl" && kind != "ds" {
+    if kind != "tbl" && kind != "ds" && kind != "uitbl" {
         return None;
     }
     let (head, idx) = rest.rsplit_once('#')?;
@@ -470,11 +501,11 @@ pub fn export_bundles(
 
     // Inject from the snapshot (original base text) into the live game.
     inject_bundles(&src_aa, &live_aa, units)?; // TextTable bundles + CRC
-    inject_dsdb(&source_data, data_dir, units)?; // Dialogue System `.assets`
+    inject_assets(&source_data, data_dir, units)?; // Dialogue System + I2 UI table `.assets`
 
     let files = edited_bundles.len() + edited_assets.len();
     let mut note = format!(
-        "Translated {} string(s) in place ({} bundle(s) + {} dialogue file(s)); cleared the \
+        "Translated {} string(s) in place ({} bundle(s) + {} .assets file(s)); cleared the \
          Addressables CRC.",
         applied.len(),
         edited_bundles.len(),
