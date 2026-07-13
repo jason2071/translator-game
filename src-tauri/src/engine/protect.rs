@@ -79,11 +79,14 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         "forger-acod" => mask_forger(input),
         // AC Origins aclocexport text: angle tags + `[…]` audio cues only.
         "ac-loctext" => mask_ac_loctext(input),
-        // Unity/Naninovel managed text, Unity CSV-localization catalogs, and Unity
-        // TextTable fields share TMPro rich-text tags (`<color>`, `<sprite>`, `<link>`,
-        // `<br>`), `{n}`/`{NAME}` format args, and `\n` escapes — so they mask the same
-        // way. (TextTable UI carries tokens like `{PLAYER_WINS}`/`{OPPONENT_NAME}`.)
-        "unity" | "unity-csvloc" | "unity-textbl" => mask_unity(input),
+        // Unity/Naninovel managed text and Unity CSV-localization catalogs share TMPro
+        // rich-text tags (`<color>`, `<sprite>`, `<br>`), `{n}`/`{NAME}` format args, and
+        // `\n` escapes.
+        "unity" | "unity-csvloc" => mask_unity(input),
+        // Unity TextTable adds a Dialogue System tier whose lines carry PixelCrushers
+        // bracket markup (`[pic=7]`, `[a]`, `[var=…]`) on top of the same TMPro tags /
+        // `{TOKEN}`s — so it also masks `[…]`.
+        "unity-textbl" => mask_unity_textbl(input),
         _ => mask(input),
     }
 }
@@ -301,6 +304,19 @@ pub fn mask_ac_loctext(input: &str) -> Masked {
 /// (`[点击图标]`, "[click icon]") not a runtime code, and `%` is only ever prose
 /// (`50%`). Restores via the shared [`restore`]; `{}` reuses the Godot helper.
 pub fn mask_unity(input: &str) -> Masked {
+    mask_unity_impl(input, false)
+}
+
+/// Like [`mask_unity`] but also masks **PixelCrushers Dialogue System** bracket markup
+/// (`[pic=7]`, `[a]`, `[var=Alert]`, `[f]`, `[em1]`, …) — used by the `unity-textbl`
+/// engine's dialogue tier, whose lines carry those tags and must not have them
+/// translated or reordered. Managed-text ([`mask_unity`]) keeps `[…]` as prose, so this
+/// bracket rule is opt-in.
+pub fn mask_unity_textbl(input: &str) -> Masked {
+    mask_unity_impl(input, true)
+}
+
+fn mask_unity_impl(input: &str, ds_brackets: bool) -> Masked {
     let mut text = String::with_capacity(input.len());
     let mut tokens: Vec<String> = Vec::new();
     let b = input.as_bytes();
@@ -309,6 +325,7 @@ pub fn mask_unity(input: &str) -> Masked {
         let len = match b[i] {
             b'<' => angle_tag_len(&input[i..]),
             b'{' => bracket_len(&input[i..], b'{', b'}'),
+            b'[' if ds_brackets => bracket_len(&input[i..], b'[', b']'),
             b'\\' if i + 1 < input.len() => {
                 Some(1 + input[i + 1..].chars().next().unwrap().len_utf8())
             }
@@ -740,6 +757,20 @@ mod tests {
         assert_eq!(m.tokens, vec!["[name]", "{i}", "{/i}"]);
         assert!(!m.text.contains("[name]"), "interpolation should be masked");
         assert!(m.text.contains("[[lit]]"), "escaped [[ must stay literal");
+    }
+
+    #[test]
+    fn unity_textbl_masks_ds_brackets_but_plain_unity_keeps_them() {
+        // The Dialogue System tier masks [pic=7] (+ the shared {TOKEN} / <color> tags),
+        // so the AI never translates or drops the portrait tag.
+        let m = mask_for("unity-textbl", "[pic=7]Thank you, {NAME}! <b>Go</b>");
+        assert!(m.tokens.contains(&"[pic=7]".to_string()));
+        assert!(!m.text.contains("[pic=7]"));
+        let back = restore(&m.text, &m.tokens).expect("restore ok");
+        assert_eq!(back, "[pic=7]Thank you, {NAME}! <b>Go</b>");
+        // Plain Unity managed text keeps `[…]` as prose (it's translatable there).
+        let plain = mask_for("unity", "[click icon] to start");
+        assert!(plain.text.contains("[click icon]"));
     }
 
     #[test]

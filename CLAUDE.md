@@ -119,7 +119,17 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   **`catalog-crc`** decodes it and sets each `m_Crc` to 0 (fixing the length prefix).
   **In-place export only** (bundles are gigabytes; no mod staging), snapshotting
   originals to `.rpgtl/source/`. Detects a `<name>_Data/` with `aa/catalog.json` + an
-  `Assembly-CSharp.dll` referencing `TextTable`.
+  `Assembly-CSharp.dll` referencing `TextTable`. **Tier 2 — story dialogue:** the same
+  games drive their narrative through a **PixelCrushers Dialogue System**
+  `DialogueDatabase` — one large **stripped-typetree** MonoBehaviour in a plain
+  `.assets` (not a bundle). Its `DialogueEntry` fields serialize as
+  `[title][value][CustomFieldType_…]`, so the helper (`dsdb-export`/`dsdb-import`)
+  raw-string-enumerates and splices the value after each **base** `Dialogue Text` /
+  `Menu Text` title (locale-suffixed variants left alone), pointer
+  `"ds#<file>#<pathId>#<idx>"`, `.assets` need no CRC. `mask_unity_textbl` adds
+  PixelCrushers `[pic=N]`/`[var=…]` bracket markup to the `mask_unity` set. *(Lesson: a
+  failed `read_typetree` / unresolved script class hides structure, not strings —
+  grep the raw MB blob for the format's markers.)*
 - **`project/`** — SQLite persistence (`db.rs`) and project lifecycle (`mod.rs`):
   open/create the sidecar store, backup, and export.
 - **`ai/`** — one `TranslationProvider` trait, providers behind it, plus prompt

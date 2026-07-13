@@ -52,9 +52,9 @@ use std::path::{Path, PathBuf};
 
 pub struct UnityTextTableEngine;
 
-/// One record from the helper's `texttable-export` manifest.
+/// A record from the helper's `texttable-export` manifest (a TextTable field).
 #[derive(Deserialize)]
-struct ExportRec {
+struct TblRec {
     file: String,
     #[serde(rename = "pathId")]
     path_id: i64,
@@ -63,7 +63,18 @@ struct ExportRec {
     source: String,
 }
 
-/// One record fed to the helper's `texttable-import` step.
+/// A record from the helper's `dsdb-export` manifest (a Dialogue System line).
+#[derive(Deserialize)]
+struct DsRec {
+    file: String,
+    #[serde(rename = "pathId")]
+    path_id: i64,
+    idx: i64,
+    source: String,
+}
+
+/// One record fed to the helper's `texttable-import` / `dsdb-import` step (both read
+/// the same `{file,pathId,idx,translation}` shape).
 #[derive(Serialize)]
 struct PatchRec {
     file: String,
@@ -108,44 +119,38 @@ impl GameEngine for UnityTextTableEngine {
 
     fn extract(&self, root: &Path, _opts: &ExtractOpts) -> Result<Vec<TransUnit>> {
         let data = textbl_data_dir(root).ok_or_else(|| anyhow!("not a Unity TextTable game"))?;
-        let manifest = temp_json("manifest");
-        let args: Vec<OsString> = vec![
-            "texttable-export".into(),
-            aa_dir(&data).into(),
-            manifest.clone().into(),
-        ];
-        let run = run_sidecar(&args);
-        let recs: Result<Vec<ExportRec>> = (|| {
-            run?;
-            let bytes = std::fs::read(&manifest).context("reading the TextTable export manifest")?;
-            serde_json::from_slice(&bytes).context("parsing the TextTable export manifest")
-        })();
-        let _ = std::fs::remove_file(&manifest);
-        let recs = recs?;
+        let mut units = Vec::new();
 
-        let units = recs
-            .into_iter()
-            .map(|r| {
-                let pointer = format!("tbl#{}#{}#{}", r.file, r.path_id, r.idx);
-                // Keep the field name as context only when it adds information (it is
-                // often identical to the source string, which would be noise).
-                let ctx = (!r.name.is_empty() && r.name != r.source).then_some(r.name);
-                TransUnit::new(&r.file, pointer, UnitKind::Message, &r.source).with_context(ctx)
-            })
-            .collect();
+        // Tier 1 — TextTable fields (UI / names / bubble SFX) in the aa bundles.
+        let tbl: Vec<TblRec> = run_export("texttable-export", aa_dir(&data).as_os_str())?;
+        units.extend(tbl.into_iter().map(|r| {
+            let pointer = format!("tbl#{}#{}#{}", r.file, r.path_id, r.idx);
+            // Keep the field name as context only when it adds information (often it is
+            // identical to the source string, which would be noise).
+            let ctx = (!r.name.is_empty() && r.name != r.source).then_some(r.name);
+            TransUnit::new(&r.file, pointer, UnitKind::Message, &r.source).with_context(ctx)
+        }));
+
+        // Tier 2 — PixelCrushers Dialogue System story lines in the `.assets`.
+        let ds: Vec<DsRec> = run_export("dsdb-export", data.as_os_str())?;
+        units.extend(ds.into_iter().map(|r| {
+            let pointer = format!("ds#{}#{}#{}", r.file, r.path_id, r.idx);
+            TransUnit::new(&r.file, pointer, UnitKind::Dialogue, &r.source)
+        }));
+
         Ok(units)
     }
 
-    /// Generic inject: patch the `Default` column in each edited bundle and write the
-    /// re-serialized bundle (plus a CRC-cleared catalog) into `out_dir`, mirroring the
-    /// game's `<data>/StreamingAssets/aa/…` layout. Production in-place export goes
-    /// through [`export_bundles`] (which also snapshots + restores originals); this path
-    /// backs the round-trip test and any generic caller.
+    /// Generic inject (treats `out_dir` as a data-dir mirror): patch the TextTable
+    /// `Default` column in each edited bundle (+ CRC-cleared catalog) and splice the
+    /// Dialogue System lines in the edited `.assets`, reading originals from the live
+    /// game. Production in-place export goes through [`export_bundles`] (which snapshots
+    /// originals + injects from them for idempotent re-export); this path backs the
+    /// round-trip test and any generic caller.
     fn inject(&self, root: &Path, units: &[TransUnit], out_dir: &Path) -> Result<()> {
         let data = textbl_data_dir(root).ok_or_else(|| anyhow!("not a Unity TextTable game"))?;
-        let data_rel = data.strip_prefix(root).unwrap_or(Path::new(""));
-        let out_data = out_dir.join(data_rel);
-        inject_bundles(&aa_dir(&data), &aa_dir(&out_data), units)
+        inject_bundles(&aa_dir(&data), &aa_dir(out_dir), units)?;
+        inject_dsdb(&data, out_dir, units)
     }
 
     fn embed_font(
@@ -240,19 +245,7 @@ fn bundle_files(dir: &Path) -> Vec<PathBuf> {
 /// every bundle CRC in `aa_write/catalog.json` (staged from `aa_read` if not already
 /// present) so Addressables accepts the modified bytes. A no-op when nothing is applied.
 fn inject_bundles(aa_read: &Path, aa_write: &Path, units: &[TransUnit]) -> Result<()> {
-    let patch: Vec<PatchRec> = units
-        .iter()
-        .filter(|u| u.status.is_applied() && u.translation.is_some())
-        .filter_map(|u| {
-            let (file, path_id, idx) = parse_pointer(&u.pointer)?;
-            Some(PatchRec {
-                file,
-                path_id,
-                idx,
-                translation: u.translation.clone().unwrap_or_default(),
-            })
-        })
-        .collect();
+    let patch = patch_for("tbl", units);
     if patch.is_empty() {
         return Ok(());
     }
@@ -290,6 +283,62 @@ fn inject_bundles(aa_read: &Path, aa_write: &Path, units: &[TransUnit]) -> Resul
     done
 }
 
+/// Splice the applied Dialogue System (`ds#`) lines into the `.assets` files, reading
+/// originals from `data_read` and writing the changed `.assets` under `out_data`
+/// (mirroring the data-dir layout). A no-op when no `ds#` unit is applied.
+fn inject_dsdb(data_read: &Path, out_data: &Path, units: &[TransUnit]) -> Result<()> {
+    let patch = patch_for("ds", units);
+    if patch.is_empty() {
+        return Ok(());
+    }
+    let patch_path = temp_json("dspatch");
+    std::fs::write(&patch_path, serde_json::to_vec(&patch)?)
+        .context("writing the Dialogue System patch file")?;
+    let temp_out = temp_out_dir2();
+    let _ = std::fs::remove_dir_all(&temp_out);
+    std::fs::create_dir_all(&temp_out)?;
+    let args: Vec<OsString> = vec![
+        "dsdb-import".into(),
+        data_read.into(),
+        patch_path.clone().into(),
+        temp_out.clone().into(),
+    ];
+    let run = run_sidecar(&args);
+    let done = (|| {
+        run?;
+        std::fs::create_dir_all(out_data)?;
+        for e in std::fs::read_dir(&temp_out).context("reading the DS helper output")? {
+            let p = e?.path();
+            if p.is_file() {
+                let dst = out_data.join(p.file_name().unwrap());
+                std::fs::copy(&p, &dst).with_context(|| format!("installing {}", dst.display()))?;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })();
+    let _ = std::fs::remove_dir_all(&temp_out);
+    let _ = std::fs::remove_file(&patch_path);
+    done
+}
+
+/// Build the `{file,pathId,idx,translation}` patch records for applied units whose
+/// pointer carries the given `kind` prefix (`"tbl"` or `"ds"`).
+fn patch_for(kind: &str, units: &[TransUnit]) -> Vec<PatchRec> {
+    units
+        .iter()
+        .filter(|u| u.status.is_applied() && u.translation.is_some())
+        .filter_map(|u| {
+            let (k, file, path_id, idx) = parse_pointer(&u.pointer)?;
+            (k == kind).then(|| PatchRec {
+                file,
+                path_id,
+                idx,
+                translation: u.translation.clone().unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
 /// Zero every bundle CRC in the catalog under `aa_write`, staging the catalog from
 /// `aa_read` first when they differ (so a mod/out-of-place write gets its own copy and
 /// the game's catalog is untouched). Idempotent.
@@ -309,14 +358,33 @@ fn clear_catalog_crc(aa_read: &Path, aa_write: &Path) -> Result<()> {
     run_sidecar(&args)
 }
 
-/// Parse a `"tbl#<bundle>#<pathId>#<idx>"` pointer into `(bundle, pathId, idx)`.
-fn parse_pointer(p: &str) -> Option<(String, i64, i64)> {
-    let rest = p.strip_prefix("tbl#")?;
-    // The bundle name may itself carry no `#`; split from the right so the last two
-    // fields (pathId, idx) are unambiguous.
+/// Parse a `"<kind>#<file>#<pathId>#<idx>"` pointer into `(kind, file, pathId, idx)`.
+/// `kind` is `"tbl"` (a TextTable field in a bundle) or `"ds"` (a Dialogue System line
+/// in a `.assets`). The file name carries no `#`, so splitting the last two fields from
+/// the right is unambiguous.
+fn parse_pointer(p: &str) -> Option<(String, String, i64, i64)> {
+    let (kind, rest) = p.split_once('#')?;
+    if kind != "tbl" && kind != "ds" {
+        return None;
+    }
     let (head, idx) = rest.rsplit_once('#')?;
     let (file, path_id) = head.rsplit_once('#')?;
-    Some((file.to_string(), path_id.parse().ok()?, idx.parse().ok()?))
+    Some((kind.to_string(), file.to_string(), path_id.parse().ok()?, idx.parse().ok()?))
+}
+
+/// Run a helper export subcommand (`texttable-export` / `dsdb-export`) against `target`
+/// and deserialize its JSON-array manifest.
+fn run_export<T: for<'de> Deserialize<'de>>(cmd: &str, target: &std::ffi::OsStr) -> Result<Vec<T>> {
+    let manifest = temp_json(cmd);
+    let args: Vec<OsString> = vec![cmd.into(), target.to_owned(), manifest.clone().into()];
+    let run = run_sidecar(&args);
+    let out: Result<Vec<T>> = (|| {
+        run?;
+        let bytes = std::fs::read(&manifest).with_context(|| format!("reading {cmd} manifest"))?;
+        serde_json::from_slice(&bytes).with_context(|| format!("parsing {cmd} manifest"))
+    })();
+    let _ = std::fs::remove_file(&manifest);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -347,14 +415,24 @@ pub fn export_bundles(
     let live_aa = aa_dir(data_dir);
     let sw = sw64(&live_aa);
     let applied: Vec<&TransUnit> = units.iter().filter(|u| u.status.is_applied()).collect();
-    // Bundles referenced by an applied unit (by basename), + the catalog.
-    let mut edited: Vec<String> = applied
-        .iter()
-        .filter_map(|u| parse_pointer(&u.pointer).map(|(f, _, _)| f))
-        .collect();
-    edited.sort();
-    edited.dedup();
-    if edited.is_empty() {
+    // Files an applied unit touches, split by tier: `tbl` → a bundle under
+    // StandaloneWindows64/; `ds` → a `.assets` directly in the data dir.
+    let mut edited_bundles = Vec::new();
+    let mut edited_assets = Vec::new();
+    for u in &applied {
+        if let Some((kind, file, _, _)) = parse_pointer(&u.pointer) {
+            if kind == "tbl" {
+                edited_bundles.push(file);
+            } else {
+                edited_assets.push(file);
+            }
+        }
+    }
+    for v in [&mut edited_bundles, &mut edited_assets] {
+        v.sort();
+        v.dedup();
+    }
+    if edited_bundles.is_empty() && edited_assets.is_empty() {
         return Ok(BundleExport {
             bundles: 0,
             backup_dir: None,
@@ -363,19 +441,22 @@ pub fn export_bundles(
     }
 
     // Snapshot originals once (seed .rpgtl/source/ from the live game the first time),
-    // so injection always applies to the ORIGINAL base column. `source_data` mirrors
-    // the game's data dir under `.rpgtl/source/`.
+    // so injection always applies to the ORIGINAL base text. `source_data` mirrors the
+    // game's data dir under `.rpgtl/source/`.
     let data_rel = data_dir.strip_prefix(root).unwrap_or(Path::new("."));
     let source_data = root.join(".rpgtl").join("source").join(data_rel);
     let src_aa = aa_dir(&source_data);
     let mut snapshotted = false;
-    let originals = edited
+    // (live path, snapshot path) for every original to preserve: edited bundles + the
+    // catalog under aa/, and the edited `.assets` directly in the data dir.
+    let originals = edited_bundles
         .iter()
         .map(|f| (sw.join(f), sw64(&src_aa).join(f)))
         .chain(std::iter::once((
             live_aa.join("catalog.json"),
             src_aa.join("catalog.json"),
-        )));
+        )))
+        .chain(edited_assets.iter().map(|f| (data_dir.join(f), source_data.join(f))));
     for (live, snap) in originals {
         if live.is_file() && !snap.is_file() {
             if let Some(parent) = snap.parent() {
@@ -387,13 +468,17 @@ pub fn export_bundles(
         }
     }
 
-    // Inject from the snapshot (original base column) into the live bundles + catalog.
-    inject_bundles(&src_aa, &live_aa, units)?;
+    // Inject from the snapshot (original base text) into the live game.
+    inject_bundles(&src_aa, &live_aa, units)?; // TextTable bundles + CRC
+    inject_dsdb(&source_data, data_dir, units)?; // Dialogue System `.assets`
 
+    let files = edited_bundles.len() + edited_assets.len();
     let mut note = format!(
-        "Translated {} field(s) into {} bundle(s) in place and cleared the Addressables CRC.",
+        "Translated {} string(s) in place ({} bundle(s) + {} dialogue file(s)); cleared the \
+         Addressables CRC.",
         applied.len(),
-        edited.len()
+        edited_bundles.len(),
+        edited_assets.len()
     );
     if snapshotted {
         note.push_str(" Saved the originals under .rpgtl/source/ (used to revert / re-export).");
@@ -406,7 +491,7 @@ pub fn export_bundles(
     }
 
     Ok(BundleExport {
-        bundles: edited.len(),
+        bundles: files,
         backup_dir: Some(source_data.to_string_lossy().to_string()),
         note,
     })
@@ -483,6 +568,10 @@ fn temp_out_dir() -> PathBuf {
     std::env::temp_dir().join(format!("rpgtl-textbl-out-{}", std::process::id()))
 }
 
+fn temp_out_dir2() -> PathBuf {
+    std::env::temp_dir().join(format!("rpgtl-textbl-ds-{}", std::process::id()))
+}
+
 fn temp_path(tag: &str, ext: &str) -> PathBuf {
     std::env::temp_dir().join(format!("rpgtl-textbl-{}-{}.{}", std::process::id(), tag, ext))
 }
@@ -528,12 +617,17 @@ mod tests {
     }
 
     #[test]
-    fn pointer_round_trips_bundle_pathid_idx() {
-        let (f, pid, idx) =
+    fn pointer_round_trips_kind_file_pathid_idx() {
+        let (k, f, pid, idx) =
             parse_pointer("tbl#s.event_assets_all_abc.bundle#-4473351832413774421#17").unwrap();
+        assert_eq!(k, "tbl");
         assert_eq!(f, "s.event_assets_all_abc.bundle");
         assert_eq!(pid, -4473351832413774421);
         assert_eq!(idx, 17);
+        // Dialogue System pointer.
+        let (k, f, pid, idx) = parse_pointer("ds#sharedassets0.assets#3517#42").unwrap();
+        assert_eq!((k.as_str(), f.as_str(), pid, idx), ("ds", "sharedassets0.assets", 3517, 42));
+        // Unknown kind / short forms are rejected.
         assert!(parse_pointer("dlg#x#1#2").is_none());
         assert!(parse_pointer("tbl#only#one").is_none());
     }

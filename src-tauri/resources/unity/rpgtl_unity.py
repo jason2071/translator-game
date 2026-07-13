@@ -503,6 +503,124 @@ def cmd_texttable_import(aa_dir, patch_json, out_dir):
     print(f"texttable-import: wrote {written} bundle(s)")
 
 
+# --- PixelCrushers Dialogue System database (unity-textbl tier 2) -----------
+#
+# Some TextTable games (e.g. NTR Soccer) also drive their **story dialogue** through
+# a **PixelCrushers Dialogue System** `DialogueDatabase` — a single large
+# MonoBehaviour in a plain `.assets` file whose typetree is *stripped* (UnityPy can't
+# read it structurally). But it serializes as Unity length-prefixed UTF-8 strings, and
+# each `DialogueEntry` stores its fields as `[title][value][CustomFieldType_…]`
+# triples, so the translatable line is the string that immediately follows a
+# `"Dialogue Text"` / `"Menu Text"` **base** title (localized variants carry a locale
+# suffix — `"Dialogue Text ja"` — and are left alone; the base holds the shown/English
+# text, which we overwrite → Thai). We splice on the raw bytes, exactly like the
+# Naninovel dialogue tier (`enum_strings` + `splice_string`), addressing each line by
+# its index in a deterministic enumeration so export and import agree.
+
+# DS field titles (the base ones we translate + the non-translatable siblings we must
+# NOT mistake a value for).
+DS_TITLES = {
+    "Title", "Actor", "Conversant", "Menu Text", "Dialogue Text", "Parenthetical",
+    "Sequence", "Response Menu Sequence", "Audio Files", "Description", "Articy Id",
+    "LinkPriority", "Video File", "Alternate 1", "Group",
+}
+DS_TRANSLATE_TITLES = ("Dialogue Text", "Menu Text")
+
+
+def _ds_databases(env):
+    """[(obj, raw)] for every DialogueDatabase-like MonoBehaviour in a file: a stripped
+    MB whose blob carries the DS field markers."""
+    out = []
+    for obj in env.objects:
+        if obj.type.name != "MonoBehaviour":
+            continue
+        try:
+            raw = obj.get_raw_data()
+        except Exception:
+            continue
+        if b"Dialogue Text" in raw and b"CustomFieldType" in raw:
+            out.append((obj, raw))
+    return out
+
+
+def _ds_units(raw):
+    """Ordered [(pos, byte_len, title, text)] of translatable base dialogue in a DS blob.
+    The list order is the stable per-MB `idx`. A field serializes as
+    `[title][value][CustomFieldType_…]`; the value is the string right after a base
+    translate-title, unless it is itself a title/type marker (an empty value, skipped by
+    the length-prefixed enumeration, would leave the next title there instead)."""
+    strs = enum_strings(raw)
+    units = []
+    for i, (pos, L, t) in enumerate(strs):
+        if t not in DS_TRANSLATE_TITLES or i + 1 >= len(strs):
+            continue
+        npos, nL, nt = strs[i + 1]
+        if nt in DS_TITLES or nt.startswith("CustomFieldType"):
+            continue  # empty value — the next string is the following field's title/type
+        units.append((npos, nL, t, nt))
+    return units
+
+
+def cmd_dsdb_export(data_dir, out):
+    recs = []
+    for path in assets_files(data_dir):
+        rel = os.path.basename(path)
+        try:
+            env = UnityPy.load(path)
+        except Exception:
+            continue
+        for obj, raw in _ds_databases(env):
+            for idx, (_p, _L, title, text) in enumerate(_ds_units(raw)):
+                recs.append({"t": "ds", "file": rel, "pathId": obj.path_id,
+                             "idx": idx, "title": title, "source": text})
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(recs, f, ensure_ascii=False, indent=1)
+    print(f"dsdb-export: {len(recs)} dialogue line(s) from {data_dir}")
+
+
+def cmd_dsdb_import(data_dir, patch_json, out_dir):
+    with open(patch_json, encoding="utf-8") as f:
+        patch = json.load(f)
+    edits = {}                                # (file, pathId) -> {idx: translation}
+    for r in patch:
+        t = r.get("translation")
+        if t is None:
+            continue
+        edits.setdefault((r["file"], int(r["pathId"])), {})[int(r["idx"])] = t
+    changed_files = {k[0] for k in edits}
+    os.makedirs(out_dir, exist_ok=True)
+
+    written = 0
+    for path in assets_files(data_dir):
+        rel = os.path.basename(path)
+        if rel not in changed_files:
+            continue
+        env = UnityPy.load(path)
+        n = 0
+        for obj in env.objects:
+            if obj.type.name != "MonoBehaviour":
+                continue
+            per = edits.get((rel, obj.path_id))
+            if not per:
+                continue
+            try:
+                raw = obj.get_raw_data()
+            except Exception:
+                continue
+            units = _ds_units(raw)
+            for idx in sorted(per, reverse=True):   # back-to-front: earlier spans stay valid
+                if 0 <= idx < len(units):
+                    pos, blen, _title, _text = units[idx]
+                    raw = splice_string(raw, pos, blen, per[idx])
+                    n += 1
+            obj.set_raw_data(raw)
+        with open(os.path.join(out_dir, rel), "wb") as f:
+            f.write(env.file.save())
+        written += 1
+        print(f"dsdb-import: patched {rel} ({n} line(s))")
+    print(f"dsdb-import: wrote {written} file(s)")
+
+
 def cmd_catalog_crc(catalog_path, out_path=None):
     """Zero every bundle's CRC in an Addressables **JSON** catalog.
 
@@ -622,6 +740,10 @@ def main(argv):
         cmd_texttable_export(argv[2], argv[3])
     elif cmd == "texttable-import":
         cmd_texttable_import(argv[2], argv[3], argv[4])
+    elif cmd == "dsdb-export":
+        cmd_dsdb_export(argv[2], argv[3])
+    elif cmd == "dsdb-import":
+        cmd_dsdb_import(argv[2], argv[3], argv[4])
     elif cmd == "catalog-crc":
         cmd_catalog_crc(argv[2], argv[3] if len(argv) > 3 else None)
     else:

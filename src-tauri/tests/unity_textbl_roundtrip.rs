@@ -27,11 +27,19 @@ fn real_game_detect_and_extract() {
     assert!(units.len() > 100, "expected a full table, got {}", units.len());
     for u in &units {
         assert!(!u.source.is_empty(), "no empty source cells");
-        // Pointer shape: tbl#<bundle>#<pathId>#<idx>.
-        assert!(u.pointer.starts_with("tbl#"), "pointer {}", u.pointer);
+        // Pointer shape: <kind>#<file>#<pathId>#<idx>, kind ∈ {tbl (TextTable), ds (DS)}.
+        assert!(
+            u.pointer.starts_with("tbl#") || u.pointer.starts_with("ds#"),
+            "pointer {}",
+            u.pointer
+        );
         assert_eq!(u.pointer.matches('#').count(), 3, "pointer {}", u.pointer);
     }
-    eprintln!("real game: extracted {} TextTable field(s)", units.len());
+    // Both tiers should be present: TextTable UI/SFX (tbl#) + Dialogue System story (ds#).
+    let tbl = units.iter().filter(|u| u.pointer.starts_with("tbl#")).count();
+    let ds = units.iter().filter(|u| u.pointer.starts_with("ds#")).count();
+    assert!(tbl > 0 && ds > 0, "expected both tiers, got tbl={tbl} ds={ds}");
+    eprintln!("real game: extracted {} strings ({tbl} TextTable + {ds} Dialogue System)", units.len());
 }
 
 /// Full in-place export against a real game: extract, translate a few fields to Thai,
