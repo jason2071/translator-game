@@ -492,19 +492,28 @@ pub fn mask_renpy(input: &str) -> Masked {
 }
 
 /// Byte length of a `[...]` / `{...}` code at the start of `s`, or None if it is
-/// an escaped `[[` / `{{`, is unterminated, or nests another opener.
+/// an escaped `[[` / `{{`, empty (`[]`), or unterminated. **Nesting is balanced**,
+/// not rejected: Ren'Py interpolation legitimately nests an indexed lookup —
+/// `[texts[click_count]]`, `[data[i][j]]` — where the inner `[...]` is part of the
+/// Python expression, not a separate code. Masking the whole span as one token is
+/// what keeps the AI from translating the variable name inside it (which then
+/// crashes Ren'Py with `NameError`). A `{tag}` never nests a brace, so depth just
+/// stays at 1 until its close.
 fn renpy_bracket_len(s: &str, open: u8, close: u8) -> Option<usize> {
     let b = s.as_bytes();
     if b.len() < 2 || b[1] == open {
         return None; // too short, or an escaped `[[` / `{{`
     }
-    let mut i = 1;
+    let mut depth = 0usize;
+    let mut i = 0;
     while i < b.len() {
         if b[i] == open {
-            return None; // nested opener — not a simple code, leave as text
-        }
-        if b[i] == close {
-            return Some(i + 1);
+            depth += 1;
+        } else if b[i] == close {
+            depth -= 1;
+            if depth == 0 {
+                return if i > 1 { Some(i + 1) } else { None }; // reject empty `[]`
+            }
         }
         i += 1;
     }
@@ -698,6 +707,8 @@ mod tests {
             "Line one\\nLine two",
             "Literal [[bracket]] and {{brace}} stay.",
             "Percent 50% off, no codes.",
+            "[texts[click_count]]",
+            "Score: [data[i][j]] pts",
             "",
         ];
         for s in samples {
@@ -705,6 +716,20 @@ mod tests {
             let back = restore(&m.text, &m.tokens).expect("restore ok");
             assert_eq!(back, s, "round-trip failed for {s:?}");
         }
+    }
+
+    #[test]
+    fn renpy_masks_nested_interpolation_whole() {
+        // Nested indexed lookup is ONE code: the AI must never see (and translate)
+        // the variable name `texts` inside it — that caused a `NameError` crash.
+        let m = mask_renpy("[texts[click_count]]");
+        assert_eq!(m.tokens, vec!["[texts[click_count]]"]);
+        assert!(!m.is_plain() && !m.text.contains("texts"));
+        // Two levels of indexing stay a single token, too.
+        let m2 = mask_renpy("[data[i][j]]");
+        assert_eq!(m2.tokens, vec!["[data[i][j]]"]);
+        // Empty `[]` is not a code.
+        assert!(mask_renpy("[]").is_plain());
     }
 
     #[test]
