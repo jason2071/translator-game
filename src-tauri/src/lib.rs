@@ -268,15 +268,18 @@ fn character_set(name: String, gender: String, state: tauri::State<AppState>) ->
     with_project(&state, |p| project::db::character_set(&p.conn, &name, &gender))
 }
 
-/// AI-classify the gender of every dialogue speaker not already set, from their name
-/// and a few sample lines, and store the result. Returns the updated character list.
-/// Gathers the corpus under the lock, then does the network call with no lock held.
+/// AI-**find** the game's person characters and label each one's gender, then store
+/// the result. Candidates come from dialogue speakers (the `context` column) AND from
+/// mined proper nouns — so this works even when the engine attaches no per-line speaker
+/// (the panel is never empty just because `context` is unset). Skips characters already
+/// set (manual edits win). Returns the updated list. Gathers the corpus under the lock,
+/// then does the network call with no lock held.
 #[tauri::command]
 async fn classify_genders(
     config: ProviderConfig,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<project::db::Character>, String> {
-    let (todo, samples) = {
+    let todo: Vec<(String, String)> = {
         let guard = state.project.lock().unwrap();
         let p = guard.as_ref().ok_or("no project open")?;
         let have: std::collections::HashSet<String> = project::db::characters_list(&p.conn)
@@ -284,24 +287,37 @@ async fn classify_genders(
             .into_iter()
             .map(|c| c.name)
             .collect();
+        // Speakers → their own sample lines (the strongest signal when present).
         let samples: std::collections::HashMap<String, String> =
             project::db::speaker_samples(&p.conn, 4)
                 .map_err(|e| e.to_string())?
                 .into_iter()
                 .collect();
-        // Only classify speakers not already set (manual edits win).
-        let todo: Vec<(String, String)> = project::db::distinct_speakers(&p.conn)
+        // Candidate names: dialogue speakers first, then mined proper nouns (so games
+        // whose engine doesn't tag speakers still get their cast found). Deduped,
+        // capped so the classify call stays one cheap request.
+        let engine_id = project::db::get_meta(&p.conn, "engine_id").ok().flatten().unwrap_or_default();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut todo: Vec<(String, String)> = Vec::new();
+        let mut push = |name: String, sample: String, todo: &mut Vec<(String, String)>| {
+            let key = name.trim().to_lowercase();
+            if name.trim().is_empty() || have.contains(name.trim()) || !seen.insert(key) {
+                return;
+            }
+            todo.push((name.trim().to_string(), sample));
+        };
+        for n in project::db::distinct_speakers(&p.conn).map_err(|e| e.to_string())? {
+            let s = samples.get(&n).cloned().unwrap_or_default();
+            push(n, s, &mut todo);
+        }
+        for c in project::db::mine_glossary_candidates(&p.conn, &engine_id, 120)
             .map_err(|e| e.to_string())?
-            .into_iter()
-            .filter(|n| !have.contains(n))
-            .map(|n| {
-                let s = samples.get(&n).cloned().unwrap_or_default();
-                (n, s)
-            })
-            .collect();
-        (todo, samples)
+        {
+            push(c.term, c.example, &mut todo);
+        }
+        todo.truncate(150);
+        todo
     };
-    let _ = samples;
     if todo.is_empty() {
         return with_project(&state, |p| project::db::characters_list(&p.conn));
     }

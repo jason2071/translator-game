@@ -230,8 +230,6 @@ function CharactersPanel() {
   }, []);
 
   if (!project) return null;
-  // Nothing to gender when no dialogue carries a speaker (engine didn't attach one).
-  if (chars !== null && chars.length === 0) return null;
 
   async function setGender(name: string, gender: string) {
     // Optimistic: update the row locally, then persist.
@@ -254,6 +252,7 @@ function CharactersPanel() {
   }
 
   const unset = (chars ?? []).filter((c) => !c.gender).length;
+  const empty = chars !== null && chars.length === 0;
 
   return (
     <div className="gloss-context">
@@ -265,17 +264,29 @@ function CharactersPanel() {
           <button
             className="ghost"
             onClick={classify}
-            disabled={busy || (chars?.length ?? 0) === 0}
-            title="Ask the AI to label each unclassified speaker's gender from their name + sample lines"
+            disabled={busy}
+            title="Find the game's characters and label each one's gender with AI (review the result)"
           >
             <Icon name="sparkle" size={14} />{" "}
-            {busy ? "Classifying…" : unset > 0 ? `Auto-classify (${unset})` : "Auto-classify"}
+            {busy
+              ? "Finding…"
+              : empty
+                ? "AI find characters"
+                : unset > 0
+                  ? `Auto-classify (${unset})`
+                  : "Re-classify"}
           </button>
         </div>
       </div>
       {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
       {chars === null ? (
-        <p className="hint">Loading speakers…</p>
+        <p className="hint">Loading…</p>
+      ) : empty ? (
+        <p className="hint">
+          No characters yet. Click <strong>AI find characters</strong> — it finds the cast
+          from the game and assigns gender, so translated Thai uses the right particle
+          (ครับ / ค่ะ) per speaker. Review and fix any below.
+        </p>
       ) : (
         <div className="char-grid">
           {chars.map((c) => (

@@ -318,18 +318,21 @@ pub fn gender_directive(chars: &[(String, String)], target_lang: &str) -> Option
     ))
 }
 
-/// Build the (system, user) prompt to label each speaker's GENDER from their name and
-/// a few sample lines, so [`gender_directive`] can drive gendered Thai particles.
-/// `candidates` is `(name, joined_sample_lines)`. The response is parsed by
-/// [`parse_gender_classify`].
+/// Build the (system, user) prompt to FIND the person characters among candidate names
+/// and label each one's GENDER, so [`gender_directive`] can drive gendered Thai
+/// particles. Candidates come from dialogue speakers and mined proper nouns, so the
+/// model must DROP non-persons (items, places, UI/system labels). `candidates` is
+/// `(name, joined_sample_lines)`. The response is parsed by [`parse_gender_classify`].
 pub fn build_gender_classify(candidates: &[(String, String)]) -> (String, String) {
-    let sys = "You label the GENDER of each speaking character in a video game so a translator \
-        can choose gendered Thai politeness particles. For each speaker you are given their \
-        name and a few of their spoken lines. Answer male, female, or neutral — use neutral \
-        ONLY when there is no clear signal (narrator, system, a group, or genuinely ambiguous). \
-        Respond with ONLY a JSON array of objects {\"name\": \"<name>\", \"gender\": \
-        \"<male|female|neutral>\"}, one per speaker, with the name exactly as given. No prose, \
-        no reasoning."
+    let sys = "You are labeling the CHARACTERS of a video game with their gender, so a \
+        translator can choose gendered Thai politeness particles (ครับ male / ค่ะ female). \
+        The user gives candidate names, each optionally with a few sample lines. KEEP only \
+        the ones that are PERSON characters (people who speak or are addressed) and DROP \
+        anything that is an item, place, skill, UI label, or system string. For each kept \
+        character answer male, female, or neutral — use neutral only for a narrator, system \
+        voice, a group, or a genuinely ambiguous person. Respond with ONLY a JSON array of \
+        objects {\"name\": \"<name>\", \"gender\": \"<male|female|neutral>\"}, with the name \
+        exactly as given, omitting every dropped candidate. No prose, no reasoning."
         .to_string();
     let user = candidates
         .iter()
@@ -793,7 +796,8 @@ mod tests {
             ("Mei".into(), "I'm so happy today!".into()),
             ("Coach".into(), "".into()),
         ]);
-        assert!(sys.contains("GENDER") && sys.contains("\"name\""));
+        assert!(sys.contains("gender") && sys.contains("PERSON") && sys.contains("DROP"));
+        assert!(sys.contains("\"name\""));
         assert!(user.contains("Mei\nI'm so happy today!"));
         assert!(user.contains("Coach")); // no sample → just the name
 
