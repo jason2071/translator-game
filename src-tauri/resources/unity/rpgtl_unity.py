@@ -50,17 +50,25 @@ locale (a compiled-script game like this one ships no per-locale scripts).
 """
 import sys, os, glob, json, re, struct
 
-# The frozen build (PyInstaller, driven by `scripts/freeze-unity-sidecar.ps1`)
-# excludes UnityPy's texture dependencies (PIL, numpy, astc_encoder, …) — this
-# engine only touches text and never decodes an image, and those libs are ~60 MB
-# of the frozen size. But `import UnityPy` eagerly imports its legacy texture
-# patches, which `from PIL import Image` at module load. So under a frozen build
-# only, register empty stand-ins for the unused texture libs; the patched functions
-# are never called, so the stubs are enough for `import UnityPy` to succeed. Under
-# system Python (`sys.frozen` unset) nothing is stubbed and the real libraries are
-# used.
+# A **lean** frozen build (freeze-unity-sidecar.ps1 default) excludes UnityPy's texture
+# dependencies (PIL, numpy, astc_encoder, …) to trim ~60 MB — the text tiers never decode
+# an image. But `import UnityPy` eagerly imports its legacy texture patches
+# (`from PIL import Image`) at module load, so we register empty stand-ins for any of
+# those libs the build actually left out; the patched functions are never called on the
+# text path, so the stubs are enough for `import UnityPy` to succeed.
+#
+# A **fat** frozen build (`-WithFontBake`) bundles the real numpy/scipy/PIL/freetype for
+# `bake-font`, and system Python (`sys.frozen` unset) has them too — in both cases the
+# real libraries ARE present, so we must NOT shadow them with a stub. Hence: only stub a
+# lib that is genuinely missing.
 if getattr(sys, "frozen", False):
-    import types
+    import types, importlib.util
+
+    def _present(name):
+        try:
+            return importlib.util.find_spec(name) is not None
+        except (ImportError, ValueError):
+            return False
 
     def _stub(name):
         mod = types.ModuleType(name)
@@ -68,9 +76,11 @@ if getattr(sys, "frozen", False):
         sys.modules.setdefault(name, mod)
         return sys.modules[name]
 
-    _stub("PIL").Image = _stub("PIL.Image")
+    if not _present("PIL"):
+        _stub("PIL").Image = _stub("PIL.Image")
     for _name in ("numpy", "astc_encoder", "texture2ddecoder", "etcpak"):
-        _stub(_name)
+        if not _present(_name):
+            _stub(_name)
 
 import UnityPy
 
@@ -1028,19 +1038,22 @@ def cmd_catalog_crc(catalog_path, out_path=None):
 # them, so this command only runs under system Python for now; see the README).
 
 def _bake_deps():
-    # The frozen sidecar stubs numpy/PIL (see the top-of-file note), so SDF baking only
-    # runs under system Python for now. Fail with an actionable message instead of a
-    # cryptic stub error.
-    if getattr(sys, "frozen", False):
-        sys.exit("bake-font: this build does not bundle the SDF font-baking libraries. "
-                 "Run the app with a system Python that has: pip install freetype-py numpy scipy pillow")
+    # Works under system Python OR a "fat" frozen sidecar that bundled the SDF libs
+    # (freeze-unity-sidecar.ps1 without -Lean). A "lean" frozen build stubs numpy/PIL
+    # (see the top-of-file note) and omits freetype/scipy, so the imports below fail (or
+    # resolve to a bare stub) — the `hasattr` checks catch a stub and we fail with an
+    # actionable message instead of a cryptic error mid-bake.
     try:
         import numpy, freetype
         from scipy import ndimage
         from PIL import Image
-    except ImportError as e:
-        sys.exit(f"bake-font needs freetype-py + numpy + scipy + pillow ({e}). "
-                 "Install them: pip install freetype-py numpy scipy pillow")
+        assert hasattr(numpy, "zeros") and hasattr(ndimage, "distance_transform_edt")
+    except Exception as e:
+        hint = ("this frozen build did not bundle the SDF font-baking libraries — rebuild the "
+                "sidecar without -Lean, or run the app with a system Python that has them"
+                if getattr(sys, "frozen", False)
+                else "install them: pip install freetype-py numpy scipy pillow")
+        sys.exit(f"bake-font needs freetype-py + numpy + scipy + pillow ({e}) — {hint}.")
     return numpy, freetype, ndimage, Image
 
 

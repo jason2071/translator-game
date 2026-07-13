@@ -12,9 +12,11 @@ cleanly.
 > atlas space (keeping the game font's Latin), packs the new glyphs into the genuine
 > free space, and transplants the blob into the stripped-typetree copy. It auto-calibrates
 > the SDF slope + point size per font. The standalone scripts below remain the annotated
-> reference (and work when the app doesn't). **Caveat:** the SDF deps (freetype/numpy/
-> scipy/PIL) aren't in the frozen sidecar yet, so `bake-font` runs only under system
-> Python for now.
+> reference (and work when the app doesn't). **Packaging:** the SDF deps
+> (freetype/numpy/scipy/PIL) run under system Python (dev), and a **`-WithFontBake`**
+> frozen build bundles them so `bake-font` works in the shipped app too
+> (`scripts/freeze-unity-sidecar.ps1 -WithFontBake`; the default lean freeze omits them and
+> `bake-font` exits with an actionable message).
 
 ## Why the simple swap-font (Milf Plaza) approach fails here
 

@@ -282,8 +282,10 @@ JP) to free atlas space while keeping the game font's Latin, packs the new glyph
 the genuine free space (a first-fit scan, robust on a densely-baked atlas), and
 transplants the blob into the stripped-typetree copies. Auto-calibrates the SDF slope +
 point size per font. Validated on NTR (dialogue + UI Thai render in-game). The SDF deps
-(freetype/numpy/scipy/PIL) aren't in the frozen sidecar yet → runs under system Python
-for now (open item). Reference + standalone scripts: `scripts/unity-sdf-bake/`.
+(freetype/numpy/scipy/PIL) run under system Python (dev) and are bundled into a
+**`-WithFontBake`** frozen build so baking works in the shipped app too (the default lean
+freeze omits them → `bake-font` exits with a message). Reference + standalone scripts:
+`scripts/unity-sdf-bake/`.
 
 ## Resolved notes
 
@@ -315,7 +317,8 @@ for now (open item). Reference + standalone scripts: `scripts/unity-sdf-bake/`.
 - [x] **Gender particles** — speaker → gender → gendered Thai (see the gender-particles feature).
 - [x] **Rescan** (`rescan_project`) to merge new tiers + backfill speakers into a project.
 - [x] **Export perf** — skip unchanged SDF bake; uncompressed in-place bundles.
-- [ ] Bundle the SDF deps (freetype/numpy/scipy/PIL) into the frozen sidecar (dev-only now).
+- [x] Bundle the SDF deps into the frozen sidecar — `freeze-unity-sidecar.ps1 -WithFontBake`
+      (so `bake-font` works in a shipped release, not just dev).
 - [ ] Wire per-line speaker → context for the other engines (Ren'Py / Naninovel / mvmz).
 - [ ] Add rows to [[ENGINES]] + [[ROADMAP]].
 
