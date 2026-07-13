@@ -242,6 +242,93 @@ fn glossary_lint(state: tauri::State<AppState>) -> Result<Vec<LintWarning>, Stri
     with_project(&state, |p| project::db::glossary_lint(&p.conn))
 }
 
+// --- characters (speaker → gender, for Thai gendered particles) -------------
+
+/// Every stored speaker→gender row, plus any dialogue speaker not yet classified
+/// (returned with an empty gender), so the panel shows the full cast in one list.
+#[tauri::command]
+fn characters_list(state: tauri::State<AppState>) -> Result<Vec<project::db::Character>, String> {
+    with_project(&state, |p| {
+        let mut list = project::db::characters_list(&p.conn)?;
+        let have: std::collections::HashSet<String> =
+            list.iter().map(|c| c.name.clone()).collect();
+        for name in project::db::distinct_speakers(&p.conn)? {
+            if !have.contains(&name) {
+                list.push(project::db::Character { name, gender: String::new() });
+            }
+        }
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(list)
+    })
+}
+
+/// Set (or clear, with an empty gender) one speaker's gender.
+#[tauri::command]
+fn character_set(name: String, gender: String, state: tauri::State<AppState>) -> Result<(), String> {
+    with_project(&state, |p| project::db::character_set(&p.conn, &name, &gender))
+}
+
+/// AI-classify the gender of every dialogue speaker not already set, from their name
+/// and a few sample lines, and store the result. Returns the updated character list.
+/// Gathers the corpus under the lock, then does the network call with no lock held.
+#[tauri::command]
+async fn classify_genders(
+    config: ProviderConfig,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<project::db::Character>, String> {
+    let (todo, samples) = {
+        let guard = state.project.lock().unwrap();
+        let p = guard.as_ref().ok_or("no project open")?;
+        let have: std::collections::HashSet<String> = project::db::characters_list(&p.conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        let samples: std::collections::HashMap<String, String> =
+            project::db::speaker_samples(&p.conn, 4)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .collect();
+        // Only classify speakers not already set (manual edits win).
+        let todo: Vec<(String, String)> = project::db::distinct_speakers(&p.conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|n| !have.contains(n))
+            .map(|n| {
+                let s = samples.get(&n).cloned().unwrap_or_default();
+                (n, s)
+            })
+            .collect();
+        (todo, samples)
+    };
+    let _ = samples;
+    if todo.is_empty() {
+        return with_project(&state, |p| project::db::characters_list(&p.conn));
+    }
+
+    let key: Option<String> = if config.needs_key() {
+        Some(
+            keys::get_key(&config.kind)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("no API key stored for provider '{}'", config.kind))?,
+        )
+    } else {
+        None
+    };
+    let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
+    let (sys, user) = ai::prompt::build_gender_classify(&todo);
+    let raw = provider
+        .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
+        .await
+        .map_err(|e| e.to_string())?;
+    let pairs = ai::prompt::parse_gender_classify(&raw);
+
+    with_project_mut(&state, |p| {
+        project::db::characters_set_bulk(&mut p.conn, &pairs)?;
+        project::db::characters_list(&p.conn)
+    })
+}
+
 /// Mine proper-noun / term candidates from the game for the glossary.
 #[tauri::command]
 fn suggest_glossary(state: tauri::State<AppState>) -> Result<Vec<GlossCandidate>, String> {
@@ -573,7 +660,7 @@ async fn translate_units(
     // source (dedup), and pre-fill any group whose source is already in TM. Only
     // genuinely-new distinct sources reach the AI, so repeated lines and
     // previously-translated strings are never re-billed.
-    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era) = {
+    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters) = {
         let guard = state.project.lock().unwrap();
         let proj = guard.as_ref().ok_or("no project is open")?;
         let overwrite = scope.overwrite.unwrap_or(false);
@@ -705,8 +792,13 @@ async fn translate_units(
         let game_context = project::db::get_meta(&proj.conn, "game_context").ok().flatten().unwrap_or_default();
         // Setting-era preset → a register directive prepended to extra_system.
         let era = project::db::get_meta(&proj.conn, "era").ok().flatten().unwrap_or_default();
+        // Speaker → gender map → a Thai gendered-particle directive (per-line speaker
+        // arrives via each unit's `context`/`ctx`).
+        let characters: Vec<(String, String)> = project::db::characters_list(&proj.conn)
+            .map(|v| v.into_iter().map(|c| (c.name, c.gender)).collect())
+            .unwrap_or_default();
 
-        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era)
+        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters)
     };
 
     let mut summary = TranslateSummary {
@@ -744,6 +836,9 @@ async fn translate_units(
     let extra_system = {
         let mut parts: Vec<String> = Vec::new();
         if let Some(dir) = ai::prompt::era_directive(&era, &target_lang) {
+            parts.push(dir);
+        }
+        if let Some(dir) = ai::prompt::gender_directive(&characters, &target_lang) {
             parts.push(dir);
         }
         if !game_context.trim().is_empty() {
@@ -1226,6 +1321,9 @@ pub fn run() {
             suggest_glossary_ai,
             suggest_game_context,
             glossary_add_bulk,
+            characters_list,
+            character_set,
+            classify_genders,
             translate_units,
             translate_texts,
             remember_texts,

@@ -543,13 +543,33 @@ def _ds_databases(env):
     return out
 
 
+def _ds_actor_names(texts):
+    """Ordered actor display names from a DialogueDatabase's actors section, indexed by
+    PixelCrushers 1-based Actor id (id k → names[k-1]). An actor asset serializes a
+    `Name`→value field followed within its block by an `IsPlayer`→True/False field, so
+    each `IsPlayer` marks one actor whose name is the nearest preceding `Name` value."""
+    names = []
+    for i, t in enumerate(texts):
+        if t != "IsPlayer":
+            continue
+        for j in range(i - 1, max(-1, i - 14), -1):
+            if texts[j] == "Name" and j + 1 < len(texts):
+                names.append(texts[j + 1])
+                break
+    return names
+
+
 def _ds_units(raw):
-    """Ordered [(pos, byte_len, title, text)] of translatable base dialogue in a DS blob.
-    The list order is the stable per-MB `idx`. A field serializes as
+    """Ordered [(pos, byte_len, title, text, speaker)] of translatable base dialogue in a
+    DS blob. The list order is the stable per-MB `idx`. A field serializes as
     `[title][value][CustomFieldType_…]`; the value is the string right after a base
     translate-title, unless it is itself a title/type marker (an empty value, skipped by
-    the length-prefixed enumeration, would leave the next title there instead)."""
+    the length-prefixed enumeration, would leave the next title there instead). `speaker`
+    is the entry's `Actor` id resolved to an actor name (None if unknown) — used as
+    translator context (who is speaking), never spliced."""
     strs = enum_strings(raw)
+    texts = [t for _, _, t in strs]
+    actors = _ds_actor_names(texts)
     units = []
     for i, (pos, L, t) in enumerate(strs):
         if t not in DS_TRANSLATE_TITLES or i + 1 >= len(strs):
@@ -557,7 +577,16 @@ def _ds_units(raw):
         npos, nL, nt = strs[i + 1]
         if nt in DS_TITLES or nt.startswith("CustomFieldType"):
             continue  # empty value — the next string is the following field's title/type
-        units.append((npos, nL, t, nt))
+        speaker = None
+        for j in range(i - 1, max(-1, i - 40), -1):   # nearest preceding Actor in this entry
+            if texts[j] == "Actor" and j + 1 < len(texts):
+                aid = texts[j + 1]
+                if aid.isdigit():
+                    k = int(aid) - 1
+                    if 0 <= k < len(actors):
+                        speaker = actors[k]
+                break
+        units.append((npos, nL, t, nt, speaker))
     return units
 
 
@@ -570,9 +599,12 @@ def cmd_dsdb_export(data_dir, out):
         except Exception:
             continue
         for obj, raw in _ds_databases(env):
-            for idx, (_p, _L, title, text) in enumerate(_ds_units(raw)):
-                recs.append({"t": "ds", "file": rel, "pathId": obj.path_id,
-                             "idx": idx, "title": title, "source": text})
+            for idx, (_p, _L, title, text, speaker) in enumerate(_ds_units(raw)):
+                rec = {"t": "ds", "file": rel, "pathId": obj.path_id,
+                       "idx": idx, "title": title, "source": text}
+                if speaker:
+                    rec["speaker"] = speaker
+                recs.append(rec)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(recs, f, ensure_ascii=False, indent=1)
     print(f"dsdb-export: {len(recs)} dialogue line(s) from {data_dir}")
@@ -610,7 +642,7 @@ def cmd_dsdb_import(data_dir, patch_json, out_dir):
             units = _ds_units(raw)
             for idx in sorted(per, reverse=True):   # back-to-front: earlier spans stay valid
                 if 0 <= idx < len(units):
-                    pos, blen, _title, _text = units[idx]
+                    pos, blen, _title, _text, _spk = units[idx]
                     raw = splice_string(raw, pos, blen, per[idx])
                     n += 1
             obj.set_raw_data(raw)
@@ -831,7 +863,7 @@ def _apply_ds_edits(raw, per):
     n = 0
     for idx in sorted(per, reverse=True):     # back-to-front: earlier spans stay valid
         if 0 <= idx < len(units):
-            pos, blen, _title, _text = units[idx]
+            pos, blen, _title, _text, _spk = units[idx]
             raw = splice_string(raw, pos, blen, per[idx])
             n += 1
     return raw, n

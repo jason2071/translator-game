@@ -1202,6 +1202,35 @@ code {
   resize: vertical;
 }
 
+/* Character → gender grid (speaker particles). */
+.char-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 0.35rem 0.6rem;
+  margin-top: 0.4rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.char-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.char-row .char-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.65;
+}
+.char-row.set .char-name {
+  opacity: 1;
+}
+.char-row select {
+  flex: 0 0 auto;
+}
+
 .gloss-add {
   display: flex;
   gap: 0.5rem;

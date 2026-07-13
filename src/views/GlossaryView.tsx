@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { api, type GlossaryEntry, type ProviderKind } from "../ipc";
+import { api, type Character, type GlossaryEntry, type ProviderKind } from "../ipc";
 import { PROVIDER_LABELS, PROVIDER_KINDS, useSettings } from "../settings";
 import { useStore } from "../store";
 import { useGlossarySuggest } from "../glossarySuggest";
@@ -35,6 +35,8 @@ export default function GlossaryView() {
   return (
     <div className="glossary">
       <GameContextPanel />
+
+      <CharactersPanel />
 
       <p className="hint">
         Terms are fed to the AI and used to lint translations for consistency
@@ -198,6 +200,104 @@ function GameContextPanel() {
         onChange={(e) => setGameContext(e.target.value)}
       />
       {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
+    </div>
+  );
+}
+
+// Per-project speaker → gender, so the AI picks the right gendered Thai particle
+// (ครับ / ค่ะ) and pronoun (ผม / ฉัน) per line. The speaker rides each dialogue
+// unit's context; this maps each speaker to a gender fed into the Run prompt.
+// "Auto-classify" asks the AI to label every unclassified speaker from sample lines.
+const GENDER_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "— gender" },
+  { value: "female", label: "หญิง (ค่ะ)" },
+  { value: "male", label: "ชาย (ครับ)" },
+  { value: "neutral", label: "กลาง / neutral" },
+];
+
+function CharactersPanel() {
+  const project = useStore((s) => s.project);
+  const glossaryConfig = useSettings((s) => s.glossaryConfig);
+  const [chars, setChars] = useState<Character[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function reload() {
+    setChars(await api.charactersList());
+  }
+  useEffect(() => {
+    reload().catch(() => setChars([]));
+  }, []);
+
+  if (!project) return null;
+  // Nothing to gender when no dialogue carries a speaker (engine didn't attach one).
+  if (chars !== null && chars.length === 0) return null;
+
+  async function setGender(name: string, gender: string) {
+    // Optimistic: update the row locally, then persist.
+    setChars((cs) => (cs ?? []).map((c) => (c.name === name ? { ...c, gender } : c)));
+    await api.characterSet(name, gender);
+  }
+
+  async function classify() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const updated = await api.classifyGenders(glossaryConfig());
+      setChars(updated);
+      setMsg("Classified from sample lines — fix any that look wrong.");
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const unset = (chars ?? []).filter((c) => !c.gender).length;
+
+  return (
+    <div className="gloss-context">
+      <div className="gloss-context-head">
+        <label>
+          Characters <span className="hint">(gender → Thai ครับ/ค่ะ · this project)</span>
+        </label>
+        <div className="gloss-context-actions">
+          <button
+            className="ghost"
+            onClick={classify}
+            disabled={busy || (chars?.length ?? 0) === 0}
+            title="Ask the AI to label each unclassified speaker's gender from their name + sample lines"
+          >
+            <Icon name="sparkle" size={14} />{" "}
+            {busy ? "Classifying…" : unset > 0 ? `Auto-classify (${unset})` : "Auto-classify"}
+          </button>
+        </div>
+      </div>
+      {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
+      {chars === null ? (
+        <p className="hint">Loading speakers…</p>
+      ) : (
+        <div className="char-grid">
+          {chars.map((c) => (
+            <div key={c.name} className={`char-row${c.gender ? " set" : ""}`}>
+              <span className="char-name" title={c.name}>
+                {c.name}
+              </span>
+              <select
+                className="gloss-provider"
+                value={c.gender}
+                onChange={(e) => setGender(c.name, e.target.value)}
+              >
+                {GENDER_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

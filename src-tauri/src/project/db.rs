@@ -48,6 +48,14 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             value TEXT
         );
 
+        -- Speaker → gender, so the AI can pick the right gendered Thai sentence
+        -- particle (ครับ / ค่ะ) and first-person pronoun (ผม / ฉัน) per line. `name`
+        -- matches a unit's `context` (the speaker). `gender` is male|female|neutral.
+        CREATE TABLE IF NOT EXISTS character (
+            name   TEXT PRIMARY KEY,
+            gender TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_unit_status ON unit(status);
         CREATE INDEX IF NOT EXISTS idx_unit_file   ON unit(file);
         -- apply_tm() joins units by source; without this it is O(n^2).
@@ -434,6 +442,114 @@ pub fn glossary_update(
 pub fn glossary_delete(conn: &Connection, id: i64) -> Result<()> {
     conn.execute("DELETE FROM glossary WHERE id=?1", params![id])?;
     Ok(())
+}
+
+// --- characters (speaker → gender) ------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Character {
+    pub name: String,
+    /// "male" | "female" | "neutral".
+    pub gender: String,
+}
+
+pub fn characters_list(conn: &Connection) -> Result<Vec<Character>> {
+    let mut stmt = conn.prepare("SELECT name, gender FROM character ORDER BY name")?;
+    let rows = stmt.query_map([], |r| {
+        Ok(Character { name: r.get(0)?, gender: r.get(1)? })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Upsert one speaker's gender (empty gender clears the row instead).
+pub fn character_set(conn: &Connection, name: &str, gender: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(());
+    }
+    if gender.trim().is_empty() {
+        conn.execute("DELETE FROM character WHERE name=?1", params![name])?;
+    } else {
+        conn.execute(
+            "INSERT INTO character(name, gender) VALUES(?1, ?2)
+             ON CONFLICT(name) DO UPDATE SET gender = excluded.gender",
+            params![name, gender.trim()],
+        )?;
+    }
+    Ok(())
+}
+
+/// Upsert several (name, gender) rows in one transaction (auto-classify output).
+pub fn characters_set_bulk(conn: &mut Connection, items: &[(String, String)]) -> Result<usize> {
+    let tx = conn.transaction()?;
+    let mut n = 0usize;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO character(name, gender) VALUES(?1, ?2)
+             ON CONFLICT(name) DO UPDATE SET gender = excluded.gender",
+        )?;
+        for (name, gender) in items {
+            let (name, gender) = (name.trim(), gender.trim());
+            if name.is_empty() || gender.is_empty() {
+                continue;
+            }
+            stmt.execute(params![name, gender])?;
+            n += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
+/// Distinct speaker names seen on Dialogue units (the `context` field), so the UI
+/// and the auto-classify pass know who speaks. Skips empties.
+pub fn distinct_speakers(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT context FROM unit
+         WHERE context IS NOT NULL AND context <> '' AND kind = 'Dialogue'
+         ORDER BY context",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// For each distinct dialogue speaker, up to `per` of their source lines joined by
+/// newlines — the corpus the gender-classify pass reads to judge each speaker.
+pub fn speaker_samples(conn: &Connection, per: usize) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT context, source FROM unit
+         WHERE context IS NOT NULL AND context <> '' AND kind = 'Dialogue'
+           AND source IS NOT NULL AND source <> ''
+         ORDER BY context, id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    // Group in order; keep the first `per` lines per speaker.
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for row in rows {
+        let (name, source) = row?;
+        let c = counts.entry(name.clone()).or_insert(0);
+        if *c >= per {
+            continue;
+        }
+        *c += 1;
+        match out.last_mut() {
+            Some((n, s)) if *n == name => {
+                s.push('\n');
+                s.push_str(source.trim());
+            }
+            _ => out.push((name, source.trim().to_string())),
+        }
+    }
+    // Rows arrive grouped by context, but a speaker seen again after another would
+    // start a second entry; merge any splits so each speaker appears once.
+    let mut merged: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (n, s) in out {
+        merged.entry(n).and_modify(|e| { e.push('\n'); e.push_str(&s); }).or_insert(s);
+    }
+    Ok(merged.into_iter().collect())
 }
 
 /// Insert several glossary entries in one transaction. Skips empties and any

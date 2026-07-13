@@ -104,6 +104,13 @@ export interface GlossaryEntry {
   caseSensitive: boolean;
 }
 
+// A speaker → gender row (for gendered Thai particles). `gender` is
+// "male" | "female" | "neutral", or "" when a speaker isn't classified yet.
+export interface Character {
+  name: string;
+  gender: string;
+}
+
 export interface LintWarning {
   unitId: number;
   file: string;
@@ -253,6 +260,12 @@ export const api = {
     invoke<string>("suggest_game_context", { config }),
   glossaryAddBulk: (items: [string, string][]) =>
     invoke<number>("glossary_add_bulk", { items }),
+
+  charactersList: () => invoke<Character[]>("characters_list"),
+  characterSet: (name: string, gender: string) =>
+    invoke<void>("character_set", { name, gender }),
+  classifyGenders: (config: ProviderConfig) =>
+    invoke<Character[]>("classify_genders", { config }),
 
   translateUnits: (scope: TranslateScope, config: ProviderConfig) =>
     invoke<TranslateSummary>("translate_units", { scope, config }),

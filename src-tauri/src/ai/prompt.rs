@@ -278,6 +278,96 @@ fn is_thai(target_lang: &str) -> bool {
     t.contains("thai") || target_lang.contains("ไทย")
 }
 
+/// Normalize a stored/model gender string to one of "male" | "female" | "neutral".
+pub fn norm_gender(g: &str) -> &'static str {
+    match g.trim().to_lowercase().as_str() {
+        "male" | "m" | "man" | "boy" => "male",
+        "female" | "f" | "woman" | "girl" => "female",
+        _ => "neutral",
+    }
+}
+
+/// A system directive telling the model to match Thai gendered sentence-final
+/// particles (ครับ / ค่ะ·คะ) and first-person pronouns (ผม / ฉัน·ดิฉัน) to the `ctx`
+/// speaker's gender, using the project's known speaker→gender map. Thai-only — this
+/// is Thai's specific failure mode (a model guesses the particle and often mis-genders
+/// it); returns `None` for other targets or an empty/all-neutral map. `chars` is
+/// `(name, gender)`.
+pub fn gender_directive(chars: &[(String, String)], target_lang: &str) -> Option<String> {
+    if !is_thai(target_lang) {
+        return None;
+    }
+    let listed: Vec<String> = chars
+        .iter()
+        .filter(|(n, _)| !n.trim().is_empty())
+        .map(|(n, g)| format!("{}={}", n.trim(), norm_gender(g)))
+        .collect();
+    // Only worth sending if at least one speaker is actually gendered.
+    if !chars.iter().any(|(_, g)| norm_gender(g) != "neutral") {
+        return None;
+    }
+    Some(format!(
+        "Thai sentence-final politeness particles and first-person pronouns are gendered by \
+         the SPEAKER, not the listener. Read each item's `ctx` (the speaker) and use this map:\n\
+         - female speaker → final particle ค่ะ / คะ, first-person ฉัน / ดิฉัน\n\
+         - male speaker → final particle ครับ, first-person ผม\n\
+         - neutral or unlisted speaker → no gendered final particle (a neutral ending); do not \
+         add ครับ or ค่ะ\n\
+         Never put a male particle on a female speaker's line or vice-versa. Speaker genders: {}.",
+        listed.join(", ")
+    ))
+}
+
+/// Build the (system, user) prompt to label each speaker's GENDER from their name and
+/// a few sample lines, so [`gender_directive`] can drive gendered Thai particles.
+/// `candidates` is `(name, joined_sample_lines)`. The response is parsed by
+/// [`parse_gender_classify`].
+pub fn build_gender_classify(candidates: &[(String, String)]) -> (String, String) {
+    let sys = "You label the GENDER of each speaking character in a video game so a translator \
+        can choose gendered Thai politeness particles. For each speaker you are given their \
+        name and a few of their spoken lines. Answer male, female, or neutral — use neutral \
+        ONLY when there is no clear signal (narrator, system, a group, or genuinely ambiguous). \
+        Respond with ONLY a JSON array of objects {\"name\": \"<name>\", \"gender\": \
+        \"<male|female|neutral>\"}, one per speaker, with the name exactly as given. No prose, \
+        no reasoning."
+        .to_string();
+    let user = candidates
+        .iter()
+        .map(|(n, s)| {
+            if s.trim().is_empty() {
+                n.clone()
+            } else {
+                format!("{n}\n{s}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n---\n");
+    (sys, user)
+}
+
+/// Parse a gender-classify response into `(name, gender)` pairs (gender normalized).
+/// Tolerant of ```json fences, `<think>` blocks, and an object-wrapped array.
+pub fn parse_gender_classify(text: &str) -> Vec<(String, String)> {
+    let cleaned = strip_fences(&strip_reasoning(text));
+    let Some(arr) = extract_array(&cleaned) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in arr {
+        let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if name.is_empty() {
+            continue;
+        }
+        let gender = e
+            .get("gender")
+            .or_else(|| e.get("g"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("neutral");
+        out.push((name.to_string(), norm_gender(gender).to_string()));
+    }
+    out
+}
+
 /// Build the (system, user) prompt asking the model to draft a short game-context
 /// note from sampled game text — the setting/era, main characters and their
 /// relationships, tone, and world rules a translator needs for consistency.
@@ -676,5 +766,44 @@ mod tests {
         // Unset / unknown → nothing added.
         assert!(era_directive("", "Thai").is_none());
         assert!(era_directive("nonsense", "Thai").is_none());
+    }
+
+    #[test]
+    fn gender_directive_lists_speakers_and_rules_for_thai() {
+        let chars = vec![
+            ("Mei".to_string(), "female".to_string()),
+            ("Hiroshi".to_string(), "male".to_string()),
+            ("Narrator".to_string(), "neutral".to_string()),
+        ];
+        let d = gender_directive(&chars, "Thai").unwrap();
+        assert!(d.contains("ครับ") && d.contains("ค่ะ"));
+        assert!(d.contains("ผม") && d.contains("ฉัน"));
+        assert!(d.contains("Mei=female") && d.contains("Hiroshi=male") && d.contains("Narrator=neutral"));
+
+        // Non-Thai target → gendered particles don't apply, nothing added.
+        assert!(gender_directive(&chars, "English").is_none());
+        // All-neutral (or empty) map → nothing worth sending.
+        assert!(gender_directive(&[("N".into(), "neutral".into())], "Thai").is_none());
+        assert!(gender_directive(&[], "Thai").is_none());
+    }
+
+    #[test]
+    fn gender_classify_prompt_and_parse() {
+        let (sys, user) = build_gender_classify(&[
+            ("Mei".into(), "I'm so happy today!".into()),
+            ("Coach".into(), "".into()),
+        ]);
+        assert!(sys.contains("GENDER") && sys.contains("\"name\""));
+        assert!(user.contains("Mei\nI'm so happy today!"));
+        assert!(user.contains("Coach")); // no sample → just the name
+
+        let got = parse_gender_classify(
+            "```json\n[{\"name\":\"Mei\",\"gender\":\"F\"},{\"name\":\"Coach\",\"gender\":\"male\"},{\"name\":\"X\",\"gender\":\"?\"}]\n```",
+        );
+        assert_eq!(got, vec![
+            ("Mei".to_string(), "female".to_string()),
+            ("Coach".to_string(), "male".to_string()),
+            ("X".to_string(), "neutral".to_string()),
+        ]);
     }
 }

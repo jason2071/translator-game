@@ -71,6 +71,10 @@ struct DsRec {
     path_id: i64,
     idx: i64,
     source: String,
+    /// The speaking actor's name, when the entry's `Actor` resolved — kept as the
+    /// unit's context (who speaks) so the AI can pick gendered Thai particles.
+    #[serde(default)]
+    speaker: Option<String>,
 }
 
 /// A record from the helper's `uitbl-export` manifest (an I2 Localization UI string).
@@ -149,7 +153,8 @@ impl GameEngine for UnityTextTableEngine {
         let ds: Vec<DsRec> = run_export("dsdb-export", data.as_os_str())?;
         units.extend(ds.into_iter().map(|r| {
             let pointer = format!("ds#{}#{}#{}", r.file, r.path_id, r.idx);
-            TransUnit::new(&r.file, pointer, UnitKind::Dialogue, &r.source)
+            let speaker = r.speaker.filter(|s| !s.trim().is_empty());
+            TransUnit::new(&r.file, pointer, UnitKind::Dialogue, &r.source).with_context(speaker)
         }));
 
         // Tier 3 — I2 Localization "Text Table" UI strings in the `.assets` (menus,
