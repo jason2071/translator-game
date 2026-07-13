@@ -67,22 +67,35 @@ fn real_game_full_export() {
     assert_eq!(eng.id(), "unity-textbl");
     let mut units = eng.extract(root, &ExtractOpts::default()).unwrap();
 
-    // Translate the first few fields (whatever they are) so a launch shows Thai.
-    let mut hit = 0;
-    for u in units.iter_mut().take(8) {
-        u.translation = Some(format!("ไทย#{hit}"));
-        u.status = Status::Translated;
-        hit += 1;
+    // Translate the first few fields of EACH tier so a launch exercises both the
+    // TextTable (UI/SFX) and Dialogue System (story) render paths. A recognizable
+    // marker (`〔TH〕`) makes the changed strings easy to spot in-game.
+    let mut tbl = 0;
+    let mut ds = 0;
+    for u in units.iter_mut() {
+        let tier = u.pointer.split('#').next().unwrap_or("");
+        if tier == "tbl" && tbl < 6 {
+            u.translation = Some(format!("〔TH-ui{tbl}〕"));
+            u.status = Status::Translated;
+            tbl += 1;
+        } else if tier == "ds" && ds < 6 {
+            u.translation = Some(format!("〔TH-บทพูด{ds}〕"));
+            u.status = Status::Translated;
+            ds += 1;
+        }
     }
-    assert!(hit >= 4, "expected fields to translate");
+    assert!(tbl >= 4 && ds >= 4, "expected both tiers to translate (tbl={tbl} ds={ds})");
 
     let ex = unity_textbl::export_bundles(root, &data, &units, true).unwrap();
     eprintln!("full export: {}", ex.note);
     assert!(!ex.note.contains("failed"), "font embed should succeed: {}", ex.note);
-    assert!(ex.bundles >= 1, "at least one bundle edited");
+    assert!(ex.bundles >= 2, "at least one bundle + one dialogue file edited");
 
-    // Re-extract and confirm the translated fields now read back as Thai (load-faithful).
+    // Re-extract and confirm both tiers read back as Thai (load-faithful).
     let after = eng.extract(root, &ExtractOpts::default()).unwrap();
-    let thai = after.iter().filter(|u| u.source.starts_with("ไทย#")).count();
-    assert!(thai >= 4, "expected Thai in the Default column, found {thai}");
+    let th_ui = after.iter().filter(|u| u.source.contains("TH-ui")).count();
+    let th_dlg = after.iter().filter(|u| u.source.contains("TH-บทพูด")).count();
+    eprintln!("after export: {th_ui} TextTable + {th_dlg} Dialogue lines read back as Thai");
+    assert!(th_ui >= 4, "expected Thai TextTable, found {th_ui}");
+    assert!(th_dlg >= 4, "expected Thai dialogue, found {th_dlg}");
 }

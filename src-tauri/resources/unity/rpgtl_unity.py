@@ -667,14 +667,24 @@ def cmd_catalog_crc(catalog_path, out_path=None):
 
 def cmd_swap_font(bundle_in, ttf_path, bundle_out):
     """Replace the source TTF of every Dynamic-atlas TMP_FontAsset in an Addressables
-    font bundle, so a fallback font renders a script the baked atlases lack."""
+    font bundle, so a fallback font renders a script the baked atlases lack.
+
+    A Dynamic TMP font can ship a **pre-baked** glyph/character table + atlas texture
+    (e.g. Latin already rasterized). If we only swap the source TTF, those cached
+    entries still point at the OLD font's glyphs and the game renders tofu (even the
+    previously-fine Latin). So we also **clear each font's baked atlas** — empty the
+    glyph/character/used-rect tables and reset the free-rect to the whole atlas — which
+    is exactly what TMP's `ClearFontAssetData` does: the runtime then re-rasterizes
+    every glyph on demand from the new source. Fonts that already ship an empty atlas
+    (the common pure-dynamic case, e.g. Milf Plaza) are unaffected."""
     import UnityPy
 
     with open(ttf_path, "rb") as f:
         font = f.read()
     env = UnityPy.load(bundle_in)
 
-    # 1) collect the in-bundle source Font path_ids of dynamic-mode TMP font assets.
+    # 1) find the dynamic-mode TMP font assets: collect their source Font path_ids AND
+    #    clear their baked atlas so the runtime rebuilds it from the swapped source.
     src_ids = set()
     for obj in env.objects:
         if obj.type.name != "MonoBehaviour":
@@ -690,6 +700,22 @@ def cmd_swap_font(bundle_in, ttf_path, bundle_out):
         fid = src.get("m_FileID") if isinstance(src, dict) else None
         if pid and fid in (0, None):
             src_ids.add(pid)
+        if tree.get("m_GlyphTable") or tree.get("m_CharacterTable"):
+            pad = tree.get("m_AtlasPadding", 0) or 0
+            w = tree.get("m_AtlasWidth", 0) or 0
+            h = tree.get("m_AtlasHeight", 0) or 0
+            tree["m_GlyphTable"] = []
+            tree["m_CharacterTable"] = []
+            tree["m_UsedGlyphRects"] = []
+            tree["m_FreeGlyphRects"] = [
+                {"m_X": 0, "m_Y": 0, "m_Width": max(0, w - pad * 2), "m_Height": max(0, h - pad * 2)}
+            ]
+            tree["m_AtlasTextureIndex"] = 0
+            try:
+                obj.save_typetree(tree)
+            except Exception as e:
+                print(f"swap-font: could not clear atlas for {tree.get('m_Name','')}: {e}",
+                      file=sys.stderr)
 
     # 2) swap those Font objects' embedded TTF bytes.
     swapped = 0

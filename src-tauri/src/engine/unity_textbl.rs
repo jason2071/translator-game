@@ -484,6 +484,21 @@ pub fn export_bundles(
         note.push_str(" Saved the originals under .rpgtl/source/ (used to revert / re-export).");
     }
     if embed_font {
+        // The font swap overwrites EVERY bundle carrying a dynamic TMP font — including
+        // ones no text unit touched (so not in `edited_bundles`). Snapshot every
+        // StandaloneWindows64 bundle first (idempotent, skips ones already saved) so the
+        // originals are recoverable and re-export stays deterministic.
+        for bundle in bundle_files(&sw) {
+            let name = bundle.file_name().unwrap_or_default();
+            let snap = sw64(&src_aa).join(name);
+            if bundle.is_file() && !snap.is_file() {
+                if let Some(parent) = snap.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&bundle, &snap)
+                    .with_context(|| format!("snapshotting {}", bundle.display()))?;
+            }
+        }
         match embed_thai_font(data_dir, data_dir, super::TARGET_FONT) {
             Ok(n) => note.push_str(&format!(" {n}")),
             Err(e) => note.push_str(&format!(" Font embedding failed: {e}")),
