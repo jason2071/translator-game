@@ -737,33 +737,31 @@ def _calibrate_slope(np, alpha, glyph_table, atlas_h):
     return float(d.max()) if len(d) and d.max() > 4 else 13.0
 
 
-def _tmp_font_name(raw):
-    """The m_Name of a (possibly stripped) TMP_FontAsset MonoBehaviour blob, or None."""
-    if len(raw) < 40:
-        return None
-    nlen = struct.unpack_from("<i", raw, 28)[0]
-    if not (3 <= nlen <= 80 and 32 + nlen <= len(raw)):
-        return None
-    nm = raw[32:32 + nlen].decode("utf-8", "replace")
-    return nm if nm.endswith(" SDF") else None
-
-
-def _name_pid(objs, type_name, name):
-    for o in objs:
-        if o.type.name == type_name:
-            try:
-                if o.read().m_Name == name:
-                    return o.path_id
-            except Exception:
-                pass
+def _tmp_nodes(bundles):
+    """TypeTree nodes for the `TMP_FontAsset` MonoBehaviour, read from any bundle that
+    carries a readable copy. The class layout is identical across every font (and across
+    the stripped `.assets` copies), so these nodes let us read/write even the
+    stripped-typetree fonts structurally."""
+    for p in bundles:
+        try: env = UnityPy.load(p)
+        except Exception: continue
+        for o in env.objects:
+            if o.type.name != "MonoBehaviour":
+                continue
+            try: t = o.read_typetree()
+            except Exception: continue
+            if isinstance(t, dict) and t.get("m_AtlasPopulationMode") is not None and "SDF" in t.get("m_Name", ""):
+                return o.serialized_type.nodes
     return None
 
 
 def cmd_bake_font(data_dir, ttf_path, out_dir, uni="0E00-0E7F"):
-    """Bake `ttf`'s glyphs (unicode range `uni`) into every pre-baked TMP SDF font of a
-    game and write the changed `.assets` into `out_dir` (by basename). Donors (readable
-    font copies with baked glyphs) come from the Addressables bundles; each `.assets`
-    font is edited via a raw-blob transplant. Fonts with no donor are skipped/logged."""
+    """Bake `ttf`'s glyphs (unicode range `uni`) into EVERY pre-baked TMP SDF font of a
+    game (all bundles + all `.assets`) and write the changed files into `out_dir` (by
+    basename). Every font copy is read/written structurally via a shared `TMP_FontAsset`
+    typetree — even the stripped-typetree copies the game actually renders with — so no
+    per-font donor is needed. For each font: keep its baked Latin, drop the now-dead CJK,
+    pack the new glyphs into the freed atlas space, and set the font Static."""
     np, freetype, ndimage, Image = _bake_deps()
     lo, hi = (int(x, 16) for x in uni.split("-"))
     os.makedirs(out_dir, exist_ok=True)
@@ -773,64 +771,60 @@ def cmd_bake_font(data_dir, ttf_path, out_dir, uni="0E00-0E7F"):
     aa = os.path.join(data_dir, "StreamingAssets", "aa", "StandaloneWindows64")
     bundles = sorted(glob.glob(os.path.join(aa, "*.bundle")))
     assets = sorted(glob.glob(os.path.join(data_dir, "*.assets")))
-
-    # donor typetrees (readable font copies, prefer ones that carry baked glyphs).
-    donors = {}   # name -> (typetree, bundle_path)
-    for p in bundles:
-        try: env = UnityPy.load(p)
-        except Exception: continue
-        for o in env.objects:
-            if o.type.name != "MonoBehaviour": continue
-            try: t = o.read_typetree()
-            except Exception: continue
-            if not (isinstance(t, dict) and t.get("m_AtlasPopulationMode") is not None and "SDF" in t.get("m_Name", "")):
-                continue
-            nm = t["m_Name"]
-            if nm not in donors or (len(t["m_CharacterTable"]) > len(donors[nm][0]["m_CharacterTable"])):
-                donors[nm] = (t, p)
+    nodes = _tmp_nodes(bundles)
+    if nodes is None:
+        sys.exit("bake-font: no readable TMP_FontAsset found to source the typetree from")
 
     baked_total = 0
-    for p in assets:
+    for p in bundles + assets:
         try: env = UnityPy.load(p)
         except Exception: continue
         objs = list(env.objects)
-        fonts = [(o, _tmp_font_name(o.get_raw_data())) for o in objs if o.type.name == "MonoBehaviour"]
-        fonts = [(o, nm) for o, nm in fonts if nm and _name_pid(objs, "Texture2D", nm[:-4] + " Atlas")]
-        if not fonts:
-            continue
         changed = False
-        for fobj, fname in fonts:
-            donor = donors.get(fname)
-            if not donor:
-                print(f"bake-font: {os.path.basename(p)}: no donor for {fname!r} — skipped", file=sys.stderr)
+        for fobj in [o for o in objs if o.type.name == "MonoBehaviour"]:
+            # Cheap pre-filter on the raw blob's m_Name (a font is "<base> SDF"): reading
+            # every MonoBehaviour's typetree with the font nodes would be far too slow
+            # (a bundle has thousands of unrelated MonoBehaviours).
+            try: raw = fobj.get_raw_data()
+            except Exception: continue
+            if len(raw) < 40:
                 continue
-            base = fname[:-4]
-            atlas_pid = _name_pid(objs, "Texture2D", base + " Atlas")
-            tex = next(x for x in objs if x.path_id == atlas_pid).read()
-            img = np.array(tex.image); H, W = img.shape[:2]; alpha = img[..., 3].copy()
-            dtree = donor[0]
-            point_size = int(dtree["m_FaceInfo"]["m_PointSize"]) or 90
-            slope = _calibrate_slope(np, alpha, dtree["m_GlyphTable"], H)
-            # Keep the baked Latin/punctuation glyphs (so English keeps the original
-            # font's style); the baked CJK/kana are dead once the base column is the
-            # target language, so their atlas space is freed for the new glyphs.
-            keep_gidx = {c["m_GlyphIndex"] for c in dtree["m_CharacterTable"] if c["m_Unicode"] < KEEP_MAX}
-
-            glyphs = []
-            for cp in covered:
-                a, m, wh = _sdf_glyph(face, freetype, np, ndimage, cp, point_size, slope)
-                glyphs.append((cp, a, m, wh[0], wh[1]))
-            placed = _pack_into_atlas(np, alpha, dtree["m_GlyphTable"], keep_gidx, glyphs, W, H)
-            img[..., 3] = alpha; tex.image = Image.fromarray(img); tex.save()
-
-            blob = _build_font_blob(donor, placed, keep_gidx, objs, fobj.get_raw_data(), base, atlas_pid)
-            fobj.set_raw_data(blob)
+            nlen = struct.unpack_from("<i", raw, 28)[0]
+            if not (3 <= nlen <= 80 and 32 + nlen <= len(raw) and
+                    raw[32:32 + nlen].rstrip(b"\x00").endswith(b" SDF")):
+                continue
+            try: t = fobj.read_typetree(nodes)
+            except Exception: continue
+            if not (isinstance(t, dict) and t.get("m_AtlasPopulationMode") is not None and "SDF" in t.get("m_Name", "")):
+                continue
+            atlas_pid = (t.get("m_AtlasTextures") or [{}])[0].get("m_PathID")
+            if not atlas_pid or not any(x.path_id == atlas_pid for x in objs):
+                continue
+            try:
+                tex = next(x for x in objs if x.path_id == atlas_pid).read()
+                img = np.array(tex.image); H, W = img.shape[:2]; alpha = img[..., 3].copy()
+                point_size = int(t["m_FaceInfo"]["m_PointSize"]) or 90
+                slope = _calibrate_slope(np, alpha, t["m_GlyphTable"], H)
+                keep_gidx = {c["m_GlyphIndex"] for c in t["m_CharacterTable"] if c["m_Unicode"] < KEEP_MAX}
+                glyphs = [(cp, *_sdf_glyph(face, freetype, np, ndimage, cp, point_size, slope))
+                          for cp in covered]
+                glyphs = [(cp, a, m, wh[0], wh[1]) for cp, a, m, wh in glyphs]
+                placed = _pack_into_atlas(np, alpha, t["m_GlyphTable"], keep_gidx, glyphs, W, H)
+                if not placed:
+                    continue
+                img[..., 3] = alpha; tex.image = Image.fromarray(img); tex.save()
+                _apply_tables(t, placed, keep_gidx)
+                fobj.save_typetree(t, nodes)
+            except Exception as e:
+                print(f"bake-font: {os.path.basename(p)}: skipped {t.get('m_Name')!r} ({e})", file=sys.stderr)
+                continue
             changed = True; baked_total += len(placed)
-            print(f"bake-font: {os.path.basename(p)}: baked {len(placed)} glyph(s) into {fname!r}")
+            print(f"bake-font: {os.path.basename(p)}: baked {len(placed)} glyph(s) into {t['m_Name']!r}")
         if changed:
+            packer = "none" if p.endswith(".assets") else "lz4"
             with open(os.path.join(out_dir, os.path.basename(p)), "wb") as f:
-                f.write(env.file.save())
-    print(f"bake-font: baked {baked_total} glyph(s), font(s) covered by a donor")
+                f.write(env.file.save(packer=packer))
+    print(f"bake-font: baked {baked_total} glyph(s) total")
 
 
 # Keep baked glyphs below this codepoint (Latin, Latin-ext, punctuation, symbols) so
@@ -873,15 +867,9 @@ def _pack_into_atlas(np, alpha, used_glyphs, keep_gidx, glyphs, W, H, gap=3):
     return placed
 
 
-def _build_font_blob(donor, placed, keep_gidx, target_objs, target_raw, base, atlas_pid):
-    """Build a full TMP_FontAsset blob for a stripped target: the donor typetree with its
-    CJK glyphs/chars dropped (kept = Latin/punctuation), the new glyph/char entries added,
-    and PPtrs re-pointed at the target file's atlas/material/source-font/script. Serialized
-    through the donor's bundle (round-tripped so get_raw_data returns it)."""
-    import copy
-    dtree, dbundle = donor
-    t = copy.deepcopy(dtree)
-    # Drop the dead CJK glyphs/chars (their atlas rects were reused for the new glyphs).
+def _apply_tables(t, placed, keep_gidx):
+    """In a TMP font typetree: drop the dead CJK glyphs/chars (kept = Latin/punctuation),
+    append the new glyph/character entries for `placed`, and set the font Static."""
     t["m_GlyphTable"] = [g for g in t["m_GlyphTable"] if g["m_Index"] in keep_gidx]
     t["m_CharacterTable"] = [c for c in t["m_CharacterTable"] if c["m_GlyphIndex"] in keep_gidx]
     nidx = max((g["m_Index"] for g in t["m_GlyphTable"]), default=0) + 1
@@ -894,33 +882,6 @@ def _build_font_blob(donor, placed, keep_gidx, target_objs, target_raw, base, at
             "m_GlyphRect": rect, "m_Scale": 1.0, "m_AtlasIndex": 0, "m_ClassDefinitionType": 0})
         t["m_CharacterTable"].append({"m_ElementType": 1, "m_Unicode": cp, "m_GlyphIndex": gi, "m_Scale": 1.0})
     t["m_AtlasPopulationMode"] = 0
-    t["m_Script"] = {"m_FileID": struct.unpack_from("<i", target_raw, 16)[0], "m_PathID": struct.unpack_from("<q", target_raw, 20)[0]}
-    t["m_AtlasTextures"] = [{"m_FileID": 0, "m_PathID": atlas_pid}]
-    mat = _name_pid(target_objs, "Material", base + " Atlas Material")
-    src = _name_pid(target_objs, "Font", base)
-    if mat is not None: t["material"] = {"m_FileID": 0, "m_PathID": mat}
-    if src is not None: t["m_SourceFontFile"] = {"m_FileID": 0, "m_PathID": src}
-    # serialize via a donor object in its bundle, then round-trip so get_raw_data is fresh
-    denv = UnityPy.load(dbundle)
-    for o in denv.objects:
-        if o.type.name != "MonoBehaviour": continue
-        try: dt = o.read_typetree()
-        except Exception: continue
-        if dt.get("m_Name") == dtree["m_Name"]:
-            o.save_typetree(t); break
-    reser = os.path.join(os.environ.get("TEMP", "."), f"rpgtl-reser-{os.getpid()}.bundle")
-    with open(reser, "wb") as f:
-        f.write(denv.file.save(packer="none"))
-    blob = None
-    for o in UnityPy.load(reser).objects:
-        if o.type.name != "MonoBehaviour": continue
-        try: dt = o.read_typetree()
-        except Exception: continue
-        if dt.get("m_Name") == dtree["m_Name"]:
-            blob = o.get_raw_data(); break
-    try: os.remove(reser)
-    except OSError: pass
-    return blob
 
 
 def cmd_swap_font(bundle_in, ttf_path, bundle_out):
