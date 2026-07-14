@@ -51,6 +51,10 @@ interface SettingsState {
   providers: Record<ProviderKind, ProviderConfig>;
   tone: string;
   systemPrompt: string;
+  /** Whether the bundled default Extra prompt has been seeded once. After that the
+   *  user's value — including an empty string they cleared — is respected, so a
+   *  cleared prompt no longer reappears on the next launch. */
+  promptSeeded: boolean;
   batchSize: number;
   rpm: number;
   thinking: boolean;
@@ -68,6 +72,8 @@ interface SettingsState {
       >
     >
   ) => void;
+  /** Refill the Extra prompt with the bundled default (the "Reset to default" action). */
+  resetSystemPrompt: () => void;
   /** The full ProviderConfig for a given provider, merged with shared opts. */
   configFor: (kind: ProviderKind) => ProviderConfig;
   /** The full ProviderConfig for the active (Run) provider. */
@@ -96,10 +102,10 @@ function load(): Partial<SettingsState> {
 }
 
 function persist(s: SettingsState) {
-  const { active, glossaryProvider, providers, tone, systemPrompt, batchSize, rpm, thinking, maxLineWidth } = s;
+  const { active, glossaryProvider, providers, tone, systemPrompt, promptSeeded, batchSize, rpm, thinking, maxLineWidth } = s;
   localStorage.setItem(
     KEY,
-    JSON.stringify({ active, glossaryProvider, providers, tone, systemPrompt, batchSize, rpm, thinking, maxLineWidth })
+    JSON.stringify({ active, glossaryProvider, providers, tone, systemPrompt, promptSeeded, batchSize, rpm, thinking, maxLineWidth })
   );
 }
 
@@ -110,10 +116,12 @@ export const useSettings = create<SettingsState>((set, get) => ({
   glossaryProvider: saved.glossaryProvider ?? saved.active ?? "openai",
   providers: migrateProviders({ ...DEFAULTS, ...(saved.providers ?? {}) }),
   tone: saved.tone ?? "casual",
-  // Seed the bundled default when the Extra prompt is unset/blank (first run, or a
-  // returning user who never wrote one — older builds persisted it as ""). A user
-  // who wants their own text just overwrites it; clearing it re-shows the default.
-  systemPrompt: saved.systemPrompt?.trim() ? saved.systemPrompt : DEFAULT_EXTRA_PROMPT,
+  // Seed the bundled default Extra prompt exactly ONCE (first run). After that the
+  // saved value wins — including an empty string the user deliberately cleared — so a
+  // cleared prompt stays cleared instead of reappearing on the next launch. The
+  // "Reset to default" button brings it back on demand.
+  systemPrompt: saved.promptSeeded ? saved.systemPrompt ?? "" : DEFAULT_EXTRA_PROMPT,
+  promptSeeded: true,
   batchSize: saved.batchSize ?? 40,
   rpm: saved.rpm ?? 0,
   thinking: saved.thinking ?? false,
@@ -133,6 +141,10 @@ export const useSettings = create<SettingsState>((set, get) => ({
   },
   setShared: (patch) => {
     set(patch as Partial<SettingsState>);
+    persist(get());
+  },
+  resetSystemPrompt: () => {
+    set({ systemPrompt: DEFAULT_EXTRA_PROMPT, promptSeeded: true });
     persist(get());
   },
   configFor: (kind) => {

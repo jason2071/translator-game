@@ -169,6 +169,26 @@ code {
   border-color: transparent;
 }
 
+/* Small pill button, e.g. "Reset to default" above the Extra prompt textarea. */
+.btn-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.65rem;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.btn-reset:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
 /* ============================================================
    Import view
    ============================================================ */
@@ -1630,30 +1650,59 @@ button.link {
   display: flex;
   gap: 0.4rem;
   flex-wrap: wrap;
-  margin-bottom: 1rem;
+  margin-bottom: 1.2rem;
 }
 .provider-tabs .tab {
   background: var(--panel2);
   font-size: var(--fs-sm);
+  border-radius: var(--r-full);
 }
 .provider-tabs .tab.active {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-soft);
+  font-weight: 600;
 }
 .field-grid {
   display: grid;
   grid-template-columns: 160px 1fr;
-  gap: 0.6rem 1rem;
+  gap: 0.7rem 1rem;
   align-items: center;
 }
 .field-grid label {
   color: var(--muted);
   font-size: var(--fs-sm);
 }
+/* Rows whose right-hand control is multi-line (e.g. Extra prompt's textarea) —
+   pin the label to the control's first line instead of vertically centering it
+   against the whole tall cell, where it would read as detached. */
+.field-grid label.label-top {
+  align-self: start;
+  padding-top: 0.4rem;
+}
 .field-grid input,
 .field-grid textarea {
   width: 100%;
+}
+/* Right-column wrapper for the Extra-prompt textarea. The "Reset to default"
+   action is pinned inside the textarea's own top-right padding rather than
+   stacked above it in its own row — one control, no extra band of empty
+   space between this row and the one above it. */
+.prompt-field {
+  position: relative;
+}
+.prompt-field textarea {
+  /* Reserve room at the top so the overlaid Reset pill never sits over typed text. */
+  padding-top: 2rem;
+  resize: vertical;
+  min-height: 5.5rem;
+}
+.prompt-reset {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  background: var(--panel2);
+  box-shadow: var(--shadow-1);
 }
 .key-row,
 .model-row {
@@ -1674,13 +1723,18 @@ button.link {
 .settings hr {
   border: none;
   border-top: 1px solid var(--border);
-  margin: 1.2rem 0 0.6rem;
+  margin: var(--sp-5) 0 var(--sp-3);
 }
 .settings h3 {
-  margin: 0 0 0.6rem;
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--subtle);
 }
 .test-row {
-  margin-top: 1rem;
+  margin-top: 1.2rem;
   display: flex;
   align-items: center;
   gap: 0.8rem;

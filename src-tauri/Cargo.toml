@@ -1,6 +1,6 @@
 [package]
 name = "rpgmaker-translator"
-version = "0.12.6"
+version = "0.12.7"
 description = "Translate RPGMaker games (MV/MZ) by hand or via AI"
 authors = ["you"]
 edition = "2021"

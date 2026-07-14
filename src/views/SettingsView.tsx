@@ -205,15 +205,25 @@ export default function SettingsView() {
           {s.thinking ? "On — slower, may improve quality" : "Off — faster, recommended for translation"}
         </label>
 
-        <label>
+        <label className="label-top">
           Extra prompt <span className="hint">(all projects)</span>
         </label>
-        <textarea
-          rows={3}
-          placeholder="Applies to every game. e.g. keep honorifics; the protagonist is a boy…"
-          value={s.systemPrompt}
-          onChange={(e) => s.setShared({ systemPrompt: e.target.value })}
-        />
+        <div className="prompt-field">
+          <textarea
+            rows={4}
+            placeholder="Applies to every game. e.g. keep honorifics; the protagonist is a boy…"
+            value={s.systemPrompt}
+            onChange={(e) => s.setShared({ systemPrompt: e.target.value })}
+          />
+          <button
+            type="button"
+            className="btn-reset prompt-reset"
+            onClick={() => s.resetSystemPrompt()}
+            title="Refill with the bundled default translation prompt"
+          >
+            <Icon name="retry" size={13} /> Reset to default
+          </button>
+        </div>
       </div>
 
       <div className="test-row">
