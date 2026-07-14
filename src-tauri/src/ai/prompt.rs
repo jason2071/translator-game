@@ -178,7 +178,10 @@ pub fn build_glossary_mining(source_lang: &str, target_lang: &str, corpus: &str)
          translated consistently: character names, place names, organization names, \
          item/skill/status names, and coined world-specific terms. Ignore ordinary \
          words, whole sentences, and one-off common nouns.\n\
-         For each term give a suggested {tgt} translation (transliterate names).\n\
+         For each term give a suggested {tgt} translation (transliterate names). \
+         BUT for pure ALL-CAPS abbreviations and stat/attribute codes (e.g. STR, DEX, \
+         SPD, STA, HP, MP, SP, ATK, DEF, LV, EXP), keep the term unchanged — do NOT \
+         translate or transliterate it; set \"tr\" equal to the term itself.\n\
          Respond with ONLY a JSON array, no prose, of objects \
          {{\"term\": \"<source term>\", \"kind\": \"<name|place|item|skill|term>\", \
          \"tr\": \"<{tgt} translation>\"}}. At most 60 items, most important first. \
@@ -214,7 +217,10 @@ pub fn build_glossary_classify(
          names, organization names, item/skill/status names, and coined \
          world-specific terms. DROP ordinary words, common phrases, UI labels, and \
          sentence fragments that slipped in. For each kept term give a suggested \
-         {tgt} translation (transliterate names).\n\
+         {tgt} translation (transliterate names). BUT for pure ALL-CAPS abbreviations \
+         and stat/attribute codes (e.g. STR, DEX, SPD, STA, HP, MP, SP, ATK, DEF, LV, \
+         EXP), keep the term unchanged — do NOT translate or transliterate it; set \
+         \"tr\" equal to the term itself.\n\
          Respond with ONLY a JSON array, no prose, of objects \
          {{\"term\": \"<term>\", \"kind\": \"<name|place|item|skill|term>\", \
          \"tr\": \"<{tgt} translation>\"}}. Keep the term text exactly as given. Do \
