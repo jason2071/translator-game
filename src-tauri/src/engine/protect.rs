@@ -26,6 +26,30 @@ impl Masked {
 
 /// Replace every RPGMaker control code with a `⟦k⟧` sentinel.
 pub fn mask(input: &str) -> Masked {
+    mask_inner(input, false)
+}
+
+/// RPGMaker **MV/MZ** masking: the default [`mask`] grammar (`\Word[n]` escapes and
+/// `%N` params) **plus** VisuMZ/Yanfly angle-bracket text codes (`<Show Switch: 24>`,
+/// `<center>`, `<Choice Width: 320>`, font tags `<Cinzel-VariableFont_wght>`, …).
+/// The stock `mask` leaves `<…>` as prose, so a model would translate the words
+/// inside a tag; masking them keeps plugin markup byte-identical across the round-trip.
+pub fn mask_mvmz(input: &str) -> Masked {
+    mask_inner(input, true)
+}
+
+/// Push one masked token: record the original span and emit its `⟦idx⟧` sentinel.
+fn push_token(text: &mut String, tokens: &mut Vec<String>, token: &str) {
+    let idx = tokens.len();
+    tokens.push(token.to_string());
+    text.push(OPEN);
+    text.push_str(&idx.to_string());
+    text.push(CLOSE);
+}
+
+/// Shared masking scan. `mask_angle` additionally masks VisuMZ `<…>` text codes
+/// (see [`vmz_angle_len`]) — used by [`mask_mvmz`] and off for the default [`mask`].
+fn mask_inner(input: &str, mask_angle: bool) -> Masked {
     let mut text = String::with_capacity(input.len());
     let mut tokens: Vec<String> = Vec::new();
     let bytes = input.as_bytes();
@@ -33,12 +57,17 @@ pub fn mask(input: &str) -> Masked {
     while i < input.len() {
         if bytes[i] == b'\\' {
             if let Some(len) = code_len(&input[i..]) {
-                let token = &input[i..i + len];
-                let idx = tokens.len();
-                tokens.push(token.to_string());
-                text.push(OPEN);
-                text.push_str(&idx.to_string());
-                text.push(CLOSE);
+                push_token(&mut text, &mut tokens, &input[i..i + len]);
+                i += len;
+                continue;
+            }
+        }
+        // VisuMZ/Yanfly angle-bracket text codes (`<center>`, `<Show Switch: 24>`, …).
+        // Only for engines that opt in (RPGMaker MV/MZ); the stock grammar treats
+        // `<…>` as prose.
+        if mask_angle && bytes[i] == b'<' {
+            if let Some(len) = vmz_angle_len(&input[i..]) {
+                push_token(&mut text, &mut tokens, &input[i..i + len]);
                 i += len;
                 continue;
             }
@@ -52,11 +81,7 @@ pub fn mask(input: &str) -> Masked {
             while j < input.len() && bytes[j].is_ascii_digit() {
                 j += 1;
             }
-            let idx = tokens.len();
-            tokens.push(input[i..j].to_string());
-            text.push(OPEN);
-            text.push_str(&idx.to_string());
-            text.push(CLOSE);
+            push_token(&mut text, &mut tokens, &input[i..j]);
             i = j;
             continue;
         }
@@ -87,6 +112,10 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         // bracket markup (`[pic=7]`, `[a]`, `[var=…]`) on top of the same TMPro tags /
         // `{TOKEN}`s — so it also masks `[…]`.
         "unity-textbl" => mask_unity_textbl(input),
+        // RPGMaker MV/MZ (and Hendrix, which is MV/MZ underneath): stock `\Word[n]`
+        // + `%N` masking plus VisuMZ/Yanfly `<…>` text codes (`<Show Switch: 24>`,
+        // `<center>`, font tags) — else a model translates the words inside a tag.
+        "rpgmaker-mvmz" | "rpgmaker-hendrix" => mask_mvmz(input),
         _ => mask(input),
     }
 }
@@ -390,6 +419,35 @@ fn mask_unity_impl(input: &str, ds_brackets: bool) -> Masked {
 /// Returns None for a stray `<`, an emoticon `<3`, `5 < 10`, or prose with bare
 /// words and no `=` (`<low then flee>` stays visible to the model), or an
 /// unterminated tag.
+/// Length in bytes of a VisuMZ/Yanfly angle-bracket text code starting at
+/// `s[0] == '<'`, or None. Grammar: `<` + optional `/` + an **ASCII letter**, then
+/// any bytes up to and including the first `>` **on the same line**. A letter is
+/// required immediately after `<`(`/`), so prose like `<3`, `< 5`, `3 < 5`, `>_<` is
+/// *not* a code. Deliberately broader than [`angle_tag_len`]: VisuMZ codes carry
+/// spaces / colons / commas / dots (`<Show Switch: 24>`, `<Scale: .5, .5>`) that the
+/// HTML-attribute grammar rejects as prose.
+fn vmz_angle_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    debug_assert_eq!(b[0], b'<');
+    let mut k = 1;
+    if k < b.len() && b[k] == b'/' {
+        k += 1;
+    }
+    // Require an alphabetic tag-name start (rejects `<3`, `< 5`, `<=`).
+    if k >= b.len() || !b[k].is_ascii_alphabetic() {
+        return None;
+    }
+    // Consume to the first `>`; a code never spans a line break.
+    while k < b.len() {
+        match b[k] {
+            b'>' => return Some(k + 1),
+            b'\n' | b'\r' => return None,
+            _ => k += 1,
+        }
+    }
+    None
+}
+
 fn angle_tag_len(s: &str) -> Option<usize> {
     let b = s.as_bytes();
     debug_assert_eq!(b[0], b'<');
@@ -1002,5 +1060,66 @@ mod tests {
         // a date inside a sentence, or any non-date text, is left exactly as-is
         assert_eq!(normalize_thai_dates("ในเดือนมกราคม"), "ในเดือนมกราคม");
         assert_eq!(normalize_thai_dates("สวัสดี"), "สวัสดี");
+    }
+
+    #[test]
+    fn mvmz_mask_unmask_is_identity() {
+        // VisuMZ/Yanfly angle codes ride alongside the stock `\Word[n]` escapes.
+        let samples = [
+            "<Show Switch: 24><center>\\OutlineColor[23]\\FS[30]Album",
+            "<Choice Width: 320><center>\\OutlineColor[29]\\c[5]เลือก",
+            "<Scale: .5, .5><Offset: -10, +4>hi",
+            "<charAnimSetup:1,2,3,4>text",
+            "Font tag <Cinzel-VariableFont_wght>styled</Cinzel-VariableFont_wght> here",
+            "Line one<br>line two",
+            "Plain \\C[2]hero\\C[0] with %1 gold",
+            "No codes here at all.",
+            // Prose-shaped `<…>` that must survive verbatim whether masked or not.
+            "An emoticon <3 and math 3 < 5 stay literal.",
+            "",
+        ];
+        for s in samples {
+            let m = mask_mvmz(s);
+            let back = restore(&m.text, &m.tokens).expect("restore ok");
+            assert_eq!(back, s, "round-trip failed for {s:?}");
+        }
+    }
+
+    #[test]
+    fn mvmz_masks_visumz_angle_codes_leaving_only_prose() {
+        // The real bug: `<Show Switch: 24>` + `<center>` + `\OutlineColor[23]` +
+        // `\FS[30]` must all hide, leaving only "Album" for the model to translate.
+        let m = mask_for("rpgmaker-mvmz", "<Show Switch: 24><center>\\OutlineColor[23]\\FS[30]Album");
+        assert_eq!(
+            m.tokens,
+            vec!["<Show Switch: 24>", "<center>", "\\OutlineColor[23]", "\\FS[30]"]
+        );
+        assert!(!m.text.contains('<'), "angle codes hidden from the model");
+        assert!(!m.text.contains('\\'), "escape codes hidden from the model");
+        // Strip the four sentinels → only the translatable word remains.
+        assert_eq!(strip_codes("rpgmaker-mvmz", "<Show Switch: 24><center>\\OutlineColor[23]\\FS[30]Album"), "Album");
+    }
+
+    #[test]
+    fn mvmz_rejects_translated_markup_via_codes_match() {
+        // A correct translation keeps every code; translating the words inside a tag
+        // (`Show Switch` → `แสดงสวิตช์`, `Album` → `อัลบั้ม`) drops the `<Show Switch: 24>`
+        // token and gains a bogus `<แสดงสวิตช์: 24>` — codes_match must reject it.
+        let src = "<Show Switch: 24><center>\\FS[30]Album";
+        let good = "<Show Switch: 24><center>\\FS[30]อัลบั้ม";
+        let bad = "<แสดงสวิตช์: 24><center>\\FS[30]อัลบั้ม";
+        assert!(codes_match("rpgmaker-mvmz", src, good));
+        assert!(!codes_match("rpgmaker-mvmz", src, bad));
+    }
+
+    #[test]
+    fn mvmz_leaves_prose_angles_alone() {
+        // A letter must follow `<`, so digit/space-led `<` is prose, not a code.
+        assert!(mask_for("rpgmaker-mvmz", "I <3 you").is_plain());
+        assert!(mask_for("rpgmaker-mvmz", "3 < 5 and 5 > 3").is_plain());
+        // Hendrix shares the RPGMaker grammar.
+        assert!(!mask_for("rpgmaker-hendrix", "<center>hi").is_plain());
+        // The stock (non-mvmz) grammar still treats `<…>` as prose.
+        assert!(mask("<center>hi").is_plain());
     }
 }

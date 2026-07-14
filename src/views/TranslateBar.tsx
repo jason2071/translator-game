@@ -16,6 +16,7 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
   const total = useStore((s) => s.total);
   const refreshTotal = useStore((s) => s.refreshTotal);
   const refreshMeta = useStore((s) => s.refreshMeta);
+  const fillSourceForFilter = useStore((s) => s.fillSourceForFilter);
   const project = useStore((s) => s.project);
   const setLanguages = useStore((s) => s.setLanguages);
   const active = useSettings((s) => s.active);
@@ -83,6 +84,28 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
     // limit/offset — the grid sets those per fetch), so it's the scope as-is; the
     // backend pages it and overrides limit/offset itself.
     translate({ filter, overwrite: true });
+  }
+
+  // Copy the source text into the translation for the current view's still-empty
+  // (Untranslated/Failed) lines — a manual fallback when heavy inline markup makes
+  // an AI pass unreliable (keep the codes, edit only the words). Existing
+  // translations are never overwritten.
+  async function fillSource() {
+    const ok = await ask(
+      `Fill the untranslated/failed line(s) in this view with their source text? ` +
+        `You can then hand-edit them; existing translations are left untouched.`,
+      { title: "Copy source → translation?", kind: "info" }
+    );
+    if (!ok) return;
+    setErr(null);
+    setSummary(null);
+    try {
+      await fillSourceForFilter();
+      await refreshMeta();
+      await refreshTotal();
+    } catch (e) {
+      setErr(String(e));
+    }
   }
 
   const failed = stats?.failed ?? 0;
@@ -181,6 +204,16 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
               {filter.context
                 ? `Re-translate ${filter.context} (${total})`
                 : `Re-translate matches (${total})`}
+            </button>
+          )}
+
+          {(filter.search || filter.context || filter.file) && total > 0 && !running && (
+            <button
+              className="ghost tb-icon-btn"
+              onClick={fillSource}
+              title="Fill the untranslated/failed lines in this view with their source text, to hand-edit (keeps existing translations)"
+            >
+              <Icon name="copy" size={14} /> Copy source → translation
             </button>
           )}
 

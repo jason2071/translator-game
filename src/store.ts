@@ -48,6 +48,9 @@ interface AppStore {
   /** Fetch a fresh window if the visible range is outside/near the loaded one. */
   ensureWindow: (start: number, end: number) => void;
   editUnit: (id: number, translation: string, status?: Status) => Promise<void>;
+  /** Bulk-fill the current filter's Untranslated/Failed units with their source
+   *  text (status → Draft); reloads the window. Returns rows changed. */
+  fillSourceForFilter: () => Promise<number>;
   setStatus: (id: number, status: Status) => Promise<void>;
   applyUnitUpdates: (updates: UnitUpdate[]) => void;
 }
@@ -232,6 +235,15 @@ export const useStore = create<AppStore>((set, get) => ({
       },
     });
     await get().refreshStats();
+  },
+
+  fillSourceForFilter: async () => {
+    const n = await api.copySourceToTranslation(get().filter);
+    if (n > 0) {
+      await get().reloadUnits();
+      await get().refreshStats();
+    }
+    return n;
   },
 
   setStatus: async (id, status) => {

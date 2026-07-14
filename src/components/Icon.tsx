@@ -21,6 +21,7 @@ export type IconName =
   | "check"
   | "folder"
   | "clock"
+  | "copy"
   | "warn";
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -104,6 +105,12 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <path d="M12 4l9 16H3l9-16z" />
       <path d="M12 10v4M12 17h.01" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
     </>
   ),
 };

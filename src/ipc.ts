@@ -224,6 +224,10 @@ export const api = {
     invoke<TransUnit[]>("list_units", { filter }),
   countUnits: (filter: UnitFilter) =>
     invoke<number>("count_units", { filter }),
+  // Bulk-fill filter-matching Untranslated/Failed units with their source text
+  // (status → Draft); returns how many rows changed.
+  copySourceToTranslation: (filter: UnitFilter) =>
+    invoke<number>("copy_source_to_translation", { filter }),
 
   updateUnit: (id: number, translation: string | null, status: Status) =>
     invoke<void>("update_unit", { id, translation, status }),

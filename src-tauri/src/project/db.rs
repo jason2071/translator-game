@@ -281,6 +281,21 @@ pub fn count_units(conn: &Connection, filter: &UnitFilter) -> Result<i64> {
     Ok(conn.query_row(&sql, params.as_slice(), |r| r.get(0))?)
 }
 
+/// Bulk-fill every filter-matching **Untranslated/Failed** unit with its own source
+/// text (status → Draft), so a human can hand-edit from the source — useful when
+/// heavy inline markup makes an AI pass unreliable (keep the codes, change only the
+/// words). Units that already carry a translation (Draft/Translated/Reviewed/Locked)
+/// are left untouched. Reuses the shared `unit_where`. Returns the row count changed.
+pub fn copy_source_to_translation(conn: &Connection, filter: &UnitFilter) -> Result<usize> {
+    let (where_sql, args) = unit_where(filter);
+    let sql = format!(
+        "UPDATE unit SET translation = source, status = 'Draft'{where_sql} \
+         AND status IN ('Untranslated', 'Failed')"
+    );
+    let params: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+    Ok(conn.execute(&sql, params.as_slice())?)
+}
+
 /// Load specific units by id (used to translate a selection).
 pub fn units_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<TransUnit>> {
     if ids.is_empty() {

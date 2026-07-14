@@ -2,8 +2,11 @@
 // must survive translation unchanged; codesMismatch warns when a translation
 // drops, duplicates, or alters the codes present in the source.
 
-// RPGMaker: \C[2], \V[7], \FS[24], \N[1], \., \!, \\ …
-const RPGMAKER_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|%\d+/g;
+// RPGMaker: \C[2], \V[7], \FS[24], \N[1], \., \!, \\ … plus VisuMZ/Yanfly
+// angle-bracket text codes (<center>, <Show Switch: 24>, <Choice Width: 320>,
+// font tags <Cinzel-VariableFont_wght>). A letter must follow `<`/`</`, so prose
+// like "I <3 you" or "3 < 5" is not a code. Mirrors mask_mvmz / vmz_angle_len.
+const RPGMAKER_RE = /<\/?[A-Za-z][^>\n]*>|\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|%\d+/g;
 // Ren'Py: [interpolation], {text tags}, and backslash escapes (\", \n). Escaped
 // [[ / {{ are literal text, so a bare doubled bracket contributes no code.
 const RENPY_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}/g;

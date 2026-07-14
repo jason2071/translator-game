@@ -172,6 +172,18 @@ fn count_units(filter: UnitFilter, state: tauri::State<AppState>) -> Result<i64,
     with_project(&state, |p| project::db::count_units(&p.conn, &filter))
 }
 
+/// Bulk-fill filter-matching Untranslated/Failed units with their source text
+/// (status → Draft). Returns how many rows were changed.
+#[tauri::command]
+fn copy_source_to_translation(
+    filter: UnitFilter,
+    state: tauri::State<AppState>,
+) -> Result<usize, String> {
+    with_project(&state, |p| {
+        project::db::copy_source_to_translation(&p.conn, &filter)
+    })
+}
+
 #[tauri::command]
 fn update_unit(
     id: i64,
@@ -1373,6 +1385,7 @@ pub fn run() {
             set_era,
             list_units,
             count_units,
+            copy_source_to_translation,
             update_unit,
             get_stats,
             list_files,

@@ -69,6 +69,17 @@ export const UnitRow = memo(function UnitRow({
     }
   }
 
+  // Copy the source verbatim into the translation, then let the user hand-edit —
+  // handy when heavy inline markup makes an AI pass unreliable (keep the codes,
+  // change only the words). Persists via editUnit (auto-promotes to Draft).
+  function copySource() {
+    setValue(unit.source);
+    if (unit.source !== (unit.translation ?? "")) {
+      editUnit(unit.id, unit.source);
+    }
+    taRef.current?.focus();
+  }
+
   // Warn against the text actually on screen (empty = no warning, handled inside).
   const warn = codesMismatch(unit.source, value, engineId);
   // Overflow guard: flag lines wider than the box, for boxed kinds only.
@@ -125,6 +136,15 @@ export const UnitRow = memo(function UnitRow({
             ⚠ line too long ({overflow.map((o) => o.width).join(", ")}/{maxLineWidth})
           </span>
         )}
+        <button
+          type="button"
+          className="row-copy"
+          onClick={copySource}
+          title="Copy the source text into the translation, then edit"
+          aria-label="Copy source into translation"
+        >
+          <Icon name="copy" size={13} />
+        </button>
         <button
           type="button"
           className="row-retranslate"

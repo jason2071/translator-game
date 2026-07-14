@@ -1179,7 +1179,8 @@ code {
 .cell.translation {
   position: relative;
 }
-.row-retranslate {
+.row-retranslate,
+.row-copy {
   position: absolute;
   top: 0.3rem;
   right: 0.3rem;
@@ -1195,10 +1196,16 @@ code {
   opacity: 0;
   transition: opacity 0.12s, color 0.12s, border-color 0.12s;
 }
-.unit-row:hover .row-retranslate {
+/* Copy-source sits just left of the re-translate button (both hover-revealed). */
+.row-copy {
+  right: 1.95rem;
+}
+.unit-row:hover .row-retranslate,
+.unit-row:hover .row-copy {
   opacity: 0.8;
 }
-.row-retranslate:hover:not(:disabled) {
+.row-retranslate:hover:not(:disabled),
+.row-copy:hover {
   opacity: 1;
   color: var(--accent);
   border-color: var(--accent);
