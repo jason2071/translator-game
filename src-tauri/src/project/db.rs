@@ -158,6 +158,13 @@ pub struct UnitFilter {
     pub file: Option<String>,
     pub status: Option<String>,
     pub search: Option<String>,
+    /// Which columns the `search` substring runs against. Any of "source",
+    /// "translation", "context"; unknown names ignored. None/empty ⇒ the legacy
+    /// default of source+translation.
+    pub search_fields: Option<Vec<String>>,
+    /// Exact speaker/character filter (`context = ?`) — the sidebar's character
+    /// dropdown; the value comes from the known cast, not free text.
+    pub context: Option<String>,
     pub untranslated_only: Option<bool>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
@@ -194,6 +201,13 @@ fn unit_where(filter: &UnitFilter) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
     if filter.untranslated_only.unwrap_or(false) {
         sql.push_str(" AND status = 'Untranslated'");
     }
+    // Exact character (speaker) filter — value picked from the known cast, not typed.
+    if let Some(c) = &filter.context {
+        if !c.is_empty() {
+            sql.push_str(" AND context = ?");
+            args.push(Box::new(c.clone()));
+        }
+    }
     if let Some(q) = &filter.search {
         if !q.is_empty() {
             // Escape LIKE metacharacters so a literal % or _ isn't a wildcard.
@@ -201,10 +215,37 @@ fn unit_where(filter: &UnitFilter) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
                 .replace('\\', "\\\\")
                 .replace('%', "\\%")
                 .replace('_', "\\_");
-            sql.push_str(" AND (source LIKE ? ESCAPE '\\' OR translation LIKE ? ESCAPE '\\')");
             let like = format!("%{esc}%");
-            args.push(Box::new(like.clone()));
-            args.push(Box::new(like));
+            // Map each requested field to a FIXED column literal (never interpolate
+            // the raw string → no injection surface). None/empty/all-unknown ⇒ the
+            // legacy source+translation default.
+            let cols: Vec<&str> = match &filter.search_fields {
+                Some(fields) if !fields.is_empty() => fields
+                    .iter()
+                    .filter_map(|f| match f.as_str() {
+                        "source" => Some("source"),
+                        "translation" => Some("translation"),
+                        "context" => Some("context"),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let cols = if cols.is_empty() {
+                vec!["source", "translation"]
+            } else {
+                cols
+            };
+            let ors: Vec<String> = cols
+                .iter()
+                .map(|c| format!("{c} LIKE ? ESCAPE '\\'"))
+                .collect();
+            sql.push_str(" AND (");
+            sql.push_str(&ors.join(" OR "));
+            sql.push(')');
+            for _ in &cols {
+                args.push(Box::new(like.clone()));
+            }
         }
     }
     (sql, args)
@@ -1121,6 +1162,89 @@ mod tests {
             count_units(&conn, &UnitFilter { file: Some("A.json".into()), ..Default::default() }).unwrap(),
             100
         );
+    }
+
+    #[test]
+    fn search_fields_and_context_filter() {
+        // Three units where "Alice" appears in a different column each time, so a
+        // field-targeted search must be able to tell them apart.
+        let mut in_source = unit("A.json", "/p/1", "Alice draws her sword", Status::Untranslated);
+        in_source.context = Some("Narrator".into());
+
+        let mut in_trans = unit("A.json", "/p/2", "he swings", Status::Draft);
+        in_trans.context = Some("Bob".into());
+        in_trans.translation = Some("Alice parries".into());
+
+        let mut in_ctx = unit("A.json", "/p/3", "hello there", Status::Draft);
+        in_ctx.context = Some("Alice".into());
+
+        let conn = mem_db(&[in_source, in_trans, in_ctx]);
+        let count = |f: UnitFilter| count_units(&conn, &f).unwrap();
+        let fields = |v: &[&str]| Some(v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+        // Default (no search_fields) = legacy source OR translation → the source hit
+        // and the translation hit, but NOT the context-only hit.
+        assert_eq!(count(UnitFilter { search: Some("Alice".into()), ..Default::default() }), 2);
+        // Empty search_fields behaves like the default too.
+        assert_eq!(
+            count(UnitFilter { search: Some("Alice".into()), search_fields: fields(&[]), ..Default::default() }),
+            2
+        );
+        // Source only → excludes the translation-only hit.
+        assert_eq!(
+            count(UnitFilter { search: Some("Alice".into()), search_fields: fields(&["source"]), ..Default::default() }),
+            1
+        );
+        // Translation only → just the translation hit.
+        assert_eq!(
+            count(UnitFilter { search: Some("Alice".into()), search_fields: fields(&["translation"]), ..Default::default() }),
+            1
+        );
+        // Context only → just the speaker hit.
+        assert_eq!(
+            count(UnitFilter { search: Some("Alice".into()), search_fields: fields(&["context"]), ..Default::default() }),
+            1
+        );
+        // All three columns → every unit mentioning "Alice".
+        assert_eq!(
+            count(UnitFilter {
+                search: Some("Alice".into()),
+                search_fields: fields(&["source", "translation", "context"]),
+                ..Default::default()
+            }),
+            3
+        );
+        // An all-unknown field list falls back to the default rather than erroring.
+        assert_eq!(
+            count(UnitFilter { search: Some("Alice".into()), search_fields: fields(&["bogus"]), ..Default::default() }),
+            2
+        );
+
+        // Exact character filter → only that speaker's lines, regardless of text.
+        assert_eq!(count(UnitFilter { context: Some("Alice".into()), ..Default::default() }), 1);
+        assert_eq!(count(UnitFilter { context: Some("Bob".into()), ..Default::default() }), 1);
+        assert_eq!(count(UnitFilter { context: Some("Nobody".into()), ..Default::default() }), 0);
+        // Character filter AND a text query combine.
+        assert_eq!(
+            count(UnitFilter {
+                context: Some("Bob".into()),
+                search: Some("Alice".into()),
+                ..Default::default()
+            }),
+            1
+        );
+        assert_eq!(
+            count(UnitFilter {
+                context: Some("Alice".into()),
+                search: Some("zzz".into()),
+                ..Default::default()
+            }),
+            0
+        );
+
+        // count_units must always agree with list_units row count.
+        let f = UnitFilter { search: Some("Alice".into()), search_fields: fields(&["context"]), limit: Some(1000), ..Default::default() };
+        assert_eq!(count_units(&conn, &f).unwrap(), list_units(&conn, &f).unwrap().len() as i64);
     }
 
     #[test]

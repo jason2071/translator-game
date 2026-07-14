@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   api,
+  type Character,
   type FileCount,
   type ProjectInfo,
   type Stats,
@@ -22,6 +23,8 @@ interface UnitWindow {
 interface AppStore {
   project: ProjectInfo | null;
   files: FileCount[];
+  /** The cast (speaker → gender), for the sidebar character filter. */
+  characters: Character[];
   stats: Stats | null;
   /** Total units matching the current filter (the virtualizer's row count). */
   total: number;
@@ -80,6 +83,7 @@ const EMPTY_WINDOW: UnitWindow = { offset: 0, rows: [] };
 export const useStore = create<AppStore>((set, get) => ({
   project: null,
   files: [],
+  characters: [],
   stats: null,
   total: 0,
   window: EMPTY_WINDOW,
@@ -113,7 +117,7 @@ export const useStore = create<AppStore>((set, get) => ({
     await api.closeProject();
     useGlossarySuggest.getState().reset();
     useErrors.getState().reset();
-    set({ project: null, files: [], stats: null, total: 0, window: EMPTY_WINDOW });
+    set({ project: null, files: [], characters: [], stats: null, total: 0, window: EMPTY_WINDOW });
   },
 
   setLanguages: async (source, target) => {
@@ -165,10 +169,15 @@ export const useStore = create<AppStore>((set, get) => ({
     }
   },
 
-  // Full refresh (files + stats) — only after import / translate / apply-TM.
+  // Full refresh (files + cast + stats) — only after import / translate / apply-TM.
+  // The cast list rides here because it only changes on import/classify, like files.
   refreshMeta: async () => {
-    const [files, stats] = await Promise.all([api.listFiles(), api.getStats()]);
-    set({ files, stats });
+    const [files, stats, characters] = await Promise.all([
+      api.listFiles(),
+      api.getStats(),
+      api.charactersList().catch(() => [] as Character[]),
+    ]);
+    set({ files, stats, characters });
   },
 
   // Stats only — the file list can't change from an edit, so skip that query.

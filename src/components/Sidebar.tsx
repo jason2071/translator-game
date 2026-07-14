@@ -21,6 +21,7 @@ export function Sidebar({
   const project = useStore((s) => s.project)!;
   const stats = useStore((s) => s.stats);
   const files = useStore((s) => s.files);
+  const characters = useStore((s) => s.characters);
   const filter = useStore((s) => s.filter);
   const setFilter = useStore((s) => s.setFilter);
   const closeProject = useStore((s) => s.closeProject);
@@ -191,6 +192,25 @@ export function Sidebar({
             </button>
           ))}
         </div>
+
+        {characters.length > 0 && (
+          <>
+            <div className="sb-section-title">Character</div>
+            <select
+              className="sb-select"
+              aria-label="Filter by character"
+              value={filter.context ?? ""}
+              onChange={(e) => setFilter({ context: e.target.value || undefined })}
+            >
+              <option value="">All characters</option>
+              {characters.map((c) => (
+                <option key={c.name} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
 
         <div className="sb-section-title">Files</div>
         <div className="sb-list">

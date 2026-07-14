@@ -91,6 +91,10 @@ export interface UnitFilter {
   file?: string;
   status?: Status;
   search?: string;
+  /** Columns the `search` substring runs against. Omitted/empty ⇒ source + translation. */
+  searchFields?: ("source" | "translation" | "context")[];
+  /** Exact speaker/character filter — the sidebar cast dropdown. */
+  context?: string;
   untranslatedOnly?: boolean;
   limit?: number;
   offset?: number;

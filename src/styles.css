@@ -951,9 +951,87 @@ code {
   padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--border);
 }
-.searchbar input[type="search"] {
+.search-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
   flex: 1;
   max-width: 460px;
+}
+.search-input-wrap input {
+  flex: 1;
+  width: 100%;
+  padding-left: 1.9rem;
+  padding-right: 1.7rem;
+}
+.search-input-wrap .search-icon {
+  position: absolute;
+  left: 0.55rem;
+  color: var(--subtle);
+  pointer-events: none;
+}
+.search-clear {
+  position: absolute;
+  right: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.15rem;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.search-clear:hover {
+  color: var(--fg);
+  background: var(--accent-soft);
+}
+.field-toggle-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.field-in {
+  color: var(--subtle);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 0.15rem;
+}
+.field-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.field-toggle:hover:not([aria-disabled="true"]) {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+.field-toggle.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.field-toggle[aria-disabled="true"] {
+  cursor: default;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: spin 0.8s linear infinite;
 }
 .chk {
   display: inline-flex;
@@ -964,9 +1042,18 @@ code {
 }
 .shown {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   color: var(--muted);
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* The sidebar character filter — a compact select (cast can be hundreds). */
+.sb-select {
+  width: 100%;
+  font-size: var(--fs-sm);
 }
 
 .grid-head,
@@ -987,6 +1074,7 @@ code {
   flex: 1;
   overflow: auto;
   padding: 0 var(--sp-4);
+  transition: opacity 120ms;
 }
 .grid-scroll.loading {
   opacity: 0.55;

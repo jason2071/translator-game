@@ -62,14 +62,21 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
     translate({ filter: { status: "Failed" } });
   }
 
-  // Re-translate every unit matching the current search (overwrites them). Unlike
+  // Re-translate every unit matching the current view (overwrites them). Unlike
   // Run (which scopes to the selected file), this sends the whole active filter —
-  // search, status, untranslatedOnly — so it covers exactly the "N shown" matches.
+  // search, status, character (context), untranslatedOnly — so it covers exactly
+  // the "N shown" matches. A selected character re-translates just that actor.
   async function retranslateMatches() {
     const ok = await ask(
-      `Re-translate all ${total} unit(s) matching this search? ` +
-        `This overwrites their current translations.`,
-      { title: "Re-translate search matches?", kind: "warning" }
+      filter.context
+        ? `Re-translate all ${total} line(s) of "${filter.context}"? ` +
+            `This overwrites their current translations.`
+        : `Re-translate all ${total} unit(s) matching this search? ` +
+            `This overwrites their current translations.`,
+      {
+        title: filter.context ? "Re-translate this character?" : "Re-translate search matches?",
+        kind: "warning",
+      }
     );
     if (!ok) return;
     // The store's filter holds only search/file/status/untranslatedOnly (never
@@ -160,13 +167,20 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
             </button>
           )}
 
-          {filter.search && total > 0 && !running && (
+          {(filter.search || filter.context) && total > 0 && !running && (
             <button
               className="ghost tb-icon-btn"
               onClick={retranslateMatches}
-              title="Re-translate every unit matching the current search (overwrites their translations)"
+              title={
+                filter.context
+                  ? `Re-translate every line of "${filter.context}" (overwrites their translations)`
+                  : "Re-translate every unit matching the current search (overwrites their translations)"
+              }
             >
-              <Icon name="retry" size={14} /> Re-translate matches ({total})
+              <Icon name="retry" size={14} />{" "}
+              {filter.context
+                ? `Re-translate ${filter.context} (${total})`
+                : `Re-translate matches (${total})`}
             </button>
           )}
 
