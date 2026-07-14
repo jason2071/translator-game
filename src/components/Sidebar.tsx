@@ -1,6 +1,6 @@
 import { useState, useEffect, type CSSProperties } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api, type ExportResult, type Status } from "../ipc";
 import { useStore } from "../store";
 import { useTheme } from "../theme";
@@ -132,15 +132,46 @@ export function Sidebar({
 
   const allCount = files.reduce((a, f) => a + f.count, 0);
 
+  // Show the game folder name in full, with a leading … standing in for the (long,
+  // less useful) parent path — so the name is never clipped at its end.
+  const pathSegs = project.root.split(/[\\/]/).filter(Boolean);
+  const gameName = pathSegs[pathSegs.length - 1] ?? project.root;
+  const sep = project.root.includes("\\") ? "\\" : "/";
+  const shownPath = pathSegs.length > 1 ? `…${sep}${gameName}` : project.root;
+
+  // Open the game folder in the OS file manager, showing its contents. openPath
+  // opens the folder itself; if that command isn't available (an older build's
+  // capability), fall back to revealing the project's own `.rpgtl/` sidecar — since
+  // revealItemInDir opens the *parent* and selects the item, revealing a child of
+  // the root lands Explorer *inside* the game folder (a permission this app has
+  // always had, so it works without a rebuild).
+  function openFolder() {
+    openPath(project.root).catch(() =>
+      revealItemInDir(`${project.root}${sep}.rpgtl`).catch(() =>
+        revealItemInDir(project.root).catch(() => {})
+      )
+    );
+  }
+
   return (
     <aside className="sidebar">
       <div className="sb-top">
         <div className="sb-title">
           <span className="sb-name">{project.engineName}</span>
           <span className="sb-path" title={project.root}>
-            {project.root}
+            {shownPath}
           </span>
         </div>
+        {!collapsed && (
+          <button
+            className="iconbtn"
+            onClick={openFolder}
+            aria-label="Open game folder in Explorer"
+            title="Open game folder in Explorer"
+          >
+            <Icon name="folder" />
+          </button>
+        )}
         <button
           className="iconbtn"
           onClick={onToggleCollapse}

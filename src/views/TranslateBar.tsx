@@ -6,7 +6,7 @@ import { useSettings, PROVIDER_LABELS, PROVIDER_KINDS } from "../settings";
 import { SOURCE_LANGS, TARGET_LANGS } from "../langs";
 import { useTranslation } from "../translation";
 import TransProgress from "../components/TransProgress";
-import { Icon } from "../components/Icon";
+import { OverflowMenu, type MenuItem } from "../components/OverflowMenu";
 
 export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => void }) {
   const filter = useStore((s) => s.filter);
@@ -110,10 +110,57 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
 
   const failed = stats?.failed ?? 0;
 
+  // Secondary/contextual actions, collapsed into the ⋯ overflow menu so the
+  // toolbar's right side stays just Run + ⋯. Only the currently-relevant items
+  // appear; an empty list hides the menu entirely (see OverflowMenu).
+  const menuItems: MenuItem[] = [];
+  if ((filter.search || filter.context) && total > 0 && !running) {
+    menuItems.push({
+      key: "retranslate",
+      icon: "retry",
+      label: filter.context
+        ? `Re-translate ${filter.context} (${total})`
+        : `Re-translate matches (${total})`,
+      title: filter.context
+        ? `Re-translate every line of "${filter.context}" (overwrites their translations)`
+        : "Re-translate every unit matching the current search (overwrites their translations)",
+      onClick: retranslateMatches,
+    });
+  }
+  if ((filter.search || filter.context || filter.file) && total > 0 && !running) {
+    menuItems.push({
+      key: "copy-source",
+      icon: "copy",
+      label: "Copy source → translation",
+      title:
+        "Fill the untranslated/failed lines in this view with their source text, to hand-edit (keeps existing translations)",
+      onClick: fillSource,
+    });
+  }
+  if (failed > 0 && !running) {
+    menuItems.push({
+      key: "retry-failed",
+      icon: "retry",
+      label: `Retry failed (${failed})`,
+      title: "Re-translate every unit that failed a previous run",
+      onClick: retryFailed,
+    });
+  }
+  if (failed > 0) {
+    menuItems.push({
+      key: "errors",
+      icon: "warn",
+      label: `Errors (${failed})`,
+      title: "See which units failed and why",
+      onClick: onOpenErrors,
+    });
+  }
+
   return (
     <>
       <div className="toolbar">
-        {/* Left: static per-project config — language pair + AI provider. */}
+        {/* Left: Run configuration — language pair, AI provider, target scope,
+            and the overwrite option (everything that shapes what Run does). */}
         <div className="tb-config">
           <div className="lang-switch">
             <select
@@ -156,11 +203,7 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
               </option>
             ))}
           </select>
-        </div>
 
-        {/* Right: the Run and its options (scope + overwrite), then secondary
-            actions that only appear when relevant. */}
-        <div className="tb-actions">
           <span
             className="tb-scope"
             title="Run translates this — click a file (or 'All files') in the sidebar to change it"
@@ -177,9 +220,11 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
             />
             Overwrite existing
           </label>
+        </div>
 
-          <span className="tb-sep" />
-
+        {/* Right: the primary Run/Cancel action, plus a ⋯ overflow menu holding the
+            secondary actions that only apply in the current context. */}
+        <div className="tb-actions">
           {!running ? (
             <button className="primary tb-run" onClick={run}>
               Run
@@ -190,48 +235,7 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
             </button>
           )}
 
-          {(filter.search || filter.context) && total > 0 && !running && (
-            <button
-              className="ghost tb-icon-btn"
-              onClick={retranslateMatches}
-              title={
-                filter.context
-                  ? `Re-translate every line of "${filter.context}" (overwrites their translations)`
-                  : "Re-translate every unit matching the current search (overwrites their translations)"
-              }
-            >
-              <Icon name="retry" size={14} />{" "}
-              {filter.context
-                ? `Re-translate ${filter.context} (${total})`
-                : `Re-translate matches (${total})`}
-            </button>
-          )}
-
-          {(filter.search || filter.context || filter.file) && total > 0 && !running && (
-            <button
-              className="ghost tb-icon-btn"
-              onClick={fillSource}
-              title="Fill the untranslated/failed lines in this view with their source text, to hand-edit (keeps existing translations)"
-            >
-              <Icon name="copy" size={14} /> Copy source → translation
-            </button>
-          )}
-
-          {failed > 0 && !running && (
-            <button className="ghost tb-icon-btn" onClick={retryFailed} title="Re-translate every unit that failed a previous run">
-              <Icon name="retry" size={14} /> Retry failed ({failed})
-            </button>
-          )}
-
-          {failed > 0 && (
-            <button
-              className="ghost tb-icon-btn"
-              onClick={onOpenErrors}
-              title="See which units failed and why"
-            >
-              <Icon name="warn" size={14} /> Errors ({failed})
-            </button>
-          )}
+          <OverflowMenu items={menuItems} />
         </div>
       </div>
 

@@ -859,6 +859,51 @@ code {
   min-width: 6rem;
   justify-content: center;
 }
+/* ⋯ overflow menu: an icon trigger and a popover list of secondary actions,
+   keeping the toolbar's right side to just Run + ⋯. */
+.tb-menu {
+  position: relative;
+  display: inline-flex;
+}
+.tb-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0.5rem;
+}
+.tb-menu-list {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 30;
+  min-width: 15rem;
+  display: flex;
+  flex-direction: column;
+  padding: 0.3rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-2);
+}
+.tb-menu-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tb-menu-item:hover {
+  background: var(--panel2);
+  color: var(--fg);
+}
 /* Dedicated status strip under the toolbar: a full-width progress bar + summary,
    shown only while a Run/glossary job runs or a result/error is present. */
 .tb-status {
