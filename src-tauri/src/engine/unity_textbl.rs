@@ -176,7 +176,7 @@ impl GameEngine for UnityTextTableEngine {
     fn inject(&self, root: &Path, units: &[TransUnit], out_dir: &Path) -> Result<()> {
         let data = textbl_data_dir(root).ok_or_else(|| anyhow!("not a Unity TextTable game"))?;
         // Generic path (round-trip test + the distributable mod): keep bundles compact.
-        inject_bundles(&aa_dir(&data), &aa_dir(out_dir), units, false)?;
+        inject_bundles(&aa_dir(&data), &aa_dir(out_dir), units)?;
         inject_assets(&data, out_dir, units)
     }
 
@@ -272,11 +272,12 @@ fn bundle_files(dir: &Path) -> Vec<PathBuf> {
 /// every bundle CRC in `aa_write/catalog.json` (staged from `aa_read` if not already
 /// present) so Addressables accepts the modified bytes. A no-op when nothing is applied.
 ///
-/// `fast` writes the repacked bundle **uncompressed** instead of LZ4 — LZ4-compressing a
-/// multi-hundred-MB TextTable bundle dominates an export, and the game loads an
-/// uncompressed bundle fine (its CRC is zeroed). Used for the in-place iteration export
-/// (bigger local files, much faster); the distributable mod keeps it compact (`false`).
-fn inject_bundles(aa_read: &Path, aa_write: &Path, units: &[TransUnit], fast: bool) -> Result<()> {
+/// The repacked bundle is always LZ4-compressed (the helper's default). An
+/// uncompressed repack was tried once for export speed, but an Addressables bundle
+/// saved uncompressed balloons 2–4× (e.g. 0.9 GB → 3.5 GB); the game then hits an
+/// out-of-memory storm loading it on a scene change (and Addressables reports an
+/// empty bundle path) and freezes — so compression is mandatory, not optional.
+fn inject_bundles(aa_read: &Path, aa_write: &Path, units: &[TransUnit]) -> Result<()> {
     let patch = patch_for("tbl", units);
     if patch.is_empty() {
         return Ok(());
@@ -290,15 +291,12 @@ fn inject_bundles(aa_read: &Path, aa_write: &Path, units: &[TransUnit], fast: bo
     let temp_out = temp_out_dir();
     let _ = std::fs::remove_dir_all(&temp_out);
     std::fs::create_dir_all(&temp_out)?;
-    let mut args: Vec<OsString> = vec![
+    let args: Vec<OsString> = vec![
         "texttable-import".into(),
         aa_read.into(),
         patch_path.clone().into(),
         temp_out.clone().into(),
     ];
-    if fast {
-        args.push("fast".into());
-    }
     let run = run_sidecar(&args);
     let sw_out = sw64(aa_write);
     let done = (|| {
@@ -510,7 +508,7 @@ pub fn export_bundles(
     }
 
     // Inject from the snapshot (original base text) into the live game.
-    inject_bundles(&src_aa, &live_aa, units, true)?; // TextTable bundles + CRC (fast/uncompressed)
+    inject_bundles(&src_aa, &live_aa, units)?; // TextTable bundles (LZ4-compressed) + CRC
     inject_assets(&source_data, data_dir, units)?; // Dialogue System + I2 UI table `.assets`
 
     let files = edited_bundles.len() + edited_assets.len();
