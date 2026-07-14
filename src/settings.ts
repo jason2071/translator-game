@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import type { ProviderConfig, ProviderKind } from "./ipc";
 import { DEFAULT_MAX_LINE_WIDTH } from "./messageWidth";
+// The bundled Thai game-translation guidance, shipped as the default Extra prompt
+// (single source of truth: prompts/extra.txt, inlined at build via Vite's ?raw).
+import DEFAULT_EXTRA_PROMPT from "../prompts/extra.txt?raw";
 
 // Provider configs are non-secret and live in localStorage. API keys never do —
 // they go to the OS keychain via the set_key/has_key/delete_key commands.
@@ -107,7 +110,10 @@ export const useSettings = create<SettingsState>((set, get) => ({
   glossaryProvider: saved.glossaryProvider ?? saved.active ?? "openai",
   providers: migrateProviders({ ...DEFAULTS, ...(saved.providers ?? {}) }),
   tone: saved.tone ?? "casual",
-  systemPrompt: saved.systemPrompt ?? "",
+  // Seed the bundled default when the Extra prompt is unset/blank (first run, or a
+  // returning user who never wrote one — older builds persisted it as ""). A user
+  // who wants their own text just overwrites it; clearing it re-shows the default.
+  systemPrompt: saved.systemPrompt?.trim() ? saved.systemPrompt : DEFAULT_EXTRA_PROMPT,
   batchSize: saved.batchSize ?? 40,
   rpm: saved.rpm ?? 0,
   thinking: saved.thinking ?? false,
