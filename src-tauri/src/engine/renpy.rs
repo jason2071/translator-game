@@ -68,11 +68,15 @@ impl GameEngine for RenpyEngine {
         // compiled `.rpyc`), so the normal line-based flow below can read them.
         ensure_unpacked(&dir)?;
         let mut rpys = collect_rpy(&dir);
-        // Compiled-only game: the archives / loose files held only `.rpyc`, no source
-        // `.rpy`. Try to auto-decompile in place (the game ships its own Python +
-        // Ren'Py runtime, which is all unrpyc needs) before giving up.
+        // Compiled scripts still need decompiling when either no `.rpy` were
+        // recoverable at all (a fully compiled-only game) OR the game ships *some*
+        // loose `.rpy` (e.g. a `splash.rpy`) yet keeps the bulk of its story as
+        // `.rpyc` packed in a `.rpa` — a single loose script must not mask hundreds
+        // of undecompiled ones. The game ships its own Python + Ren'Py runtime, all
+        // unrpyc needs. `needs_decompile` gates this so a fully-source game (and any
+        // re-import once decompiled) skips the work and stays idempotent.
         let mut decompile_hint = None;
-        if rpys.is_empty() && is_renpy_game_dir(&dir) {
+        if is_renpy_game_dir(&dir) && (rpys.is_empty() || needs_decompile(&dir)) {
             decompile_hint = ensure_decompiled(&dir, root)?;
             rpys = collect_rpy(&dir); // re-scan for the `.rpy` unrpyc just wrote
         }
@@ -238,6 +242,51 @@ fn ensure_unpacked(dir: &Path) -> Result<usize> {
         }
     }
     Ok(total)
+}
+
+/// Whether the game still has compiled scripts (`.rpyc`) — loose on disk or packed in
+/// a `.rpa` — with no decompiled `.rpy` sibling yet. A game can ship a few loose
+/// `.rpy` (e.g. `splash.rpy`) while keeping the bulk of its story as `.rpyc` inside
+/// `src.rpa`, so the presence of *some* `.rpy` doesn't mean the source is complete.
+/// [`extract`] uses this to decide whether [`ensure_decompiled`] must still run even
+/// when a loose `.rpy` is already present. Cheap: loose files are a directory walk,
+/// archives are read index-only (no bytes streamed) and short-circuit on the first
+/// undecompiled entry.
+fn needs_decompile(dir: &Path) -> bool {
+    // A loose `.rpyc` whose `.rpy` sibling is missing.
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                // Skip `tl/` — its `.rpyc` are translations, not game source.
+                if p.file_name().and_then(|n| n.to_str()) != Some("tl") {
+                    stack.push(p);
+                }
+            } else if p.extension().and_then(|x| x.to_str()) == Some("rpyc")
+                && !p.with_extension("rpy").exists()
+            {
+                return true;
+            }
+        }
+    }
+    // A `.rpyc` packed in a `.rpa` that hasn't been unpacked+decompiled to a `.rpy`.
+    for archive in archives_in(dir) {
+        let Ok(names) = rpa::list_rpyc(&archive) else { continue };
+        for name in names {
+            // archive-relative `foo/bar.rpyc` → the on-disk `.rpy` it decompiles to.
+            let rpy_rel = format!("{}.rpy", &name[..name.len() - ".rpyc".len()]);
+            let mut rpy = dir.to_path_buf();
+            for seg in rpy_rel.split('/') {
+                rpy.push(seg);
+            }
+            if !rpy.exists() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Best-effort auto-decompile of a compiled-only game: turn its `.rpyc` into source
@@ -1787,6 +1836,29 @@ label start:
         // actionable error rather than trying to spawn nothing.
         let empty = tempfile::tempdir().unwrap();
         assert!(find_bundled_python(empty.path()).is_none());
+    }
+
+    #[test]
+    fn needs_decompile_flags_loose_rpyc_without_source() {
+        // Regression (Summertime Saga): a game ships a loose `splash.rpy` yet keeps
+        // the bulk of its story as `.rpyc`, so gating decompile on "no .rpy at all"
+        // left hundreds of scripts unread. needs_decompile must fire on a `.rpyc`
+        // that has no `.rpy` sibling, even when other `.rpy` are present.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("splash.rpy"), b"\"hi\"").unwrap(); // a loose source
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/story.rpyc"), b"x").unwrap(); // compiled, no source
+        assert!(needs_decompile(dir), "undecompiled .rpyc must be detected");
+
+        // Once its `.rpy` exists, there's nothing left to decompile → idempotent.
+        std::fs::write(dir.join("src/story.rpy"), b"\"hi\"").unwrap();
+        assert!(!needs_decompile(dir));
+
+        // `.rpyc` under `tl/` are translations, not game source → ignored.
+        std::fs::create_dir_all(dir.join("tl/fr")).unwrap();
+        std::fs::write(dir.join("tl/fr/story.rpyc"), b"x").unwrap();
+        assert!(!needs_decompile(dir));
     }
 
     #[test]

@@ -46,6 +46,16 @@ pub fn list_rpy(archive: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Every compiled `.rpyc` path in `archive` (read-only — index only). Used to tell
+/// whether a game still keeps source packed as bytecode that hasn't been decompiled
+/// to a `.rpy` on disk yet (see `renpy::needs_decompile`).
+pub fn list_rpyc(archive: &Path) -> Result<Vec<String>> {
+    Ok(read_index(archive)?
+        .into_keys()
+        .filter(|name| is_rpyc_name(name))
+        .collect())
+}
+
 /// Extract every `.rpy` in `archive` into `out_dir`, re-creating the archive's
 /// internal directory structure. Existing files are left untouched (so a partial
 /// prior run or a hand-edited script is never clobbered). Returns how many files
