@@ -1,26 +1,41 @@
 import { useEffect, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { checkForUpdate, type UpdateInfo } from "../update";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { Icon } from "./Icon";
 
-// Auto-checks GitHub for a newer published release on startup. If one exists, shows a
-// banner linking to its download page. In dev / offline the check just fails and is
-// ignored. (No signed updater manifest needed — a plain Releases-API check.)
+// Auto-checks for a newer signed release on startup. If one exists, shows a banner;
+// installing downloads only the update, applies it, and relaunches — no manual
+// re-download. In dev / offline the check just fails and is ignored.
 export function UpdateBanner() {
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [update, setUpdate] = useState<Update | null>(null);
+  const [busy, setBusy] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    checkForUpdate()
+    check()
       .then((u) => {
-        if (u) setUpdate(u);
+        if (u?.available) setUpdate(u);
       })
       .catch(() => {
-        /* offline or API error — ignore */
+        /* no updater manifest (dev) or offline — ignore */
       });
   }, []);
 
   if (!update || dismissed) return null;
+
+  async function install() {
+    if (!update) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await update.downloadAndInstall();
+      await relaunch();
+    } catch (e) {
+      setErr(String(e));
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="update-banner">
@@ -28,8 +43,9 @@ export function UpdateBanner() {
       <span className="msg">
         Update available — <b>v{update.version}</b>
       </span>
-      <button className="primary" onClick={() => openUrl(update.url).catch(() => {})}>
-        Open download page
+      {err && <span className="error">{err}</span>}
+      <button className="primary" onClick={install} disabled={busy}>
+        {busy ? "Installing…" : "Install & restart"}
       </button>
       <button
         className="iconbtn"

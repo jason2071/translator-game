@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
-import { checkForUpdate } from "../update";
 import { api, type ProviderKind } from "../ipc";
 import { PROVIDER_LABELS, PROVIDER_KINDS, useSettings } from "../settings";
 import { Icon } from "../components/Icon";
@@ -69,12 +69,13 @@ export default function SettingsView() {
   }
 
   // Updates: the app also auto-checks on startup (see UpdateBanner); this is a
-  // manual re-check the user can trigger, e.g. right after a release. Uses the
-  // GitHub Releases API and opens the download page (no auto-install).
+  // manual re-check the user can trigger, e.g. right after a release. Downloads and
+  // installs the signed update in place, then relaunches.
   const [version, setVersion] = useState("");
   const [upState, setUpState] = useState<"idle" | "checking" | "latest" | "avail" | "error">("idle");
   const [upMsg, setUpMsg] = useState("");
-  const [upUrl, setUpUrl] = useState("");
+  const [upAvail, setUpAvail] = useState<Update | null>(null);
+  const [upInstalling, setUpInstalling] = useState(false);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
@@ -83,13 +84,13 @@ export default function SettingsView() {
   async function checkUpdate() {
     setUpState("checking");
     setUpMsg("");
-    setUpUrl("");
+    setUpAvail(null);
     try {
-      const info = await checkForUpdate();
-      if (info) {
-        setUpUrl(info.url);
+      const u = await check();
+      if (u?.available) {
+        setUpAvail(u);
         setUpState("avail");
-        setUpMsg(`v${info.version} available`);
+        setUpMsg(`v${u.version} available`);
       } else {
         setUpState("latest");
         setUpMsg("You're on the latest version.");
@@ -97,6 +98,19 @@ export default function SettingsView() {
     } catch (e) {
       setUpState("error");
       setUpMsg(`Couldn't check: ${String(e)}`);
+    }
+  }
+
+  async function installUpdate() {
+    if (!upAvail) return;
+    setUpInstalling(true);
+    try {
+      await upAvail.downloadAndInstall();
+      await relaunch();
+    } catch (e) {
+      setUpState("error");
+      setUpMsg(`Install failed: ${String(e)}`);
+      setUpInstalling(false);
     }
   }
 
@@ -285,9 +299,9 @@ export default function SettingsView() {
             {upMsg}
           </span>
         )}
-        {upState === "avail" && upUrl && (
-          <button className="primary" onClick={() => openUrl(upUrl).catch(() => {})}>
-            Open download page
+        {upState === "avail" && upAvail && (
+          <button className="primary" onClick={installUpdate} disabled={upInstalling}>
+            {upInstalling ? "Installing…" : "Install & restart"}
           </button>
         )}
       </div>

@@ -184,46 +184,6 @@ fn copy_source_to_translation(
     })
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LatestRelease {
-    /// The release version without a leading `v` (e.g. "0.12.13").
-    version: String,
-    /// The release's GitHub page, to open for the download.
-    url: String,
-}
-
-/// The latest published GitHub release. Used by the in-app "Check for updates" button
-/// and the startup banner. It follows the `releases/latest` redirect on **github.com**
-/// (a plain web page → the `…/releases/tag/<v>` URL) rather than hitting the JSON
-/// **api.github.com**, whose unauthenticated 60-req/hour limit would 403 on repeated
-/// checks. The frontend compares `version` to the app's own and, if newer, opens `url`.
-#[tauri::command]
-async fn latest_release(state: tauri::State<'_, AppState>) -> Result<LatestRelease, String> {
-    let url = "https://github.com/jason2071/translator-game/releases/latest";
-    // The shared client follows redirects, so `resp.url()` is the resolved tag page.
-    let resp = state
-        .http
-        .get(url)
-        .header("User-Agent", "rpgmaker-translator")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let final_url = resp.url().as_str().to_string();
-    // `…/releases/tag/v0.12.14` → "0.12.14"; no `/tag/` means there are no releases.
-    let Some(tag) = final_url.rsplit_once("/tag/").map(|(_, t)| t) else {
-        return Err("no published release found".into());
-    };
-    let version = tag.trim_start_matches('v').to_string();
-    if version.is_empty() {
-        return Err("could not read the latest release tag".into());
-    }
-    Ok(LatestRelease {
-        version,
-        url: final_url,
-    })
-}
-
 #[tauri::command]
 fn update_unit(
     id: i64,
@@ -1426,7 +1386,6 @@ pub fn run() {
             list_units,
             count_units,
             copy_source_to_translation,
-            latest_release,
             update_unit,
             get_stats,
             list_files,
