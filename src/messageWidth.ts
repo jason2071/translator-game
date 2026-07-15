@@ -11,8 +11,10 @@
 // Inline codes draw nothing, so they are stripped before counting width. Each
 // engine has its own grammar; masked ⟦n⟧ sentinels are stripped for all.
 // RPGMaker: \C[2], \V[7], \FS[24], \N[1], \., \!, \\ … plus VisuMZ/Yanfly
-// angle-bracket codes (<center>, <Show Switch: 24>, font tags). Mirrors mask_mvmz.
-const CODE_RE = /<\/?[A-Za-z][^>\n]*>|\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|%\d+|⟦\d+⟧/g;
+// angle-bracket codes (<center>, <Show Switch: 24>, font tags) and MPP_ChoiceEX
+// en(cond)/if(cond) conditional-choice markers (stripped before display).
+// Mirrors mask_mvmz.
+const CODE_RE = /<\/?[A-Za-z][^>\n]*>|\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|%\d+|\b(?:en|if)\([^)\n]*\)|⟦\d+⟧/g;
 // Ren'Py: [interpolation], {text tags}, backslash escapes.
 const RENPY_CODE_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}|⟦\d+⟧/g;
 // TyranoScript / KiriKiri KAG: [tags], backslash escapes.

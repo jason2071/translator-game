@@ -72,6 +72,19 @@ fn mask_inner(input: &str, mask_angle: bool) -> Masked {
                 continue;
             }
         }
+        // MPP_ChoiceEX conditional-choice markers `en(…)` / `if(…)` (MV/MZ only).
+        // At a word boundary so `en(`/`if(` inside a word never matches; see
+        // [`mpp_cond_len`].
+        if mask_angle
+            && (bytes[i] == b'e' || bytes[i] == b'i')
+            && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
+        {
+            if let Some(len) = mpp_cond_len(&input[i..]) {
+                push_token(&mut text, &mut tokens, &input[i..i + len]);
+                i += len;
+                continue;
+            }
+        }
         // RPGMaker message parameters `%1`, `%2`, … — printf-style substitutions
         // in System terms and skill/state messages (e.g. "%1 gained %2 %3!"). Mask
         // so a model can't drop or renumber them; a bare `%` (as in "50% off") is
@@ -441,6 +454,34 @@ fn vmz_angle_len(s: &str) -> Option<usize> {
     while k < b.len() {
         match b[k] {
             b'>' => return Some(k + 1),
+            b'\n' | b'\r' => return None,
+            _ => k += 1,
+        }
+    }
+    None
+}
+
+/// Length of an MPP_ChoiceEX conditional-choice marker at `s[0]`, or `None`.
+///
+/// The MPP_ChoiceEX plugin lets a choice label carry an inline switch/variable
+/// condition that it strips before display: `if(cond)` shows the choice only
+/// while `cond` holds, `en(cond)` enables (vs. greys-out) it (e.g.
+/// `"Ban him en(v[2]>=70)"`). The condition is short JS (`v[2]>=40`, `s[1]`,
+/// `!s[2]`) with no nested `(`. Unmasked, a model translates or drops the
+/// keyword, so the plugin can't find the marker and the raw `(v[2]>=40)` leaks
+/// into the on-screen choice. We mask the whole `kw(cond)` span so it round-trips
+/// verbatim. The caller guarantees a word boundary before `s` so `en(`/`if(`
+/// inside a word (`hidden(`, `sniff(`) isn't matched.
+fn mpp_cond_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    if !(s.starts_with("en(") || s.starts_with("if(")) {
+        return None;
+    }
+    // Consume to the first `)`; a marker never spans a line break.
+    let mut k = 3;
+    while k < b.len() {
+        match b[k] {
+            b')' => return Some(k + 1),
             b'\n' | b'\r' => return None,
             _ => k += 1,
         }
@@ -1110,6 +1151,26 @@ mod tests {
         let bad = "<แสดงสวิตช์: 24><center>\\FS[30]อัลบั้ม";
         assert!(codes_match("rpgmaker-mvmz", src, good));
         assert!(!codes_match("rpgmaker-mvmz", src, bad));
+    }
+
+    #[test]
+    fn mvmz_masks_mpp_choiceex_conditions() {
+        // MPP_ChoiceEX `en(cond)`/`if(cond)` trail a choice label; the plugin strips
+        // them, so they must round-trip verbatim while the label stays translatable.
+        let src = "Ban him en(v[2]>=70)";
+        let m = mask_for("rpgmaker-mvmz", src);
+        assert_eq!(m.tokens, vec!["en(v[2]>=70)"]);
+        assert_eq!(strip_codes("rpgmaker-mvmz", src), "Ban him ");
+        // `if(...)` too, and the marker survives round-trip identity.
+        let src = "Secret path if(s[1])";
+        let m = mask_for("rpgmaker-mvmz", src);
+        assert_eq!(m.tokens, vec!["if(s[1])"]);
+        assert_eq!(restore(&m.text.replace("Secret path", "ทางลับ"), &m.tokens).unwrap(), "ทางลับ if(s[1])");
+        // Word-internal `en(`/`if(` (prose) must NOT be masked.
+        assert!(mask_for("rpgmaker-mvmz", "The garden(v) is nice").is_plain());
+        assert!(mask_for("rpgmaker-mvmz", "A sniff(x) sound").is_plain());
+        // The stock (non-mvmz) grammar leaves the marker as prose.
+        assert!(mask("Ban him en(v[2]>=70)").is_plain());
     }
 
     #[test]
