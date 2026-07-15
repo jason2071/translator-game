@@ -1562,6 +1562,11 @@ fn export_tl_from_source(
                     return Err(anyhow!("stale pointer {} in {} — re-extract needed", u.pointer, rel));
                 }
                 let tr = u.translation.clone().unwrap_or_default();
+                // Double literal `%` (→ `%%`) before quoting: Ren'Py runs a say/`new`
+                // string through `%`-substitution, so a bare `%` (e.g. "50%") followed
+                // by a letter crashes at runtime. `fill_tl` does the same for the
+                // non-source tl path.
+                let tr = renpy_tl::escape_percent(&tr);
                 bytes.splice(start..start + len, renpy_tl::quote_unicode(&tr).into_bytes());
             }
         }
@@ -1888,6 +1893,33 @@ mod tests {
         assert!(!thai.contains("translate english"), "no source tag left");
         // The source tree is never modified (idempotent re-export).
         assert_eq!(std::fs::read_to_string(ten.join("script.rpy")).unwrap(), src);
+    }
+
+    #[test]
+    fn export_tl_from_source_escapes_literal_percent() {
+        use crate::model::Status;
+        // A translation with a literal `%` must be written as `%%`: Ren'Py runs a say
+        // string through `%`-substitution, so a bare `%` before a letter crashes at
+        // runtime ("unsupported format character"). Regression: the tl-source splice
+        // path used to skip the escaping that `fill_tl` applies.
+        let tmp = tempfile::tempdir().unwrap();
+        let game = tmp.path().join("game");
+        let ten = game.join("tl").join("english");
+        std::fs::create_dir_all(&ten).unwrap();
+        let src = "translate english a1:\n    e \"Discount\"\n";
+        std::fs::write(ten.join("script.rpy"), src).unwrap();
+
+        let mut units = Vec::new();
+        extract_from_tl("tl/english/script.rpy", "english", src, &mut units);
+        for u in &mut units {
+            u.translation = Some("ลด 50% วันนี้".to_string());
+            u.status = Status::Translated;
+        }
+        export_tl_from_source(&game, "english", &units, "Thai").unwrap();
+
+        let thai = std::fs::read_to_string(game.join("tl").join("thai").join("script.rpy")).unwrap();
+        assert!(thai.contains("50%%"), "literal percent doubled: {thai}");
+        assert!(!thai.contains("50% "), "no bare `% ` left that Ren'Py would misread");
     }
 
     #[test]

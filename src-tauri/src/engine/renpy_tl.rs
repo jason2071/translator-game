@@ -301,7 +301,10 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
 /// produced from a full-width `％` — is read as a format spec and crashes at runtime
 /// (`unsupported format character` when a Thai letter follows). A literal percent must
 /// be `%%`. Idempotent: an already-escaped `%%` stays `%%`.
-fn escape_percent(s: &str) -> String {
+///
+/// `pub(super)` so the **tl-source** splice path ([`super::renpy::export_tl_from_source`])
+/// applies the same escaping as [`fill_tl`] — both write into a Ren'Py say/`new` string.
+pub(super) fn escape_percent(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars().peekable();
     while let Some(c) = it.next() {
