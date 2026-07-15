@@ -165,8 +165,9 @@ fn any_locale(loc: &Path) -> bool {
     })
 }
 
-/// The locale we translate *from*: prefer `english`, else the first source locale
-/// present, else the first locale folder alphabetically. Returns (name, path).
+/// The locale we translate *from*, by preference **English > Japanese > Chinese**
+/// (folder name), then any other known source locale ([`SOURCE_LOCALES`]), then the
+/// first folder alphabetically. Returns (name, path).
 fn source_locale(loc: &Path) -> Option<(String, PathBuf)> {
     let mut locales: Vec<(String, PathBuf)> = std::fs::read_dir(loc)
         .ok()?
@@ -178,16 +179,18 @@ fn source_locale(loc: &Path) -> Option<(String, PathBuf)> {
             Some((name, p))
         })
         .collect();
-    locales.sort_by(|a, b| a.0.cmp(&b.0));
-    if let Some(hit) = locales.iter().find(|(n, _)| n.eq_ignore_ascii_case("english")) {
-        return Some(hit.clone());
-    }
-    if let Some(hit) = locales
-        .iter()
-        .find(|(n, _)| SOURCE_LOCALES.iter().any(|s| n.eq_ignore_ascii_case(s)))
-    {
-        return Some(hit.clone());
-    }
+    // Rank: en(0) > ja(1) > zh(2) > a known source locale (100) > everything else,
+    // ties broken by name so the pick is deterministic.
+    locales.sort_by_key(|(name, _)| {
+        let rank = super::source_lang_rank(name).map(u16::from).unwrap_or_else(|| {
+            if SOURCE_LOCALES.iter().any(|s| name.eq_ignore_ascii_case(s)) {
+                100
+            } else {
+                200
+            }
+        });
+        (rank, name.to_ascii_lowercase())
+    });
     locales.into_iter().next()
 }
 

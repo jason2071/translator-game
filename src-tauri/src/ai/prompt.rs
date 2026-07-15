@@ -15,7 +15,7 @@ pub fn build_messages(req: &BatchReq) -> (String, String) {
     let src = if req.source_lang.trim().eq_ignore_ascii_case("auto")
         || req.source_lang.trim().is_empty()
     {
-        "the source language (auto-detect it, commonly Japanese or English)".to_string()
+        "the source language (auto-detect it, commonly English, Japanese, or Chinese)".to_string()
     } else {
         format!("{} text", req.source_lang)
     };
@@ -168,7 +168,7 @@ pub struct MinedTerm {
 /// user turn is the raw sampled corpus.
 pub fn build_glossary_mining(source_lang: &str, target_lang: &str, corpus: &str) -> (String, String) {
     let src = if source_lang.trim().eq_ignore_ascii_case("auto") || source_lang.trim().is_empty() {
-        "the source language (auto-detect it, commonly Japanese or English)".to_string()
+        "the source language (auto-detect it, commonly English, Japanese, or Chinese)".to_string()
     } else {
         format!("{source_lang} text")
     };
@@ -382,7 +382,7 @@ pub fn parse_gender_classify(text: &str) -> Vec<(String, String)> {
 /// relationships, tone, and world rules a translator needs for consistency.
 pub fn build_context_prompt(source_lang: &str, corpus: &str) -> (String, String) {
     let src = if source_lang.trim().eq_ignore_ascii_case("auto") || source_lang.trim().is_empty() {
-        "the source language (auto-detect it, commonly Japanese or English)".to_string()
+        "the source language (auto-detect it, commonly English, Japanese, or Chinese)".to_string()
     } else {
         format!("{source_lang} text")
     };

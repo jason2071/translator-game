@@ -346,18 +346,28 @@ fn extract_csv(file: &str, content: &str, out: &mut Vec<TransUnit>) {
     let records = parse_csv(content);
     let mut iter = records.iter();
     let Some(header) = iter.next() else { return };
-    // The first locale column (index 1) is what we translate in place.
-    let locale = header
-        .get(1)
-        .map(|f| content[f.start..f.start + f.len].trim())
-        .unwrap_or("");
+    let hdr = |i: usize| {
+        header
+            .get(i)
+            .map(|f| content[f.start..f.start + f.len].trim())
+            .unwrap_or("")
+    };
+    // Choose the source locale column: prefer English > Japanese > Chinese by the
+    // header name; otherwise fall back to the first locale column (index 1). Column 0
+    // is the key; other locale columns are left untouched.
+    let col = (1..header.len())
+        .filter_map(|i| super::source_lang_rank(hdr(i)).map(|r| (r, i)))
+        .min()
+        .map(|(_, i)| i)
+        .unwrap_or(1);
+    let locale = hdr(col);
 
     for record in iter {
-        // Need a key column and a value column.
-        if record.len() < 2 {
+        // Need a key column and the chosen value column.
+        if record.len() <= col {
             continue;
         }
-        let value = &record[1];
+        let value = &record[col];
         if value.len == 0 {
             continue;
         }
@@ -444,6 +454,24 @@ msgstr \"\"
         assert_eq!(greet.context.as_deref(), Some("GREET \u{b7} en"));
         let (s, l) = parse_pointer(&greet.pointer).unwrap();
         assert_eq!(&src[s..s + l], "Hello, there");
+    }
+
+    #[test]
+    fn csv_prefers_english_over_japanese_column() {
+        // Columns out of preference order: English must win over Japanese, and the
+        // Japanese/key columns are left untouched.
+        let src = "keys,ja,en\nGREET,こんにちは,Hello\nBYE,さようなら,Goodbye\n";
+        let mut units = Vec::new();
+        extract_csv("dialog.csv", src, &mut units);
+        let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+        assert!(texts.contains(&"Hello") && texts.contains(&"Goodbye"));
+        assert!(!texts.contains(&"こんにちは") && !texts.contains(&"さようなら"));
+        let greet = units.iter().find(|u| u.source == "Hello").unwrap();
+        assert_eq!(greet.context.as_deref(), Some("GREET \u{b7} en"));
+        // With no en/ja/zh at all, it falls back to the first locale column (index 1).
+        let mut u2 = Vec::new();
+        extract_csv("x.csv", "keys,ko,ru\nA,안녕,привет\n", &mut u2);
+        assert_eq!(u2[0].source, "안녕");
     }
 
     #[test]

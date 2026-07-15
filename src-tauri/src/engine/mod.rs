@@ -157,3 +157,46 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
 pub fn detect(root: &Path) -> Option<Box<dyn GameEngine>> {
     engines().into_iter().find(|e| e.detect(root))
 }
+
+/// Rank a locale label by the app's source-language preference **English > Japanese >
+/// Chinese** (0 = most preferred). Recognizes common code and full-name forms
+/// (`en`/`english`/`en-US`, `ja`/`jp`/`japanese`, `zh`/`chinese`/`zh-CN`/`zh-TW`, …).
+/// Returns `None` for any other language, so callers rank the preferred three ahead of
+/// the rest and ignore the others. Multi-locale engines (Godot translation CSV, Unity
+/// CSV-localization) use this to pick which source language to translate *from* when a
+/// game ships several.
+pub fn source_lang_rank(label: &str) -> Option<u8> {
+    let l = label.trim().to_ascii_lowercase();
+    // Drop a region/script suffix: `en-US` → `en`, `zh_CN` → `zh`.
+    let head = l.split(['-', '_']).next().unwrap_or(&l);
+    match head {
+        "en" | "eng" | "english" => Some(0),
+        "ja" | "jp" | "jpn" | "japanese" => Some(1),
+        "zh" | "cn" | "chinese" | "chs" | "cht" | "hans" | "hant" => Some(2),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod source_lang_tests {
+    use super::source_lang_rank;
+
+    #[test]
+    fn ranks_english_japanese_chinese_ahead_of_others() {
+        assert_eq!(source_lang_rank("en"), Some(0));
+        assert_eq!(source_lang_rank("English"), Some(0));
+        assert_eq!(source_lang_rank("en-US"), Some(0));
+        assert_eq!(source_lang_rank("ja"), Some(1));
+        assert_eq!(source_lang_rank("japanese"), Some(1));
+        assert_eq!(source_lang_rank("zh"), Some(2));
+        assert_eq!(source_lang_rank("zh-TW"), Some(2));
+        assert_eq!(source_lang_rank("chinese"), Some(2));
+        // Anything else is unranked (ignored / ranked last).
+        assert_eq!(source_lang_rank("ko"), None);
+        assert_eq!(source_lang_rank("russian"), None);
+        assert_eq!(source_lang_rank(""), None);
+        // English beats Japanese beats Chinese.
+        assert!(source_lang_rank("en") < source_lang_rank("ja"));
+        assert!(source_lang_rank("ja") < source_lang_rank("zh"));
+    }
+}
