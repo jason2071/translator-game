@@ -80,6 +80,23 @@ impl GameEngine for RenpyEngine {
             decompile_hint = ensure_decompiled(&dir, root)?;
             rpys = collect_rpy(&dir); // re-scan for the `.rpy` unrpyc just wrote
         }
+        // Prefer translating from an existing `tl/<en|ja|zh>/` tree when the game ships
+        // one: that text is usually English (easier + higher-quality to translate from
+        // than the base language, which may be Russian/etc.) and it already carries the
+        // game's real translation ids, so export just retags it to the target locale.
+        // Falls through to the base scripts when there is no such tree.
+        if let Some((src_lang, src_dir)) = preferred_tl_source(&dir) {
+            let mut units = Vec::new();
+            for path in rpy_files_under(&src_dir) {
+                let rel = rel_path(&dir, &path);
+                let content =
+                    std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
+                extract_from_tl(&rel, &src_lang, &content, &mut units);
+            }
+            if !units.is_empty() {
+                return Ok(units);
+            }
+        }
         // Still nothing translatable. Fail the import with an actionable message
         // instead of silently producing an empty project (or, worse, importing the
         // SDK's renpy/common UI strings as if they were the game). If auto-decompile
@@ -725,6 +742,156 @@ fn gettext_spans(line: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// Every `.rpy` at or under `dir` (a plain recursive walk — unlike [`collect_rpy`],
+/// which skips `tl/`, this is used *on* a `tl/<lang>/` subtree).
+fn rpy_files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().and_then(|x| x.to_str()) == Some("rpy") {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The best `tl/<lang>/` folder to translate *from*, by the source-language
+/// preference **English > Japanese > Chinese** — a game that ships one of those
+/// localizations is easier to translate from than its (possibly Russian/…) base.
+/// Only en/ja/zh folders holding loose `.rpy` qualify; every other shipped language
+/// is ignored. Returns (folder name, path), or None (→ base-script extraction).
+fn preferred_tl_source(dir: &Path) -> Option<(String, PathBuf)> {
+    let tl = dir.join("tl");
+    let mut cands: Vec<(u8, String, PathBuf)> = std::fs::read_dir(&tl)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .filter_map(|p| {
+            let name = p.file_name()?.to_str()?.to_string();
+            let rank = super::source_lang_rank(&name)?; // only en/ja/zh
+            if rpy_files_under(&p).is_empty() {
+                return None; // needs loose .rpy to read from
+            }
+            Some((rank, name, p))
+        })
+        .collect();
+    cands.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    cands.into_iter().next().map(|(_, name, p)| (name, p))
+}
+
+/// Which part of a `translate <lang> …:` block we're inside.
+enum TlBlock {
+    /// A `translate <lang> <id>:` dialogue block — its say line is translatable.
+    Dialogue,
+    /// A `translate <lang> strings:` block — each `new "…"` is translatable.
+    Strings,
+    /// A `translate <lang> python:` / `style …:` block, or none — no text.
+    Other,
+}
+
+/// Extract the translatable **English (etc.) source** strings from one `tl/<src>/`
+/// file: the say line inside each `translate <src> <id>:` block, and each `new "…"`
+/// inside a `translate <src> strings:` block. Byte-span pointers into this file, so
+/// export splices the translation back in and retags the block to the target locale.
+/// The commented original (`# c "…"`) and the `old "…"` key are left untouched.
+fn extract_from_tl(file: &str, src_lang: &str, content: &str, out: &mut Vec<TransUnit>) {
+    let header = format!("translate {src_lang} ");
+    let mut block = TlBlock::Other;
+    let mut offset = 0usize;
+    for line in content.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
+        let raw = line.strip_suffix('\n').unwrap_or(line);
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        let trimmed = raw.trim_start();
+        let indent = raw.len() - trimmed.len();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // A block header sits at column 0; anything else at column 0 ends the block.
+        if indent == 0 {
+            block = match trimmed.strip_prefix(header.as_str()).map(str::trim) {
+                Some(rest) if rest.starts_with("strings") => TlBlock::Strings,
+                Some(rest) if rest.starts_with("python") || rest.starts_with("style") => {
+                    TlBlock::Other
+                }
+                Some(_) => TlBlock::Dialogue, // translate <src> <id>:
+                None => TlBlock::Other,
+            };
+            continue;
+        }
+
+        match block {
+            TlBlock::Strings if trimmed.starts_with("new ") => {
+                if let Some((rel, len, _)) = first_string(raw) {
+                    if len > 0 {
+                        let abs = line_start + rel;
+                        out.push(TransUnit::new(
+                            file,
+                            format!("{abs}:{len}"),
+                            UnitKind::Term,
+                            &raw[rel..rel + len],
+                        ));
+                    }
+                }
+            }
+            TlBlock::Dialogue => {
+                // Only the say line is dialogue; skip voice/nvl/show/… inside the block.
+                if is_line_skip(first_token(trimmed)) {
+                    continue;
+                }
+                let Some((rel, len, after)) = first_string(raw) else {
+                    continue;
+                };
+                // Two-argument say: `"Speaker" "line"` — the 2nd string is the line.
+                let rest2 = raw[after..].trim_start();
+                if rest2.starts_with('"') || rest2.starts_with('\'') {
+                    if let Some((r2, l2, _)) = first_string(&raw[after..]) {
+                        if l2 > 0 {
+                            let start = after + r2;
+                            let abs = line_start + start;
+                            let speaker = raw[rel..rel + len].to_string();
+                            out.push(
+                                TransUnit::new(
+                                    file,
+                                    format!("{abs}:{l2}"),
+                                    UnitKind::Dialogue,
+                                    &raw[start..start + l2],
+                                )
+                                .with_context(Some(speaker)),
+                            );
+                        }
+                    }
+                } else if len > 0 {
+                    let abs = line_start + rel;
+                    let prefix = raw[indent..rel - 1].trim();
+                    let tok = first_token(prefix);
+                    let speaker = if tok.is_empty() || tok == "extend" {
+                        None
+                    } else {
+                        Some(tok.to_string())
+                    };
+                    out.push(
+                        TransUnit::new(file, format!("{abs}:{len}"), UnitKind::Dialogue, &raw[rel..rel + len])
+                            .with_context(speaker),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
     let mut skip_indent: Option<usize> = None;
     let mut skip_expr_depth: i32 = 0; // open brackets of a multi-line define/default/$
@@ -1253,6 +1420,12 @@ pub fn export_tl(
     units: &[TransUnit],
     target_lang: &str,
 ) -> Result<Option<TlExport>> {
+    // tl-source mode: the units were read from an existing `tl/<src>/` tree (their file
+    // paths live under `tl/`). Produce `tl/<target>/` by retagging that tree — no
+    // launcher / `renpy translate` needed, since it already carries the game's ids.
+    if let Some(src_lang) = tl_source_lang(units) {
+        return export_tl_from_source(data_dir, &src_lang, units, target_lang).map(Some);
+    }
     let Some(exe) = find_launcher(root) else {
         return Ok(None);
     };
@@ -1336,6 +1509,91 @@ pub fn export_tl(
     setup_language(data_dir, &lang, &language_label(target_lang, &lang), &names)?;
 
     Ok(Some(TlExport { files, dir }))
+}
+
+/// The `tl/<lang>/` folder the units were extracted *from*, if any — their `file`
+/// begins `tl/<lang>/…`. `None` for base-script units (the normal flow).
+fn tl_source_lang(units: &[TransUnit]) -> Option<String> {
+    units.iter().find_map(|u| {
+        let rest = u.file.strip_prefix("tl/")?;
+        rest.split('/').next().map(str::to_string)
+    })
+}
+
+/// Produce `tl/<target>/` from the `tl/<src>/` tree the units were read from: for each
+/// source file, splice the translations into their byte spans, retag the column-0 block
+/// headers `translate <src> …` → `translate <target> …`, and write it under the target
+/// locale. Untranslated lines keep the source-language text (better than falling back
+/// to the base language). The `tl/<src>/` tree is never modified, so re-export is
+/// idempotent. No `renpy translate` / launcher is needed — the source tree already
+/// carries the game's real translation ids.
+fn export_tl_from_source(
+    data_dir: &Path,
+    src_lang: &str,
+    units: &[TransUnit],
+    target_lang: &str,
+) -> Result<TlExport> {
+    let lang = normalize_lang(target_lang);
+    let src_header = format!("translate {src_lang} ");
+    let dst_header = format!("translate {lang} ");
+    let src_prefix = format!("tl/{src_lang}/");
+
+    // Applied translations grouped by their source file.
+    let mut by_file: BTreeMap<&str, Vec<&TransUnit>> = BTreeMap::new();
+    for u in units {
+        if u.status.is_applied() && u.translation.is_some() {
+            by_file.entry(u.file.as_str()).or_default().push(u);
+        }
+    }
+
+    let src_root = data_dir.join("tl").join(src_lang);
+    let mut files = 0usize;
+    for src_path in rpy_files_under(&src_root) {
+        let rel = rel_path(data_dir, &src_path); // e.g. "tl/english/script.rpy"
+        let mut bytes = std::fs::read(&src_path).with_context(|| format!("reading {rel}"))?;
+        if let Some(us) = by_file.get(rel.as_str()) {
+            let mut us = us.clone();
+            // Splice from the end so earlier byte offsets stay valid.
+            us.sort_by_key(|u| Reverse(parse_pointer(&u.pointer).map(|(s, _)| s).unwrap_or(0)));
+            for u in us {
+                let (start, len) = parse_pointer(&u.pointer)
+                    .ok_or_else(|| anyhow!("bad Ren'Py tl pointer {} in {}", u.pointer, rel))?;
+                if start + len > bytes.len() {
+                    return Err(anyhow!("stale pointer {} in {} — re-extract needed", u.pointer, rel));
+                }
+                let tr = u.translation.clone().unwrap_or_default();
+                bytes.splice(start..start + len, renpy_tl::quote_unicode(&tr).into_bytes());
+            }
+        }
+        // Retag the column-0 `translate <src> …` block headers to the target locale.
+        let content = String::from_utf8_lossy(&bytes);
+        let mut retagged = String::with_capacity(content.len());
+        for line in content.split_inclusive('\n') {
+            if let Some(tail) = line.strip_prefix(src_header.as_str()) {
+                retagged.push_str(&dst_header);
+                retagged.push_str(tail);
+            } else {
+                retagged.push_str(line);
+            }
+        }
+        // tl/<src>/x.rpy → tl/<target>/x.rpy
+        let inner = rel.strip_prefix(src_prefix.as_str()).unwrap_or(&rel);
+        let out_path = data_dir.join("tl").join(&lang).join(inner);
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&out_path, retagged)
+            .with_context(|| format!("writing {}", out_path.display()))?;
+        files += 1;
+    }
+
+    // Make the target selectable + readable (menu entry, default language, Thai font).
+    // No Character re-defines: any `_()`-wrapped name translates via the strings blocks.
+    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &[])?;
+    Ok(TlExport {
+        files,
+        dir: data_dir.join("tl").join(&lang),
+    })
 }
 
 /// The button label for the language menu: the native name for known languages,
@@ -1600,6 +1858,74 @@ mod tests {
         let mut out = Vec::new();
         extract_rpy("script.rpy", src, &mut out);
         out
+    }
+
+    #[test]
+    fn export_tl_from_source_retags_and_splices() {
+        use crate::model::Status;
+        let tmp = tempfile::tempdir().unwrap();
+        let game = tmp.path().join("game");
+        let ten = game.join("tl").join("english");
+        std::fs::create_dir_all(&ten).unwrap();
+        let src = "translate english a1:\n    e \"Hello\"\n\ntranslate english strings:\n    old \"X\"\n    new \"World\"\n";
+        std::fs::write(ten.join("script.rpy"), src).unwrap();
+
+        let mut units = Vec::new();
+        extract_from_tl("tl/english/script.rpy", "english", src, &mut units);
+        for u in &mut units {
+            u.translation = Some(format!("T:{}", u.source));
+            u.status = Status::Translated;
+        }
+        let out = export_tl_from_source(&game, "english", &units, "Thai").unwrap();
+        assert!(out.files >= 1);
+
+        let thai = std::fs::read_to_string(game.join("tl").join("thai").join("script.rpy")).unwrap();
+        assert!(thai.contains("translate thai a1:"), "retagged dialogue: {thai}");
+        assert!(thai.contains("translate thai strings:"), "retagged strings");
+        assert!(thai.contains("\"T:Hello\""), "dialogue spliced");
+        assert!(thai.contains("\"T:World\""), "strings `new` spliced");
+        assert!(thai.contains("old \"X\""), "the `old` key is preserved");
+        assert!(!thai.contains("translate english"), "no source tag left");
+        // The source tree is never modified (idempotent re-export).
+        assert_eq!(std::fs::read_to_string(ten.join("script.rpy")).unwrap(), src);
+    }
+
+    #[test]
+    fn extract_from_tl_reads_english_dialogue_and_strings() {
+        // A tl/english/ file: dialogue blocks (say line = English, the `#` original and
+        // the `<id>` are left alone) + a strings block (each `new` = English source).
+        let src = r#"translate english start_1a2b:
+    # e "Привет"
+    e "Hello there"
+
+translate english start_3c4d:
+    "Narration line."
+
+translate english strings:
+    # game/script.rpy:10
+    old "Виктория"
+    new "Victoria"
+
+translate english python:
+    e = Character("x")
+"#;
+        let mut out = Vec::new();
+        extract_from_tl("tl/english/script.rpy", "english", src, &mut out);
+
+        let sources: Vec<&str> = out.iter().map(|u| u.source.as_str()).collect();
+        assert_eq!(sources, vec!["Hello there", "Narration line.", "Victoria"]);
+        // No Cyrillic (the `old`/comment original) and no python-block code leaked in.
+        assert!(!sources.iter().any(|s| s.contains('В') || s.contains("Character")));
+        // Speaker captured from the say prefix; kinds correct.
+        assert_eq!(out[0].context.as_deref(), Some("e"));
+        assert_eq!(out[0].kind, UnitKind::Dialogue);
+        assert_eq!(out[1].context, None); // narration has no speaker
+        assert_eq!(out[2].kind, UnitKind::Term); // a strings entry
+        // Byte spans are exact: content[span] == the source string.
+        for u in &out {
+            let (s, l) = parse_pointer(&u.pointer).unwrap();
+            assert_eq!(&src[s..s + l], u.source);
+        }
     }
 
     #[test]
