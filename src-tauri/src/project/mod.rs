@@ -368,6 +368,67 @@ pub fn export(project: &Project, make_backup: bool, embed_font: bool) -> Result<
     })
 }
 
+/// Result of a restore-to-original.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreResult {
+    pub files_restored: usize,
+    pub note: String,
+}
+
+/// Undo an in-place export: copy every pristine snapshot under `.rpgtl/source/`
+/// back over the live game file, leaving the game in its original state. The DB
+/// (translations, TM, glossary) is untouched, so the user can re-export anytime.
+///
+/// This is the standalone version of the `copy(snapshot → live)` reset that
+/// [`export`] does momentarily before re-injecting. It covers every engine that
+/// snapshots to `.rpgtl/source/` (RPGMaker MV/MZ, Godot, Tyrano, KiriKiri,
+/// Forger, ac-loctext, Unity-textbl, Hendrix). Purely-additive exports (Ren'Py
+/// `tl/<lang>/`, Unity-csvloc's new locale folder) write no snapshot, so restore
+/// is a no-op for them — their output is a separate overlay the user simply
+/// doesn't select in-game.
+pub fn restore_original(project: &Project) -> Result<RestoreResult> {
+    let source_dir = rpgtl_dir(&project.root).join("source");
+    if !source_dir.exists() {
+        return Ok(RestoreResult {
+            files_restored: 0,
+            note: "Nothing to restore — this game hasn't been exported yet.".to_string(),
+        });
+    }
+
+    let mut files_restored = 0usize;
+    for entry in walkdir::WalkDir::new(&source_dir).into_iter().flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let snap = entry.path();
+        // Snapshot paths mirror the data dir, so the relative path maps straight
+        // back onto the live game file (inverting the injection target).
+        let rel = snap
+            .strip_prefix(&source_dir)
+            .with_context(|| format!("snapshot path outside source dir: {}", snap.display()))?;
+        let live = project.data_dir.join(rel);
+        if let Some(parent) = live.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(snap, &live)
+            .with_context(|| format!("restoring original {}", rel.display()))?;
+        files_restored += 1;
+    }
+
+    let note = if files_restored == 0 {
+        "Nothing to restore — this game hasn't been exported yet.".to_string()
+    } else {
+        format!(
+            "Restored {files_restored} original file(s). Your translations are kept — export again anytime."
+        )
+    };
+    Ok(RestoreResult {
+        files_restored,
+        note,
+    })
+}
+
 /// Result of a mod export.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

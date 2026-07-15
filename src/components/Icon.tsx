@@ -23,6 +23,7 @@ export type IconName =
   | "clock"
   | "copy"
   | "more"
+  | "restore"
   | "warn";
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -119,6 +120,12 @@ const PATHS: Record<IconName, JSX.Element> = {
       <circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none" />
       <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
       <circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none" />
+    </>
+  ),
+  restore: (
+    <>
+      <path d="M4 11a8 8 0 1 1 2.3 5.7" />
+      <path d="M4 4v5h5" />
     </>
   ),
 };

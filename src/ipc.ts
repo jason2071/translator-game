@@ -87,6 +87,11 @@ export interface ModResult {
   note?: string | null;
 }
 
+export interface RestoreResult {
+  filesRestored: number;
+  note: string;
+}
+
 export interface UnitFilter {
   file?: string;
   status?: Status;
@@ -241,6 +246,9 @@ export const api = {
 
   /** Export a distributable mod .zip (overlays onto the game; game untouched). */
   exportMod: (embedFont = false) => invoke<ModResult>("export_mod", { embedFont }),
+
+  /** Undo an in-place export: restore the game's original files from .rpgtl/source/. */
+  restoreProject: () => invoke<RestoreResult>("restore_original"),
 
   applyTm: () => invoke<number>("apply_tm"),
 

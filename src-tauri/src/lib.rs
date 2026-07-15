@@ -605,6 +605,13 @@ fn export_mod(
     with_project(&state, |p| project::export_mod(p, embed_font.unwrap_or(false)))
 }
 
+/// Undo an in-place export: put the game's original files back from the
+/// `.rpgtl/source/` snapshots. Translations stay in the DB (re-export anytime).
+#[tauri::command]
+fn restore_original(state: tauri::State<AppState>) -> Result<project::RestoreResult, String> {
+    with_project(&state, |p| project::restore_original(p))
+}
+
 // --- AI translation -------------------------------------------------------
 
 /// What to translate: an explicit id list, or a filter-selected set.
@@ -1391,6 +1398,7 @@ pub fn run() {
             list_files,
             export_project,
             export_mod,
+            restore_original,
             apply_tm,
             glossary_list,
             glossary_add,

@@ -1,5 +1,6 @@
 import { useState, useEffect, type CSSProperties } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api, type ExportResult, type Status } from "../ipc";
 import { useStore } from "../store";
@@ -32,6 +33,7 @@ export function Sidebar({
 
   const [exporting, setExporting] = useState(false);
   const [exportingMod, setExportingMod] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [applyingTm, setApplyingTm] = useState(false);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -107,6 +109,28 @@ export function Sidebar({
       setErr(String(e));
     } finally {
       setExportingMod(false);
+    }
+  }
+
+  // Undo an in-place export: put the game's original files back from the
+  // .rpgtl/source/ snapshots. Translations stay in the DB (re-export anytime).
+  async function doRestore() {
+    const ok = await ask(
+      "Restore the original game files? This undoes your last export — the game goes back to its original (untranslated) state. Your translations are saved; you can export again anytime.",
+      { title: "Restore original", kind: "warning" }
+    );
+    if (!ok) return;
+    setRestoring(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const r = await api.restoreProject();
+      setMsg(r.note);
+      await refreshMeta();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setRestoring(false);
     }
   }
 
@@ -290,7 +314,7 @@ export function Sidebar({
           <Icon name="settings" />
           <span className="lbl">Settings</span>
         </button>
-        <button className="primary full" onClick={doExport} disabled={exporting || exportingMod}>
+        <button className="primary full" onClick={doExport} disabled={exporting || exportingMod || restoring}>
           <Icon name="export" />
           <span className="lbl">{exporting ? "Exporting…" : "Export → game"}</span>
         </button>
@@ -298,13 +322,22 @@ export function Sidebar({
           <button
             className="ghost full"
             onClick={doExportMod}
-            disabled={exporting || exportingMod}
+            disabled={exporting || exportingMod || restoring}
             title="Build a .zip you copy over the game (game untouched). It makes the game Thai with no in-game language switch."
           >
             <Icon name="export" />
             <span className="lbl">{exportingMod ? "Packaging…" : "Export as mod (.zip)"}</span>
           </button>
         )}
+        <button
+          className="ghost full"
+          onClick={doRestore}
+          disabled={exporting || exportingMod || restoring}
+          title="Put the game back to its original files (undo the last export). Your translations are kept."
+        >
+          <Icon name="restore" />
+          <span className="lbl">{restoring ? "Restoring…" : "Restore original"}</span>
+        </button>
         <div className="row">
           {fontCapable && !collapsed && (
             <label className="chk embed-font-chk" title="Drop a Thai-capable font into the game and repoint its fonts at it, so translated Thai renders instead of missing-glyph boxes">
