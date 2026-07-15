@@ -7,6 +7,8 @@ import { useRecents, timeAgo, basename, doneCount } from "../recents";
 import { useTheme } from "../theme";
 import { DEFAULT_SOURCE, DEFAULT_TARGET, SOURCE_LANGS, TARGET_LANGS } from "../langs";
 import { Icon } from "../components/Icon";
+import { Modal } from "../components/Modal";
+import SettingsView from "./SettingsView";
 
 export default function ImportView() {
   const openProject = useStore((s) => s.openProject);
@@ -16,6 +18,7 @@ export default function ImportView() {
   const removeRecent = useRecents((s) => s.remove);
   const clearRecents = useRecents((s) => s.clear);
 
+  const [showSettings, setShowSettings] = useState(false);
   const [path, setPath] = useState<string | null>(null);
   const [detected, setDetected] = useState<DetectResult | null>(null);
   const [checking, setChecking] = useState(false);
@@ -87,6 +90,14 @@ export default function ImportView() {
         {version && <span className="app-version">v{version}</span>}
         <button
           className="theme-fab iconbtn"
+          onClick={() => setShowSettings(true)}
+          title="Settings (AI providers, updates)"
+          aria-label="Open settings"
+        >
+          <Icon name="settings" />
+        </button>
+        <button
+          className="theme-fab iconbtn"
           onClick={toggleTheme}
           title="Toggle theme"
           aria-label="Toggle light/dark theme"
@@ -94,6 +105,12 @@ export default function ImportView() {
           <Icon name={theme === "dark" ? "sun" : "moon"} />
         </button>
       </div>
+
+      {showSettings && (
+        <Modal title="AI providers & settings" onClose={() => setShowSettings(false)}>
+          <SettingsView />
+        </Modal>
+      )}
       <h1>RPGMaker Translator</h1>
       <p className="subtitle">
         {detected
