@@ -309,12 +309,17 @@ code {
      inline (grid-template-rows: repeat(rows, auto)). No internal scroll — the whole
      page must fit without scrolling. */
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, 1fr) — not 1fr — so a long game/folder name can't stretch its column
+     past half. `1fr` resolves to minmax(auto, 1fr), whose `auto` min = the name's
+     min-content, making the two columns uneven; a 0 minimum keeps them a fixed 50/50
+     and lets the name ellipsis-truncate instead. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   grid-auto-flow: column;
   gap: var(--sp-2) var(--sp-3);
 }
 .recent-item {
   position: relative;
+  min-width: 0; /* allow the row's name to shrink/ellipsis within its 1fr track */
 }
 .recent-row {
   width: 100%;
