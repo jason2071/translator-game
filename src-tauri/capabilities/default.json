@@ -12,6 +12,7 @@
     "opener:default",
     "opener:allow-reveal-item-in-dir",
     "opener:allow-open-path",
+    "opener:allow-open-url",
     "updater:default",
     "process:allow-restart"
   ]

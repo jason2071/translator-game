@@ -184,6 +184,48 @@ fn copy_source_to_translation(
     })
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LatestRelease {
+    /// The release version without a leading `v` (e.g. "0.12.13").
+    version: String,
+    /// The release's GitHub page, to open for the download.
+    url: String,
+}
+
+/// The latest published GitHub release. Used by the in-app "Check for updates" button
+/// and the startup banner — a plain API query (no signed updater manifest needed), so
+/// it works against the normal releases. The frontend compares `version` to the app's
+/// own and, if newer, offers to open `url`.
+#[tauri::command]
+async fn latest_release(state: tauri::State<'_, AppState>) -> Result<LatestRelease, String> {
+    let url = "https://api.github.com/repos/jason2071/translator-game/releases/latest";
+    let resp = state
+        .http
+        .get(url)
+        .header("User-Agent", "rpgmaker-translator")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API returned {}", resp.status()));
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let version = v["tag_name"]
+        .as_str()
+        .unwrap_or("")
+        .trim_start_matches('v')
+        .to_string();
+    if version.is_empty() {
+        return Err("no tag_name in the latest release".into());
+    }
+    Ok(LatestRelease {
+        version,
+        url: v["html_url"].as_str().unwrap_or("").to_string(),
+    })
+}
+
 #[tauri::command]
 fn update_unit(
     id: i64,
@@ -1386,6 +1428,7 @@ pub fn run() {
             list_units,
             count_units,
             copy_source_to_translation,
+            latest_release,
             update_unit,
             get_stats,
             list_files,
