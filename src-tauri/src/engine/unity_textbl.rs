@@ -378,23 +378,81 @@ fn patch_for(kind: &'static str, units: &[TransUnit]) -> Vec<PatchRec> {
         .collect()
 }
 
-/// Zero every bundle CRC in the catalog under `aa_write`, staging the catalog from
-/// `aa_read` first when they differ (so a mod/out-of-place write gets its own copy and
-/// the game's catalog is untouched). Idempotent.
+/// Zero every bundle CRC in the JSON catalog, reading the pristine catalog from
+/// `aa_read` and writing the patched copy to `aa_write` (so a mod/out-of-place write
+/// gets its own copy and the game's catalog is untouched). Reading from the pristine
+/// read-root keeps re-export idempotent. A no-op when there is no JSON catalog.
 fn clear_catalog_crc(aa_read: &Path, aa_write: &Path) -> Result<()> {
     let src = aa_read.join("catalog.json");
     let dst = aa_write.join("catalog.json");
     if !src.is_file() {
         return Ok(()); // no JSON catalog (already handled / different Addressables build)
     }
-    if dst != src {
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(&src, &dst).context("staging catalog.json")?;
+    let bytes = std::fs::read(&src).context("reading catalog.json")?;
+    let patched = zero_catalog_crc(&bytes).context("zeroing the catalog's bundle CRCs")?;
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
     }
-    let args: Vec<OsString> = vec!["catalog-crc".into(), dst.into()];
-    run_sidecar(&args)
+    std::fs::write(&dst, patched).context("writing catalog.json")?;
+    Ok(())
+}
+
+/// Zero every bundle CRC in an Addressables **JSON** catalog, **preserving byte
+/// lengths**. A modified `.bundle` no longer matches the CRC the catalog records, and
+/// Addressables then rejects the load — so we set each `m_Crc` to 0 (0 = "don't
+/// verify"). Those options live as UTF-16LE JSON inside the base64 `m_ExtraDataString`,
+/// and the catalog's entry table stores byte **offsets into that blob**. A naive
+/// re-serialize shortens `"m_Crc":1234567890` to `"m_Crc":0`, which shifts every later
+/// offset — Addressables then resolves an **empty bundle path** and the game freezes
+/// loading it (e.g. on a scene change). So we overwrite the CRC digits *in place* with
+/// `0` padded by spaces (valid JSON whitespace), leaving every byte offset stable. The
+/// binary `catalog.bin` used by [`super::unity_csv`] doesn't have this problem — its
+/// CRC is a fixed-width `u32` zeroed at a fixed offset.
+fn zero_catalog_crc(catalog: &[u8]) -> Result<Vec<u8>> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let mut cat: serde_json::Value = serde_json::from_slice(catalog)?;
+    let extra = match cat.get("m_ExtraDataString").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return Ok(catalog.to_vec()),
+    };
+    let mut blob = b64.decode(&extra).context("decoding m_ExtraDataString")?;
+    // `"m_Crc":` in UTF-16LE — each ASCII byte is followed by a 0x00.
+    let needle: Vec<u8> = "\"m_Crc\":".encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut i = 0;
+    while let Some(pos) = find_sub(&blob, &needle, i) {
+        let start = pos + needle.len();
+        // Consume the digit run: each digit is a `<0x30..=0x39> 0x00` pair.
+        let mut k = start;
+        while k + 1 < blob.len() && blob[k + 1] == 0 && blob[k].is_ascii_digit() {
+            k += 2;
+        }
+        // First digit → '0', the rest → ' ' — same byte count, so offsets don't move.
+        if k > start {
+            blob[start] = b'0';
+            blob[start + 1] = 0;
+            let mut p = start + 2;
+            while p < k {
+                blob[p] = b' ';
+                blob[p + 1] = 0;
+                p += 2;
+            }
+        }
+        i = k.max(start);
+    }
+    cat["m_ExtraDataString"] = serde_json::Value::String(b64.encode(&blob));
+    Ok(serde_json::to_vec(&cat)?)
+}
+
+/// First index of `needle` in `hay` at or after `from`.
+fn find_sub(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() || from >= hay.len() {
+        return None;
+    }
+    hay[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + from)
 }
 
 /// Parse a `"<kind>#<file>#<pathId>#<idx>"` pointer into `(kind, file, pathId, idx)`.
@@ -694,5 +752,42 @@ mod tests {
         // Unknown kind / short forms are rejected.
         assert!(parse_pointer("dlg#x#1#2").is_none());
         assert!(parse_pointer("tbl#only#one").is_none());
+    }
+
+    #[test]
+    fn zero_catalog_crc_zeros_crc_and_preserves_byte_length() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        // A per-bundle AssetBundleRequestOptions JSON as it lives in the blob:
+        // UTF-16LE, with a multi-digit CRC that must not shorten the entry.
+        let inner = r#"{"m_Hash":"abcd","m_Crc":1234567890,"m_BundleName":"b.bundle"}"#;
+        let blob: Vec<u8> = inner.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let original_len = blob.len();
+        let catalog = format!(
+            r#"{{"m_ExtraDataString":"{}","m_InternalIds":["a.bundle"]}}"#,
+            b64.encode(&blob)
+        );
+
+        let out = zero_catalog_crc(catalog.as_bytes()).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let new_blob = b64.decode(v["m_ExtraDataString"].as_str().unwrap()).unwrap();
+
+        // Byte length preserved → the catalog's offset table into this blob stays valid.
+        assert_eq!(new_blob.len(), original_len, "blob byte length must not change");
+        let s = String::from_utf16(
+            &new_blob
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        // CRC zeroed (0 + padding spaces), other fields intact, still valid JSON.
+        let inner_v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(inner_v["m_Crc"], 0);
+        assert_eq!(inner_v["m_BundleName"], "b.bundle");
+        assert_eq!(inner_v["m_Hash"], "abcd");
+
+        // Re-running is a no-op (idempotent): an already-zero CRC is left alone.
+        assert_eq!(zero_catalog_crc(&out).unwrap(), out);
     }
 }

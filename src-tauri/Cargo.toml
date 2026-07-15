@@ -1,6 +1,6 @@
 [package]
 name = "rpgmaker-translator"
-version = "0.12.9"
+version = "0.12.10"
 description = "Translate RPGMaker games (MV/MZ) by hand or via AI"
 authors = ["you"]
 edition = "2021"
@@ -43,6 +43,9 @@ include_dir = "0.7"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Walk the staging mirror when building a mod zip.
 walkdir = "2"
+# Decode/re-encode the base64 `m_ExtraDataString` in an Addressables JSON catalog to
+# zero bundle CRCs without shifting the blob's byte offsets (see unity_textbl).
+base64 = "0.22"
 # Dev-only: `.env` loading for local API keys (guarded by debug_assertions).
 dotenvy = "0.15"
 
