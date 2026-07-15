@@ -235,6 +235,100 @@ impl GameEngine for UnityEngine {
         let _ = std::fs::remove_file(&patch_path);
         relocate
     }
+
+    /// Embed the Thai font by swapping the game's embedded TTFs for the bundled one.
+    ///
+    /// This game's TMP fonts are **Dynamic-atlas** (they ship the full source TTF and
+    /// rasterize glyphs on demand) but its `.assets` are **typetree-stripped**, so the
+    /// `TMP_FontAsset` MonoBehaviours can't be read structurally the way the Addressables
+    /// `swap-font` path does. We don't need them: a Unity `Font` is a native class UnityPy
+    /// reads/writes without a typetree, so the helper's `swap-font-assets` replaces every
+    /// embedded `Font`'s bytes with the Thai font (Sarabun). The runtime then rasterizes
+    /// Thai from the swapped source — no atlas clear needed (Thai was never baked in).
+    ///
+    /// Runs after [`inject`](Self::inject), so it reads each `.assets` from `out_dir` when
+    /// injection already wrote it there (keeping the translations), else the pristine game
+    /// file. Only `.assets` that actually embed a font are rewritten; the rest are left
+    /// byte-for-byte.
+    fn embed_font(
+        &self,
+        _root: &Path,
+        data_dir: &Path,
+        out_dir: &Path,
+        font: &[u8],
+        backup_dir: Option<&Path>,
+    ) -> Result<Option<String>> {
+        // The helper takes a TTF path; materialize the bundled font once.
+        let ttf = temp_file("font", "ttf");
+        std::fs::write(&ttf, font).context("writing the Thai font for the font helper")?;
+
+        let mut swapped_files = 0usize;
+        let outcome = (|| {
+            for name in assets_files(data_dir) {
+                // Prefer the already-injected copy (in-place: out_dir == data_dir, so the
+                // translated live file; mod: the staged translated file), else pristine.
+                let injected = out_dir.join(&name);
+                let src = if injected.is_file() {
+                    injected
+                } else {
+                    data_dir.join(&name)
+                };
+                let tmp_out = temp_file("assets", "tmp");
+                let args: Vec<OsString> = vec![
+                    "swap-font-assets".into(),
+                    src.into(),
+                    ttf.clone().into(),
+                    tmp_out.clone().into(),
+                ];
+                let step = (|| {
+                    run_sidecar(&args)?;
+                    // The helper writes output only when it swapped ≥1 embedded font; a
+                    // `.assets` with no font produces nothing and stays as shipped.
+                    if !tmp_out.is_file() {
+                        return Ok(());
+                    }
+                    // Back up the original before overwriting (in-place only; a mod never
+                    // touches the game).
+                    if let Some(bk) = backup_dir {
+                        let orig = data_dir.join(&name);
+                        if orig.is_file() {
+                            let dst = bk.join(&name);
+                            if let Some(parent) = dst.parent() {
+                                std::fs::create_dir_all(parent)?;
+                            }
+                            std::fs::copy(&orig, &dst)
+                                .with_context(|| format!("backing up {name}"))?;
+                        }
+                    }
+                    let dst = out_dir.join(&name);
+                    if let Some(parent) = dst.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::copy(&tmp_out, &dst)
+                        .with_context(|| format!("installing font-swapped {name}"))?;
+                    swapped_files += 1;
+                    Ok::<(), anyhow::Error>(())
+                })();
+                let _ = std::fs::remove_file(&tmp_out);
+                step?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })();
+        let _ = std::fs::remove_file(&ttf);
+        outcome?;
+
+        if swapped_files == 0 {
+            return Ok(Some(
+                "No embedded fonts were found to swap — the game may render already, or it \
+                 stores fonts a way this engine can't reach."
+                    .to_string(),
+            ));
+        }
+        Ok(Some(format!(
+            "Embedded the Thai font (Sarabun) into {swapped_files} .assets font container(s), \
+             so translated Thai renders instead of blank boxes."
+        )))
+    }
 }
 
 /// A managed-text record's kind, from its doc name / key shape (best-effort — it only
@@ -434,6 +528,25 @@ pub(super) fn run_sidecar(args: &[OsString]) -> Result<()> {
 
 fn temp_json(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("rpgtl-unity-{}-{}.json", std::process::id(), tag))
+}
+
+/// A private temp path for a font-helper input/output (the TTF and each swapped
+/// `.assets`), namespaced by pid so concurrent projects don't collide.
+fn temp_file(tag: &str, ext: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("rpgtl-unity-{}-{}.{}", std::process::id(), tag, ext))
+}
+
+/// File names of the `.assets` directly in `dir` — the font-swap sweep runs each
+/// through the helper, which skips those without an embedded font.
+fn assets_files(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("assets"))
+                .filter_map(|e| e.file_name().to_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn temp_out_dir() -> PathBuf {

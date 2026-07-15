@@ -1420,6 +1420,44 @@ def cmd_swap_font(bundle_in, ttf_path, bundle_out):
     print(f"swap-font: swapped {swapped} dynamic font source(s) in {os.path.basename(bundle_in)}")
 
 
+def cmd_swap_font_assets(assets_in, ttf_path, assets_out):
+    """Replace the embedded TTF of every `Font` object in a plain `.assets` file with
+    `ttf` (the bundled Thai font), for typetree-stripped Naninovel builds where the
+    dynamic-atlas TMP fonts can't be read structurally.
+
+    A `Font` is a native Unity class UnityPy reads/writes WITHOUT a typetree, so we
+    don't need the (stripped) `TMP_FontAsset` layout at all. The game's TMP fonts are
+    Dynamic-atlas (they ship the full source TTF and rasterize glyphs on demand), so
+    swapping each source `Font`'s bytes for a Thai-capable one makes the runtime
+    rasterize Thai — no atlas clear needed (Thai was never baked into the atlas). Only
+    fonts that already embed TTF data are swapped (an OS/system-font reference with no
+    bytes is left alone). Writes `assets_out` only when at least one font was swapped;
+    a `.assets` with no embedded font produces no output (the caller then keeps the
+    original), so the caller can sweep every `.assets` without knowing which hold fonts.
+    `.assets` are stored uncompressed, so we save with `packer="none"`."""
+    import UnityPy
+
+    with open(ttf_path, "rb") as f:
+        font = f.read()
+    env = UnityPy.load(assets_in)
+    swapped = 0
+    for obj in env.objects:
+        if obj.type.name != "Font":
+            continue
+        d = obj.read()
+        if not getattr(d, "m_FontData", None):
+            continue  # OS/system font reference — nothing embedded to replace
+        d.m_FontData = font
+        d.save()
+        swapped += 1
+    if swapped == 0:
+        print(f"swap-font-assets: no embedded font in {os.path.basename(assets_in)} (skipped)")
+        return
+    with open(assets_out, "wb") as f:
+        f.write(env.file.save(packer="none"))
+    print(f"swap-font-assets: swapped {swapped} font(s) in {os.path.basename(assets_in)}")
+
+
 def main(argv):
     if len(argv) < 2:
         sys.exit("usage: rpgtl_unity.py export|import|swap-font ...")
@@ -1432,6 +1470,8 @@ def main(argv):
         cmd_import(argv[2], argv[3], argv[4], locale)
     elif cmd == "swap-font":
         cmd_swap_font(argv[2], argv[3], argv[4])
+    elif cmd == "swap-font-assets":
+        cmd_swap_font_assets(argv[2], argv[3], argv[4])
     elif cmd == "texttable-export":
         cmd_texttable_export(argv[2], argv[3])
     elif cmd == "texttable-import":
