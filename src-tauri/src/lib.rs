@@ -194,35 +194,33 @@ struct LatestRelease {
 }
 
 /// The latest published GitHub release. Used by the in-app "Check for updates" button
-/// and the startup banner — a plain API query (no signed updater manifest needed), so
-/// it works against the normal releases. The frontend compares `version` to the app's
-/// own and, if newer, offers to open `url`.
+/// and the startup banner. It follows the `releases/latest` redirect on **github.com**
+/// (a plain web page → the `…/releases/tag/<v>` URL) rather than hitting the JSON
+/// **api.github.com**, whose unauthenticated 60-req/hour limit would 403 on repeated
+/// checks. The frontend compares `version` to the app's own and, if newer, opens `url`.
 #[tauri::command]
 async fn latest_release(state: tauri::State<'_, AppState>) -> Result<LatestRelease, String> {
-    let url = "https://api.github.com/repos/jason2071/translator-game/releases/latest";
+    let url = "https://github.com/jason2071/translator-game/releases/latest";
+    // The shared client follows redirects, so `resp.url()` is the resolved tag page.
     let resp = state
         .http
         .get(url)
         .header("User-Agent", "rpgmaker-translator")
-        .header("Accept", "application/vnd.github+json")
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("GitHub API returned {}", resp.status()));
-    }
-    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let version = v["tag_name"]
-        .as_str()
-        .unwrap_or("")
-        .trim_start_matches('v')
-        .to_string();
+    let final_url = resp.url().as_str().to_string();
+    // `…/releases/tag/v0.12.14` → "0.12.14"; no `/tag/` means there are no releases.
+    let Some(tag) = final_url.rsplit_once("/tag/").map(|(_, t)| t) else {
+        return Err("no published release found".into());
+    };
+    let version = tag.trim_start_matches('v').to_string();
     if version.is_empty() {
-        return Err("no tag_name in the latest release".into());
+        return Err("could not read the latest release tag".into());
     }
     Ok(LatestRelease {
         version,
-        url: v["html_url"].as_str().unwrap_or("").to_string(),
+        url: final_url,
     })
 }
 
