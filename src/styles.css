@@ -1739,3 +1739,9 @@ button.link {
   align-items: center;
   gap: 0.8rem;
 }
+.update-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}

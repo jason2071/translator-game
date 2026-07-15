@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { getVersion } from "@tauri-apps/api/app";
 import { api, type ProviderKind } from "../ipc";
 import { PROVIDER_LABELS, PROVIDER_KINDS, useSettings } from "../settings";
 import { Icon } from "../components/Icon";
@@ -62,6 +65,51 @@ export default function SettingsView() {
       setTest(`✗ ${String(e)}`);
     } finally {
       setTesting(false);
+    }
+  }
+
+  // Updates: the app also auto-checks on startup (see UpdateBanner); this is a
+  // manual re-check the user can trigger, e.g. right after a release.
+  const [version, setVersion] = useState("");
+  const [upState, setUpState] = useState<"idle" | "checking" | "latest" | "avail" | "error">("idle");
+  const [upMsg, setUpMsg] = useState("");
+  const [upAvail, setUpAvail] = useState<Update | null>(null);
+  const [upInstalling, setUpInstalling] = useState(false);
+
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
+  }, []);
+
+  async function checkUpdate() {
+    setUpState("checking");
+    setUpMsg("");
+    setUpAvail(null);
+    try {
+      const u = await check();
+      if (u?.available) {
+        setUpAvail(u);
+        setUpState("avail");
+        setUpMsg(`v${u.version} available`);
+      } else {
+        setUpState("latest");
+        setUpMsg("You're on the latest version.");
+      }
+    } catch (e) {
+      setUpState("error");
+      setUpMsg(`Couldn't check: ${String(e)}`);
+    }
+  }
+
+  async function installUpdate() {
+    if (!upAvail) return;
+    setUpInstalling(true);
+    try {
+      await upAvail.downloadAndInstall();
+      await relaunch();
+    } catch (e) {
+      setUpState("error");
+      setUpMsg(`Install failed: ${String(e)}`);
+      setUpInstalling(false);
     }
   }
 
@@ -231,6 +279,30 @@ export default function SettingsView() {
           {testing ? "Testing…" : "Test connection"}
         </button>
         {test && <span className={test.startsWith("✓") ? "ok-msg" : "error"}>{test}</span>}
+      </div>
+
+      <hr />
+      <div className="update-row">
+        <button
+          className="btn-reset"
+          onClick={checkUpdate}
+          disabled={upState === "checking"}
+          title="Check GitHub for a newer release"
+        >
+          <Icon name="retry" size={13} className={upState === "checking" ? "spin" : undefined} />
+          {upState === "checking" ? "Checking…" : "Check for updates"}
+        </button>
+        {version && <span className="hint">Current: v{version}</span>}
+        {upMsg && (
+          <span className={upState === "error" ? "error" : upState === "avail" ? "ok-msg" : "hint"}>
+            {upMsg}
+          </span>
+        )}
+        {upState === "avail" && upAvail && (
+          <button className="primary" onClick={installUpdate} disabled={upInstalling}>
+            {upInstalling ? "Installing…" : "Install & restart"}
+          </button>
+        )}
       </div>
     </div>
   );
