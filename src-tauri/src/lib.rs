@@ -377,17 +377,34 @@ async fn classify_genders(
         None
     };
     let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
-    let (sys, user) = ai::prompt::build_gender_classify(&todo);
-    let raw = provider
-        .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
-        .await
-        .map_err(|e| e.to_string())?;
-    // Keep a dialogue speaker with any label; keep a mined name only if it got a real
-    // gender (a neutral mined candidate is almost always a non-person word — drop it).
-    let pairs: Vec<(String, String)> = ai::prompt::parse_gender_classify(&raw)
-        .into_iter()
-        .filter(|(name, gender)| trusted.contains(name) || gender != "neutral")
-        .collect();
+    // Classify in small chunks. A single all-candidates call overflows `max_tokens`
+    // (a big cast's JSON array is truncated mid-array → unparseable → nothing stored,
+    // looking like a silent "found nothing"), and one bad chunk shouldn't lose the rest.
+    let chunk = config.batch_size().min(30).max(1);
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut last_err: Option<String> = None;
+    for group in todo.chunks(chunk) {
+        let (sys, user) = ai::prompt::build_gender_classify(group);
+        match provider
+            .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
+            .await
+        {
+            // Keep a dialogue speaker with any label; keep a mined name only if it got a
+            // real gender (a neutral mined candidate is almost always a non-person word).
+            Ok(raw) => pairs.extend(
+                ai::prompt::parse_gender_classify(&raw)
+                    .into_iter()
+                    .filter(|(name, gender)| trusted.contains(name) || gender != "neutral"),
+            ),
+            Err(e) => last_err = Some(e.to_string()),
+        }
+    }
+    // Surface a real error instead of a false "found nothing" when every chunk failed.
+    if pairs.is_empty() {
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+    }
 
     with_project_mut(&state, |p| {
         project::db::characters_set_bulk(&mut p.conn, &pairs)?;
