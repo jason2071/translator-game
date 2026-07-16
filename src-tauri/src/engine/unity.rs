@@ -252,12 +252,15 @@ impl GameEngine for UnityEngine {
     /// byte-for-byte.
     fn embed_font(
         &self,
-        _root: &Path,
+        root: &Path,
         data_dir: &Path,
         out_dir: &Path,
         font: &[u8],
         backup_dir: Option<&Path>,
     ) -> Result<Option<String>> {
+        // Only an in-place export can be undone by restore (a mod writes to a staging
+        // mirror), so restore recording is skipped otherwise.
+        let in_place = out_dir == data_dir;
         // The helper takes a TTF path; materialize the bundled font once.
         let ttf = temp_file("font", "ttf");
         std::fs::write(&ttf, font).context("writing the Thai font for the font helper")?;
@@ -303,6 +306,11 @@ impl GameEngine for UnityEngine {
                     let dst = out_dir.join(&name);
                     if let Some(parent) = dst.parent() {
                         std::fs::create_dir_all(parent)?;
+                    }
+                    // Record the original so restore can revert this in-place font swap
+                    // (unless `.rpgtl/source/` already snapshotted it as a translated file).
+                    if in_place {
+                        super::font_restore::record_write(root, data_dir, &dst);
                     }
                     std::fs::copy(&tmp_out, &dst)
                         .with_context(|| format!("installing font-swapped {name}"))?;

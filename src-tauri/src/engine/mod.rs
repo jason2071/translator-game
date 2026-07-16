@@ -73,6 +73,21 @@ pub mod font_restore {
         let _ = std::fs::copy(abs, &snap);
     }
 
+    /// Like [`snapshot_original`], but for a file **inside** the data dir: skip it
+    /// when `.rpgtl/source/` already holds its pristine original. At font-embed time
+    /// (after inject) such a live file carries the *translation*, so snapshotting it
+    /// here would capture translated bytes and, being applied after `source/` on
+    /// restore, shadow the true original. Files outside the data dir can never be in
+    /// `source/`, so they use [`snapshot_original`] directly.
+    pub fn snapshot_unless_sourced(root: &Path, data_dir: &Path, abs: &Path) {
+        if let Ok(rel) = abs.strip_prefix(data_dir) {
+            if root.join(".rpgtl").join("source").join(rel).exists() {
+                return;
+            }
+        }
+        snapshot_original(root, abs);
+    }
+
     /// Record a newly-created file (inside `root`) so restore deletes it. Deduped.
     pub fn mark_added(root: &Path, abs: &Path) {
         let Ok(rel) = abs.strip_prefix(root) else { return };
@@ -86,6 +101,19 @@ pub mod font_restore {
             return;
         }
         let _ = std::fs::write(&list, format!("{cur}{rel}\n"));
+    }
+
+    /// Call **before** an in-place font embed writes `abs` (inside the game `root`,
+    /// with `data_dir` the translation data dir): snapshot its original if the file
+    /// pre-exists (unless `source/` covers it), or mark it for deletion if it's new.
+    /// Best-effort — a recording failure never fails the export. Used by the Unity
+    /// engines, whose font swap overwrites bundles/`.assets` inside the data dir.
+    pub fn record_write(root: &Path, data_dir: &Path, abs: &Path) {
+        if abs.exists() {
+            snapshot_unless_sourced(root, data_dir, abs);
+        } else {
+            mark_added(root, abs);
+        }
     }
 }
 
@@ -246,5 +274,71 @@ mod source_lang_tests {
         // English beats Japanese beats Chinese.
         assert!(source_lang_rank("en") < source_lang_rank("ja"));
         assert!(source_lang_rank("ja") < source_lang_rank("zh"));
+    }
+}
+
+#[cfg(test)]
+mod font_restore_tests {
+    use super::font_restore;
+    use std::fs;
+
+    #[test]
+    fn record_write_snapshots_overwrites_marks_new_and_skips_sourced() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let data = root.join("Game_Data");
+        fs::create_dir_all(&data).unwrap();
+
+        // A pre-existing font bundle NOT covered by source/ → its original is snapshotted.
+        let bundle = data.join("StreamingAssets/aa/fonts.bundle");
+        fs::create_dir_all(bundle.parent().unwrap()).unwrap();
+        fs::write(&bundle, b"ORIGINAL-BUNDLE").unwrap();
+        font_restore::record_write(root, &data, &bundle);
+
+        // A translation-data file that source/ already snapshotted → NOT re-snapshotted
+        // (at embed time it holds translated bytes; source/ has the true original).
+        let sourced = data.join("resources.assets");
+        fs::write(&sourced, b"TRANSLATED").unwrap();
+        fs::create_dir_all(root.join(".rpgtl/source")).unwrap();
+        fs::write(root.join(".rpgtl/source/resources.assets"), b"ORIGINAL-ASSETS").unwrap();
+        font_restore::record_write(root, &data, &sourced);
+
+        // A brand-new file → marked for deletion.
+        let added = data.join("StreamingAssets/aa/newfont.bundle");
+        font_restore::record_write(root, &data, &added);
+
+        let fr = root.join(".rpgtl/font-restore");
+        assert_eq!(
+            fs::read(fr.join("original/Game_Data/StreamingAssets/aa/fonts.bundle")).unwrap(),
+            b"ORIGINAL-BUNDLE"
+        );
+        // The sourced file must NOT be snapshotted into font-restore.
+        assert!(!fr.join("original/Game_Data/resources.assets").exists());
+        // The new file is listed for deletion (root-relative, forward slashes).
+        let list = fs::read_to_string(fr.join("added.txt")).unwrap();
+        assert!(list.contains("Game_Data/StreamingAssets/aa/newfont.bundle"), "{list}");
+        assert!(!list.contains("fonts.bundle"), "overwritten file is not an added file: {list}");
+    }
+
+    #[test]
+    fn snapshot_original_keeps_the_first_and_paths_outside_root_are_ignored() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let f = root.join("fonts/gamefont.css");
+        fs::create_dir_all(f.parent().unwrap()).unwrap();
+        fs::write(&f, b"v1").unwrap();
+        font_restore::snapshot_original(root, &f);
+        // A later re-embed must not overwrite the first (original) snapshot.
+        fs::write(&f, b"v2-already-patched").unwrap();
+        font_restore::snapshot_original(root, &f);
+        assert_eq!(
+            fs::read(root.join(".rpgtl/font-restore/original/fonts/gamefont.css")).unwrap(),
+            b"v1"
+        );
+
+        // A path outside root (a mod staging mirror) is silently ignored.
+        let outside = d.path().parent().unwrap().join("stage-xyz.bundle");
+        font_restore::mark_added(root, &outside);
+        assert!(!root.join(".rpgtl/font-restore/added.txt").exists());
     }
 }

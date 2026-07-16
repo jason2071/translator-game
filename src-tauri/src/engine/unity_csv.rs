@@ -120,8 +120,7 @@ impl GameEngine for UnityCsvEngine {
         font: &[u8],
         backup_dir: Option<&Path>,
     ) -> Result<Option<String>> {
-        let _ = root;
-        embed_thai_font(data_dir, out_dir, font, backup_dir).map(Some)
+        embed_thai_font(root, data_dir, out_dir, font, backup_dir).map(Some)
     }
 }
 
@@ -405,7 +404,7 @@ pub fn export_locale(
         } else {
             None
         };
-        match embed_thai_font(data_dir, data_dir, super::TARGET_FONT, backup.as_deref()) {
+        match embed_thai_font(root, data_dir, data_dir, super::TARGET_FONT, backup.as_deref()) {
             Ok(n) => note.push_str(&format!(" {n}")),
             Err(e) => note.push_str(&format!(" Font embedding failed: {e}")),
         }
@@ -469,7 +468,7 @@ fn export_mod_locale(
          overwritten, so the game is Thai without switching)."
     );
     if embed_font {
-        match embed_thai_font(data_dir, &out_data, super::TARGET_FONT, None) {
+        match embed_thai_font(root, data_dir, &out_data, super::TARGET_FONT, None) {
             Ok(n) => note.push_str(&format!(" {n}")),
             Err(e) => note.push_str(&format!(" Font embedding failed: {e}")),
         }
@@ -619,11 +618,15 @@ fn json_escape(s: &str) -> String {
 /// (mirroring `data_dir`'s internal layout): `== data_dir` for an in-place export, or
 /// a mod staging mirror. Returns a human note.
 fn embed_thai_font(
+    root: &Path,
     data_dir: &Path,
     write_dir: &Path,
     font: &[u8],
     backup_dir: Option<&Path>,
 ) -> Result<String> {
+    // Only an in-place export can be undone by restore; a mod writes to a staging
+    // mirror, so the restore recording (root-scoped) is skipped for it.
+    let in_place = write_dir == data_dir;
     let sw = data_dir.join("StreamingAssets").join("aa").join("StandaloneWindows64");
     let catalog = data_dir.join("StreamingAssets").join("aa").join("catalog.bin");
     let sw_out = write_dir.join("StreamingAssets").join("aa").join("StandaloneWindows64");
@@ -634,6 +637,15 @@ fn embed_thai_font(
     }
     if !catalog.is_file() {
         return Err(anyhow!("Addressables catalog not found at {}", catalog.display()));
+    }
+    // Record originals so restore can revert this in-place font embed. The font
+    // bundles + catalog aren't translation targets (CSV export is additive), so
+    // `.rpgtl/source/` never covers them.
+    if in_place {
+        super::font_restore::record_write(root, data_dir, &catalog);
+        for bundle in &bundles {
+            super::font_restore::record_write(root, data_dir, bundle);
+        }
     }
 
     // Materialize the font once for the sidecar (it takes a TTF path).

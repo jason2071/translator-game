@@ -188,8 +188,7 @@ impl GameEngine for UnityTextTableEngine {
         font: &[u8],
         _backup_dir: Option<&Path>,
     ) -> Result<Option<String>> {
-        let _ = root;
-        embed_thai_font(data_dir, out_dir, font).map(Some)
+        embed_thai_font(root, data_dir, out_dir, font).map(Some)
     }
 }
 
@@ -598,7 +597,7 @@ pub fn export_bundles(
             // `bake-font` reads the bundles read-only (as font donors) and rewrites the
             // `.assets` fonts — the same `sharedassets0.assets` the DS tier already
             // snapshots — so no extra bundle snapshot is needed here.
-            match embed_thai_font(data_dir, data_dir, super::TARGET_FONT) {
+            match embed_thai_font(root, data_dir, data_dir, super::TARGET_FONT) {
                 Ok(n) => {
                     let _ = std::fs::write(&marker, &want); // mark done; failure just re-bakes next time
                     note.push_str(&format!(" {n}"));
@@ -639,7 +638,10 @@ fn font_fingerprint(font: &[u8]) -> String {
 /// `out_dir` (mirroring the data-dir root). `.assets` are not Addressables bundles, so
 /// no catalog CRC is involved. Needs the SDF-capable helper (system Python + freetype/
 /// numpy/scipy/PIL, or a future frozen build that bundles them).
-fn embed_thai_font(data_dir: &Path, out_dir: &Path, font: &[u8]) -> Result<String> {
+fn embed_thai_font(root: &Path, data_dir: &Path, out_dir: &Path, font: &[u8]) -> Result<String> {
+    // Only an in-place export can be undone by restore (a mod writes to a staging
+    // mirror), so restore recording is skipped otherwise.
+    let in_place = out_dir == data_dir;
     let ttf = temp_path("font", "ttf");
     std::fs::write(&ttf, font).context("writing the Thai font for the helper")?;
     let temp_out = temp_bake_dir();
@@ -662,6 +664,12 @@ fn embed_thai_font(data_dir: &Path, out_dir: &Path, font: &[u8]) -> Result<Strin
                 let dst = out_dir.join(p.file_name().unwrap());
                 if let Some(parent) = dst.parent() {
                     std::fs::create_dir_all(parent)?;
+                }
+                // Record the original (or mark the new file) so restore can undo it.
+                // bake-font's outputs are Addressables bundles, not translation targets,
+                // so `.rpgtl/source/` may not cover them.
+                if in_place {
+                    super::font_restore::record_write(root, data_dir, &dst);
                 }
                 std::fs::copy(&p, &dst).with_context(|| format!("installing {}", dst.display()))?;
                 n += 1;
