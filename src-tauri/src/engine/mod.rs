@@ -41,6 +41,54 @@ pub use codes::ExtractOpts;
 /// [`GameEngine::embed_font`] and Ren'Py's `tl/<lang>/` font remap.
 pub const TARGET_FONT: &[u8] = include_bytes!("../../resources/Sarabun-Regular.ttf");
 
+/// Records what an **in-place** [`GameEngine::embed_font`] changed so
+/// [`crate::project::restore_original`] can undo it. Font/plugin files live
+/// *outside* the data dir (e.g. RPGMaker's `fonts/`, `js/` sit beside `data/`),
+/// so the normal `.rpgtl/source/` snapshot — which mirrors the data dir — can't
+/// reach them. This mirrors the game **root** instead: `original/<root-rel>` holds
+/// the pristine bytes of each overwritten file, and `added.txt` lists each created
+/// file. All calls are best-effort and root-scoped: a path outside `root` (a mod
+/// export writes to a staging mirror, not the game) is silently ignored.
+pub mod font_restore {
+    use std::path::{Path, PathBuf};
+
+    fn dir(root: &Path) -> PathBuf {
+        root.join(".rpgtl").join("font-restore")
+    }
+
+    /// Snapshot `abs`'s ORIGINAL bytes (once) before an in-place embed overwrites it.
+    /// Keeps the first snapshot on re-export, so the *original* is preserved even
+    /// after the file has already been font-patched. Skip files also covered by
+    /// `.rpgtl/source/` (translation-data files) — at embed time they already hold
+    /// translated bytes, and `source/` reverts them correctly.
+    pub fn snapshot_original(root: &Path, abs: &Path) {
+        let Ok(rel) = abs.strip_prefix(root) else { return };
+        let snap = dir(root).join("original").join(rel);
+        if snap.exists() || !abs.exists() {
+            return;
+        }
+        if let Some(p) = snap.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        let _ = std::fs::copy(abs, &snap);
+    }
+
+    /// Record a newly-created file (inside `root`) so restore deletes it. Deduped.
+    pub fn mark_added(root: &Path, abs: &Path) {
+        let Ok(rel) = abs.strip_prefix(root) else { return };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        let list = dir(root).join("added.txt");
+        if let Some(p) = list.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        let cur = std::fs::read_to_string(&list).unwrap_or_default();
+        if cur.lines().any(|l| l == rel) {
+            return;
+        }
+        let _ = std::fs::write(&list, format!("{cur}{rel}\n"));
+    }
+}
+
 /// Result of fingerprinting a folder.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

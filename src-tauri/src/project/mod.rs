@@ -388,15 +388,11 @@ pub struct RestoreResult {
 /// is a no-op for them — their output is a separate overlay the user simply
 /// doesn't select in-game.
 pub fn restore_original(project: &Project) -> Result<RestoreResult> {
-    let source_dir = rpgtl_dir(&project.root).join("source");
-    if !source_dir.exists() {
-        return Ok(RestoreResult {
-            files_restored: 0,
-            note: "Nothing to restore — this game hasn't been exported yet.".to_string(),
-        });
-    }
-
     let mut files_restored = 0usize;
+
+    // 1) Translation-data files: their pristine bytes live under `.rpgtl/source/`,
+    // which mirrors the data dir.
+    let source_dir = rpgtl_dir(&project.root).join("source");
     for entry in walkdir::WalkDir::new(&source_dir).into_iter().flatten() {
         if !entry.file_type().is_file() {
             continue;
@@ -414,6 +410,38 @@ pub fn restore_original(project: &Project) -> Result<RestoreResult> {
         std::fs::copy(snap, &live)
             .with_context(|| format!("restoring original {}", rel.display()))?;
         files_restored += 1;
+    }
+
+    // 2) Undo an in-place `embed_font`: font/plugin files live *outside* the data
+    // dir, so they're recorded under `.rpgtl/font-restore/` mirroring the game root —
+    // `original/` holds overwritten files' pristine bytes, `added.txt` lists created
+    // files to delete.
+    let font_restore = rpgtl_dir(&project.root).join("font-restore");
+    let font_orig = font_restore.join("original");
+    for entry in walkdir::WalkDir::new(&font_orig).into_iter().flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(&font_orig)
+            .with_context(|| format!("font snapshot outside dir: {}", entry.path().display()))?;
+        let live = project.root.join(rel);
+        if let Some(parent) = live.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(entry.path(), &live)
+            .with_context(|| format!("restoring original {}", rel.display()))?;
+        files_restored += 1;
+    }
+    if let Ok(list) = std::fs::read_to_string(font_restore.join("added.txt")) {
+        for rel in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let f = project.root.join(rel);
+            if f.exists() {
+                std::fs::remove_file(&f).with_context(|| format!("removing added {rel}"))?;
+                files_restored += 1;
+            }
+        }
     }
 
     let note = if files_restored == 0 {

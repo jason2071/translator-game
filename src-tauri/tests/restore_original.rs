@@ -6,7 +6,7 @@
 //! while the DB translations are kept.
 
 use app_lib::project::{self, db};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const SCRIPT: &str = "\
 label start:
@@ -65,6 +65,70 @@ fn restore_puts_original_game_files_back() {
         std::fs::read(&game_file).unwrap(),
         translated,
         "re-export after restore reproduces the translated file"
+    );
+}
+
+#[test]
+fn restore_undoes_embed_font_artifacts() {
+    // An in-place export with font embedding both ADDS files (the Thai TTF, the
+    // outline plugin) and MODIFIES files that live *outside* the data dir
+    // (js/plugins.js) — none reachable by the data-dir `.rpgtl/source/` snapshot.
+    // Restore must delete the added files and revert the modified ones.
+    let mz = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mz-sample");
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("game");
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    for entry in std::fs::read_dir(mz.join("data")).unwrap() {
+        let p = entry.unwrap().path();
+        std::fs::copy(&p, data.join(p.file_name().unwrap())).unwrap();
+    }
+    // Give System.json an `advanced` block so the MZ font repoint actually fires.
+    {
+        let sp = data.join("System.json");
+        let mut sys: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
+        sys["advanced"] = serde_json::json!({ "mainFontFilename": "mz-default.woff" });
+        std::fs::write(&sp, serde_json::to_string(&sys).unwrap()).unwrap();
+    }
+    // A plugins.js beside data/ (MZ base == root) so the outline plugin installs.
+    let plugins0 = "var $plugins =\n[\n{\"name\":\"Existing\",\"status\":true,\"description\":\"\",\"parameters\":{}}\n];\n";
+    std::fs::create_dir_all(root.join("js")).unwrap();
+    std::fs::write(root.join("js/plugins.js"), plugins0).unwrap();
+
+    let (project, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+    // Translate every unit so every data file (System.json included) is touched and
+    // snapshotted — then the MZ font repoint in System.json is reverted via source/.
+    for u in db::all_units(&project.conn).unwrap() {
+        db::update_unit(&project.conn, u.id, Some("\u{e41}\u{e1b}\u{e25}"), "Translated").unwrap();
+    }
+
+    // Export in place WITH font embedding.
+    project::export(&project, true, true).unwrap();
+    assert!(root.join(".rpgtl/source/System.json").exists(), "System.json snapshotted");
+    assert!(root.join("fonts/Sarabun-Regular.ttf").is_file(), "font TTF added");
+    assert!(root.join("js/plugins/RPGTL_ThaiText.js").is_file(), "outline plugin added");
+    assert!(
+        std::fs::read_to_string(root.join("js/plugins.js")).unwrap().contains("RPGTL_ThaiText"),
+        "plugins.js registers our plugin"
+    );
+
+    // Restore: added files gone, plugins.js back to original.
+    let res = project::restore_original(&project).unwrap();
+    assert!(res.files_restored >= 1, "restored at least one file");
+    assert!(!root.join("fonts/Sarabun-Regular.ttf").exists(), "font TTF deleted");
+    assert!(!root.join("js/plugins/RPGTL_ThaiText.js").exists(), "outline plugin deleted");
+    assert_eq!(
+        std::fs::read_to_string(root.join("js/plugins.js")).unwrap(),
+        plugins0,
+        "plugins.js reverted to original"
+    );
+    // System.json (a data file) is reverted by the source/ snapshot: no embedded font.
+    let sys: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(data.join("System.json")).unwrap()).unwrap();
+    assert_ne!(
+        sys["advanced"]["mainFontFilename"], "Sarabun-Regular.ttf",
+        "System.json font repoint reverted"
     );
 }
 

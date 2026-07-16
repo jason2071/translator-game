@@ -148,7 +148,7 @@ impl GameEngine for MvMzEngine {
     /// hardcoded family) will ignore this — it is best-effort.
     fn embed_font(
         &self,
-        _root: &Path,
+        root: &Path,
         data_dir: &Path,
         out_dir: &Path,
         font: &[u8],
@@ -162,10 +162,18 @@ impl GameEngine for MvMzEngine {
         // preferred from `base_out`.
         let base_in = data_dir.parent().unwrap_or(data_dir);
         let base_out = out_dir.parent().unwrap_or(out_dir);
+        // Only an in-place export can be undone by restore; a mod writes to a staging
+        // mirror outside the game, so recording (and the root-scoped helpers) no-op.
+        let in_place = out_dir == data_dir;
         let fonts_out = base_out.join("fonts");
         std::fs::create_dir_all(&fonts_out).context("creating fonts/ dir")?;
-        std::fs::write(fonts_out.join(FONT_FILE), font)
+        let font_path = fonts_out.join(FONT_FILE);
+        let font_is_new = !font_path.exists();
+        std::fs::write(&font_path, font)
             .with_context(|| format!("writing fonts/{FONT_FILE}"))?;
+        if in_place && font_is_new {
+            crate::engine::font_restore::mark_added(root, &font_path);
+        }
 
         // Repoint the game's font at ours — MV via gamefont.css, MZ via System.json.
         let css_in = base_in.join("fonts").join("gamefont.css");
@@ -178,6 +186,11 @@ impl GameEngine for MvMzEngine {
                     std::fs::create_dir_all(parent)?;
                 }
                 let _ = std::fs::copy(&css_in, &dst);
+            }
+            // Snapshot the original CSS (once) so restore can revert this repoint —
+            // it lives outside the data dir, so `.rpgtl/source/` can't cover it.
+            if in_place {
+                crate::engine::font_restore::snapshot_original(root, &css_in);
             }
             // Fixed template overriding both families MV uses; later @font-face for
             // a family wins in NW.js/Chromium, and writing a constant keeps
@@ -214,7 +227,7 @@ impl GameEngine for MvMzEngine {
         // outline blobs them together (a mai-ek over a sara-ii). A tiny plugin
         // drops the outline width so the marks stay distinct. Best-effort: a
         // failure here must not fail the font embed.
-        let outline_note = match install_thin_outline_plugin(base_in, base_out, backup_dir) {
+        let outline_note = match install_thin_outline_plugin(root, base_in, base_out, in_place, backup_dir) {
             Ok(note) => note,
             Err(e) => Some(format!("(text-outline plugin skipped: {e})")),
         };
@@ -251,8 +264,10 @@ const THIN_OUTLINE_PLUGIN: &str = r#"/*:
 /// after it is already registered is a no-op. Returns a short status note, or
 /// `None` when the game has no `js/plugins.js` (nothing we can safely hook).
 fn install_thin_outline_plugin(
+    root: &Path,
     base_in: &Path,
     base_out: &Path,
+    in_place: bool,
     backup_dir: Option<&Path>,
 ) -> Result<Option<String>> {
     const PLUGIN_NAME: &str = "RPGTL_ThaiText";
@@ -268,8 +283,13 @@ fn install_thin_outline_plugin(
     // 1) Drop the plugin file (idempotent overwrite) under base_out.
     let plugins_dir = base_out.join("js").join("plugins");
     std::fs::create_dir_all(&plugins_dir).context("creating js/plugins/ dir")?;
-    std::fs::write(plugins_dir.join(format!("{PLUGIN_NAME}.js")), THIN_OUTLINE_PLUGIN)
+    let plugin_file = plugins_dir.join(format!("{PLUGIN_NAME}.js"));
+    let plugin_is_new = !plugin_file.exists();
+    std::fs::write(&plugin_file, THIN_OUTLINE_PLUGIN)
         .context("writing the thin-outline plugin")?;
+    if in_place && plugin_is_new {
+        crate::engine::font_restore::mark_added(root, &plugin_file);
+    }
 
     // 2) Register it in the $plugins array unless it is already there.
     let text = std::fs::read_to_string(read_from).context("reading js/plugins.js")?;
@@ -286,6 +306,11 @@ fn install_thin_outline_plugin(
             std::fs::create_dir_all(parent)?;
         }
         let _ = std::fs::copy(read_from, &dst);
+    }
+    // Snapshot the original plugins.js (once) so restore can drop our registration —
+    // it lives outside the data dir, beyond `.rpgtl/source/`'s reach.
+    if in_place {
+        crate::engine::font_restore::snapshot_original(root, &plugins_out);
     }
     // plugins.js is `var $plugins =\n[ {...}, ... ];` — parse the JSON array
     // between the first '[' and the last ']', append our entry, and rewrite,
@@ -961,5 +986,76 @@ mod tests {
             .embed_font(tmp.path(), &data, &data, super::super::TARGET_FONT, None)
             .unwrap();
         assert_eq!(read_names(), vec!["Existing", "RPGTL_ThaiText"]);
+    }
+
+    #[test]
+    fn in_place_embed_font_records_restore_info() {
+        // Deployed MV layout with both font hooks so we exercise css + plugins.js.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let data = root.join("www").join("data");
+        let fonts = root.join("www").join("fonts");
+        let js = root.join("www").join("js");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&fonts).unwrap();
+        std::fs::create_dir_all(&js).unwrap();
+        let css0 = "@font-face { font-family: GameFont; src: url(\"orig.ttf\"); }";
+        let plugins0 = "var $plugins =\n[\n{\"name\":\"Existing\",\"status\":true,\"description\":\"\",\"parameters\":{}}\n];\n";
+        std::fs::write(fonts.join("gamefont.css"), css0).unwrap();
+        std::fs::write(js.join("plugins.js"), plugins0).unwrap();
+
+        MvMzEngine
+            .embed_font(root, &data, &data, super::super::TARGET_FONT, None)
+            .unwrap();
+
+        let fr = root.join(".rpgtl").join("font-restore");
+        // Overwritten files' originals snapshotted (root-relative mirror).
+        assert_eq!(
+            std::fs::read_to_string(fr.join("original/www/fonts/gamefont.css")).unwrap(),
+            css0
+        );
+        assert_eq!(
+            std::fs::read_to_string(fr.join("original/www/js/plugins.js")).unwrap(),
+            plugins0
+        );
+        // Created files listed for deletion.
+        let added = std::fs::read_to_string(fr.join("added.txt")).unwrap();
+        assert!(added.contains("www/fonts/Sarabun-Regular.ttf"), "{added}");
+        assert!(added.contains("www/js/plugins/RPGTL_ThaiText.js"), "{added}");
+
+        // Simulate restore: revert snapshots + delete added → back to original.
+        std::fs::copy(fr.join("original/www/fonts/gamefont.css"), fonts.join("gamefont.css")).unwrap();
+        std::fs::copy(fr.join("original/www/js/plugins.js"), js.join("plugins.js")).unwrap();
+        for rel in added.lines().filter(|l| !l.trim().is_empty()) {
+            let _ = std::fs::remove_file(root.join(rel));
+        }
+        assert_eq!(std::fs::read_to_string(fonts.join("gamefont.css")).unwrap(), css0);
+        assert_eq!(std::fs::read_to_string(js.join("plugins.js")).unwrap(), plugins0);
+        assert!(!fonts.join("Sarabun-Regular.ttf").exists());
+        assert!(!js.join("plugins/RPGTL_ThaiText.js").exists());
+    }
+
+    #[test]
+    fn mod_export_embed_font_records_nothing() {
+        // A mod export writes to a staging mirror (out_dir != data_dir) outside the
+        // game, so nothing is recorded for restore.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("System.json"), r#"{"advanced":{"mainFontFilename":"mz.woff"}}"#).unwrap();
+        let stage = tmp.path().join("stage");
+        let stage_data = stage.join("data");
+        std::fs::create_dir_all(&stage_data).unwrap();
+        std::fs::write(stage_data.join("System.json"), r#"{"advanced":{"mainFontFilename":"mz.woff"}}"#).unwrap();
+
+        MvMzEngine
+            .embed_font(root, &data, &stage_data, super::super::TARGET_FONT, None)
+            .unwrap();
+
+        assert!(!root.join(".rpgtl").join("font-restore").exists());
+        // The font landed in the staging mirror, not the game.
+        assert!(stage.join("fonts/Sarabun-Regular.ttf").is_file());
+        assert!(!root.join("fonts/Sarabun-Regular.ttf").exists());
     }
 }
