@@ -605,12 +605,15 @@ fn is_block_skip(trimmed: &str) -> bool {
     if HEADS.iter().any(|h| trimmed.starts_with(h)) {
         return true;
     }
-    // `init [priority] python [in <namespace>]:` — a Python block whose body is
-    // raw code, regardless of the optional integer priority (e.g.
-    // `init -100 python in phone.application:`). Skip it so code strings like a
-    // `style="empty"` kwarg aren't mistaken for dialogue and translated (which
-    // would rename the style and crash Ren'Py). A bare `init python …` matches
-    // here too. Any `_()`-wrapped strings inside are still harvested earlier.
+    // `init [priority] <python|screen|style|transform|layeredimage|testcase> …:` —
+    // a block whose body is raw code / screen-language / style props, regardless of
+    // the optional integer priority (e.g. `init -100 python in phone.application:`,
+    // `init -1 style frame:`, `init -501 screen Log_scr():`). Skip it so asset paths
+    // and style/property kwargs (`background Frame("gui/frame.png")`,
+    // `properties gui.text_properties("input")`, `add "main_menu"`) aren't mistaken
+    // for dialogue and translated (which breaks the screen / renames the style and
+    // crashes Ren'Py). The bare forms are already in HEADS; this catches the
+    // `init`-prefixed forms. Any `_()`-wrapped strings inside are still harvested.
     if let Some(rest) = trimmed.strip_prefix("init") {
         if rest.starts_with(char::is_whitespace) {
             let mut toks = rest.split_whitespace();
@@ -618,7 +621,10 @@ fn is_block_skip(trimmed: &str) -> bool {
             if head.map(|t| t.parse::<i64>().is_ok()).unwrap_or(false) {
                 head = toks.next(); // consume the optional priority
             }
-            if head.map(|t| t.trim_end_matches(':')) == Some("python") {
+            if matches!(
+                head.map(|t| t.trim_end_matches(':')),
+                Some("python" | "screen" | "style" | "transform" | "layeredimage" | "testcase")
+            ) {
                 return true;
             }
         }
@@ -1999,6 +2005,35 @@ init python:
         assert!(!texts.contains(&"This is UI, not dialogue."));
         assert!(!texts.contains(&"code string"));
         assert!(!texts.iter().any(|t| t.contains("Eileen")));
+    }
+
+    #[test]
+    fn init_prefixed_screen_and_style_blocks_are_skipped() {
+        // `init [priority] screen/style/...:` bodies are screen-language / style
+        // props, not dialogue. Regression: MilfyCity's screens.rpy uses this form,
+        // and asset paths + property kwargs were being mis-extracted as Dialogue.
+        let src = r#"
+init -1 style frame:
+    background Frame("gui/frame.png", gui.frame_borders, tile=gui.frame_tile)
+
+init -1 style input:
+    properties gui.text_properties("input", accent=True)
+
+init -501 screen Log_scr():
+    tag menu
+    add "main_menu"
+    text "who" id "who"
+
+label start:
+    e "Real dialogue."
+"#;
+        let units = extract(src);
+        let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+
+        assert!(texts.contains(&"Real dialogue."), "kept real dialogue");
+        for junk in ["gui/frame.png", "input", "main_menu", "who"] {
+            assert!(!texts.contains(&junk), "must skip screen/style junk: {junk}");
+        }
     }
 
     #[test]
