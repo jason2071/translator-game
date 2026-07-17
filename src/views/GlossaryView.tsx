@@ -7,6 +7,7 @@ import { useGlossarySuggest } from "../glossarySuggest";
 import { useTranslation } from "../translation";
 import TransProgress from "../components/TransProgress";
 import { Icon } from "../components/Icon";
+import { OverflowMenu, type MenuItem } from "../components/OverflowMenu";
 
 export default function GlossaryView() {
   const [entries, setEntries] = useState<GlossaryEntry[]>([]);
@@ -34,61 +35,67 @@ export default function GlossaryView() {
 
   return (
     <div className="glossary">
-      <GameContextPanel />
-
-      <CharactersPanel />
-
-      <p className="hint">
-        Terms are fed to the AI and used to lint translations for consistency
-        (proper nouns, stats, item names).
-      </p>
-
-      <SuggestPanel onAdded={reload} />
-
-
-      <div className="gloss-add">
-        <input placeholder="Source term" value={term} onChange={(e) => setTerm(e.target.value)} />
-        <input
-          placeholder="Translation"
-          value={translation}
-          onChange={(e) => setTranslation(e.target.value)}
-        />
-        <input placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
-        <label className="chk">
-          <input
-            type="checkbox"
-            checked={caseSensitive}
-            onChange={(e) => setCaseSensitive(e.target.checked)}
-          />
-          Aa
-        </label>
-        <button className="primary" onClick={add}>
-          Add
-        </button>
+      <div className="gloss-setup">
+        <GameContextPanel />
+        <CharactersPanel />
       </div>
 
-      <table className="gloss-table">
-        <thead>
-          <tr>
-            <th>Term</th>
-            <th>Translation</th>
-            <th>Note</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {entries.map((g) => (
-            <GlossRow key={g.id} entry={g} onChanged={reload} />
-          ))}
-          {entries.length === 0 && (
+      <section className="gloss-section">
+        <p className="gloss-section-label">Term suggestions</p>
+        <SuggestPanel onAdded={reload} />
+      </section>
+
+      <section className="gloss-section">
+        <p className="gloss-section-label">Glossary terms</p>
+
+        <div className="gloss-add">
+          <input placeholder="Source term" value={term} onChange={(e) => setTerm(e.target.value)} />
+          <input
+            placeholder="Translation"
+            value={translation}
+            onChange={(e) => setTranslation(e.target.value)}
+          />
+          <input
+            placeholder="Term note (optional)"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+          <label className="chk">
+            <input
+              type="checkbox"
+              checked={caseSensitive}
+              onChange={(e) => setCaseSensitive(e.target.checked)}
+            />
+            Aa
+          </label>
+          <button className="primary" onClick={add}>
+            Add
+          </button>
+        </div>
+
+        <table className="gloss-table">
+          <thead>
             <tr>
-              <td colSpan={4} className="empty">
-                No glossary entries yet.
-              </td>
+              <th>Term</th>
+              <th>Translation</th>
+              <th>Note</th>
+              <th></th>
             </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {entries.map((g) => (
+              <GlossRow key={g.id} entry={g} onChanged={reload} />
+            ))}
+            {entries.length === 0 && (
+              <tr>
+                <td colSpan={4} className="empty">
+                  No glossary entries yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </section>
     </div>
   );
 }
@@ -121,8 +128,13 @@ function GameContextPanel() {
   const setGlossaryProvider = useSettings((s) => s.setGlossaryProvider);
   const [drafting, setDrafting] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // Collapsed by default; only springs open if there's nothing here yet, since
+  // that's the one case that needs attention on first look.
+  const [open, setOpen] = useState(() => !(project?.gameContext ?? "").trim());
 
   if (!project) return null;
+
+  const hasContext = !!project.gameContext.trim();
 
   async function draft() {
     const p = useStore.getState().project;
@@ -152,54 +164,72 @@ function GameContextPanel() {
   }
 
   return (
-    <div className="gloss-context">
-      <div className="gloss-context-head">
-        <label>
-          Game context <span className="hint">(this project)</span>
-        </label>
-        <div className="gloss-context-actions">
-          <select
-            className="gloss-provider"
-            value={project.era ?? ""}
-            onChange={(e) => setEra(e.target.value)}
-            title="Setting era — seeds period-appropriate register/pronouns (e.g. ancient → ข้า/เจ้า) into the AI prompt on every Run"
-          >
-            {ERA_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-          <select
-            className="gloss-provider"
-            value={glossaryProvider}
-            onChange={(e) => setGlossaryProvider(e.target.value as ProviderKind)}
-            disabled={drafting}
-            title="AI provider for glossary + game-context help (independent of the Run provider)"
-          >
-            {PROVIDER_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {PROVIDER_LABELS[k]}
-              </option>
-            ))}
-          </select>
-          <button
-            className="ghost"
-            onClick={draft}
-            disabled={drafting}
-            title="Draft a setting/character brief from this game's own text with AI"
-          >
-            <Icon name="sparkle" size={14} /> {drafting ? "Drafting…" : "AI draft"}
-          </button>
-        </div>
+    <div className="gloss-collapse">
+      <div className="gloss-collapse-head">
+        <button
+          type="button"
+          className="gloss-collapse-toggle"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+        >
+          <Icon name="chevron-right" size={14} className={`gloss-chevron${open ? " open" : ""}`} />
+          {open ? (
+            <label>
+              Game context <span className="hint">(this project)</span>
+            </label>
+          ) : (
+            <span className="gloss-collapse-summary">Game context · {hasContext ? "set" : "empty"}</span>
+          )}
+        </button>
+        {open && (
+          <div className="gloss-context-actions">
+            <select
+              className="gloss-provider"
+              value={project.era ?? ""}
+              onChange={(e) => setEra(e.target.value)}
+              title="Setting era — seeds period-appropriate register/pronouns (e.g. ancient → ข้า/เจ้า) into the AI prompt on every Run"
+            >
+              {ERA_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <select
+              className="gloss-provider"
+              value={glossaryProvider}
+              onChange={(e) => setGlossaryProvider(e.target.value as ProviderKind)}
+              disabled={drafting}
+              title="AI provider for glossary + game-context help (independent of the Run provider)"
+            >
+              {PROVIDER_KINDS.map((k) => (
+                <option key={k} value={k}>
+                  {PROVIDER_LABELS[k]}
+                </option>
+              ))}
+            </select>
+            <button
+              className="ghost"
+              onClick={draft}
+              disabled={drafting}
+              title="Draft a setting/character brief from this game's own text with AI"
+            >
+              <Icon name="sparkle" size={14} /> {drafting ? "Drafting…" : "AI draft"}
+            </button>
+          </div>
+        )}
       </div>
-      <textarea
-        rows={3}
-        placeholder="Lore/setting for THIS game — era, characters, relationships, tone, world rules. Fed to the AI on every Run. e.g. Modern-day Thailand; Callum and Daisy are siblings; casual speech."
-        value={project.gameContext}
-        onChange={(e) => setGameContext(e.target.value)}
-      />
-      {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
+      {open && (
+        <div className="gloss-collapse-body">
+          <textarea
+            rows={3}
+            placeholder="Lore/setting for THIS game — era, characters, relationships, tone, world rules. Fed to the AI on every Run. e.g. Modern-day Thailand; Callum and Daisy are siblings; casual speech."
+            value={project.gameContext}
+            onChange={(e) => setGameContext(e.target.value)}
+          />
+          {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -217,11 +247,18 @@ const GENDER_OPTIONS: { value: string; label: string }[] = [
 
 function CharactersPanel() {
   const project = useStore((s) => s.project);
+  // Snapshot from the store's already-loaded cast (fetched with the project) —
+  // just to seed the collapse default; this panel keeps its own `chars` below
+  // for optimistic edits.
+  const storeCharCount = useStore((s) => s.characters.length);
   const glossaryConfig = useSettings((s) => s.glossaryConfig);
   const [chars, setChars] = useState<Character[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [rescanning, setRescanning] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // Collapsed by default; only springs open when there's no cast yet, since
+  // that's the one case where "AI find characters" needs to be seen right away.
+  const [open, setOpen] = useState(() => storeCharCount === 0);
 
   async function reload() {
     setChars(await api.charactersList());
@@ -275,6 +312,20 @@ function CharactersPanel() {
     }
   }
 
+  async function classifyNotes() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const updated = await api.classifyPersonas(glossaryConfig());
+      setChars(updated);
+      setMsg("AI filled persona/register notes — edit any that look off.");
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function clearAll() {
     if (!(await ask("Remove every character and gender from this project?", {
       title: "Clear characters?",
@@ -287,79 +338,139 @@ function CharactersPanel() {
   }
 
   const unset = (chars ?? []).filter((c) => !c.gender).length;
+  const noNote = (chars ?? []).filter((c) => !c.note).length;
   const empty = chars !== null && chars.length === 0;
+  const locked = busy || rescanning;
+
+  // Secondary/contextual actions live in a "⋯" menu so the primary AI-find button
+  // stays the one clear action; Clear (destructive) is here too, not in the main row.
+  const menuItems: MenuItem[] = [
+    {
+      key: "rescan",
+      icon: "retry",
+      label: rescanning ? "Rescanning…" : "Rescan game",
+      title:
+        "Re-scan the game: pull in new text the engine now supports + fill in speakers on existing lines (keeps translations)",
+      onClick: () => {
+        if (!locked) rescan();
+      },
+    },
+    ...(!empty
+      ? [
+          {
+            key: "notes",
+            icon: "sparkle" as const,
+            label: busy ? "Filling…" : noNote > 0 ? `AI fill notes (${noNote})` : "Redo notes",
+            title:
+              "Read each character's sample lines and draft a persona/register note with AI, so pronouns and politeness fit them (doesn't change gender)",
+            onClick: () => {
+              if (!locked) classifyNotes();
+            },
+          },
+          {
+            key: "clear",
+            icon: "trash" as const,
+            label: "Clear all characters",
+            title: "Remove every character (e.g. to redo the AI find from scratch)",
+            onClick: () => {
+              if (!locked) clearAll();
+            },
+          },
+        ]
+      : []),
+  ];
 
   return (
-    <div className="gloss-context">
-      <div className="gloss-context-head">
-        <label>
-          Characters <span className="hint">(gender → Thai ครับ/ค่ะ · this project)</span>
-        </label>
-        <div className="gloss-context-actions">
-          <button
-            className="ghost"
-            onClick={rescan}
-            disabled={rescanning || busy}
-            title="Re-scan the game: pull in new text the engine now supports + fill in speakers on existing lines (keeps translations)"
-          >
-            {rescanning ? "Rescanning…" : "Rescan game"}
-          </button>
-          {!empty && (
+    <div className="gloss-collapse">
+      <div className="gloss-collapse-head">
+        <button
+          type="button"
+          className="gloss-collapse-toggle"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+        >
+          <Icon name="chevron-right" size={14} className={`gloss-chevron${open ? " open" : ""}`} />
+          {open ? (
+            <label>
+              Characters{" "}
+              <span className="hint">(gender → ครับ/ค่ะ · note → persona/register · this project)</span>
+            </label>
+          ) : (
+            <span className="gloss-collapse-summary">
+              Characters · {chars?.length ?? storeCharCount}
+              {noNote > 0 && chars !== null ? ` · ${noNote} need notes` : ""}
+            </span>
+          )}
+        </button>
+        {open && (
+          <div className="gloss-context-actions">
             <button
               className="ghost"
-              onClick={clearAll}
-              disabled={busy || rescanning}
-              title="Remove every character (e.g. to redo the AI find from scratch)"
+              onClick={classify}
+              disabled={busy}
+              title="Find the game's characters and label each one's gender with AI (review the result)"
             >
-              Clear
+              <Icon name="sparkle" size={14} />{" "}
+              {busy
+                ? "Finding…"
+                : empty
+                  ? "AI find characters"
+                  : unset > 0
+                    ? `Auto-classify (${unset})`
+                    : "Re-classify"}
             </button>
-          )}
-          <button
-            className="ghost"
-            onClick={classify}
-            disabled={busy}
-            title="Find the game's characters and label each one's gender with AI (review the result)"
-          >
-            <Icon name="sparkle" size={14} />{" "}
-            {busy
-              ? "Finding…"
-              : empty
-                ? "AI find characters"
-                : unset > 0
-                  ? `Auto-classify (${unset})`
-                  : "Re-classify"}
-          </button>
-        </div>
+            <OverflowMenu items={menuItems} />
+          </div>
+        )}
       </div>
-      {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
-      {chars === null ? (
-        <p className="hint">Loading…</p>
-      ) : empty ? (
-        <p className="hint">
-          No characters yet. Click <strong>AI find characters</strong> — it finds the cast
-          from the game and assigns gender, so translated Thai uses the right particle
-          (ครับ / ค่ะ) per speaker. Review and fix any below.
-        </p>
-      ) : (
-        <div className="char-grid">
-          {chars.map((c) => (
-            <div key={c.name} className={`char-row${c.gender ? " set" : ""}`}>
-              <span className="char-name" title={c.name}>
-                {c.name}
-              </span>
-              <select
-                className="gloss-provider"
-                value={c.gender}
-                onChange={(e) => setGender(c.name, e.target.value)}
-              >
-                {GENDER_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
+      {open && (
+        <div className="gloss-collapse-body">
+          {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
+          {chars === null ? (
+            <p className="hint">Loading…</p>
+          ) : empty ? (
+            <p className="hint">
+              No characters yet. Click <strong>AI find characters</strong> — it finds the cast
+              from the game and assigns each a gender (right Thai particle ครับ / ค่ะ) plus a short
+              persona/register note (so pronouns and politeness fit the character). Review and fix any
+              below.
+            </p>
+          ) : (
+            <div className="char-grid">
+              {chars.map((c) => (
+                <div key={c.name} className={`char-row${c.gender || c.note ? " set" : ""}`}>
+                  <span className="char-name" title={c.name}>
+                    {c.name}
+                  </span>
+                  <select
+                    className="gloss-provider"
+                    value={c.gender}
+                    onChange={(e) => setGender(c.name, e.target.value)}
+                  >
+                    {GENDER_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    className="char-note"
+                    type="text"
+                    value={c.note}
+                    placeholder="persona / register (optional)"
+                    title="Who they are, how they speak, relationships — e.g. น้องสาว protagonist, เรียกพี่, กันเอง"
+                    // Keep the field controlled while typing; persist once on blur.
+                    onChange={(e) =>
+                      setChars((cs) =>
+                        (cs ?? []).map((x) => (x.name === c.name ? { ...x, note: e.target.value } : x)),
+                      )
+                    }
+                    onBlur={(e) => api.characterSetNote(c.name, e.target.value)}
+                  />
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
     </div>
@@ -407,8 +518,13 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
   if (!cands) {
     return (
       <div className="suggest-bar">
-        <button className="ghost" onClick={suggest} disabled={loading}>
-          <Icon name="sparkle" size={14} /> {loading ? "Scanning…" : "Auto-suggest from game"}
+        <button
+          className="ghost"
+          onClick={suggest}
+          disabled={loading}
+          title="Scan the game's Name/Term fields locally to propose glossary terms — no AI, free"
+        >
+          <Icon name="search" size={14} /> {loading ? "Scanning…" : "Auto-suggest from game"}
         </button>
         <button
           className="ghost"

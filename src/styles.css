@@ -1343,46 +1343,99 @@ code {
 /* ============================================================
    Glossary
    ============================================================ */
-.gloss-context {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  margin-bottom: 1rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid var(--border);
+/* Two collapsible setup rows (Game context, Characters), collapsed by default
+   so the glossary table — the modal's actual content — is what you see first.
+   One quiet divider between them; no boxed "card" styling, matching the plain
+   eyebrow-label sections below. */
+.gloss-setup {
+  margin-bottom: 1.2rem;
 }
-.gloss-context-head {
+.gloss-collapse {
+  padding: 0.5rem 0;
+}
+.gloss-collapse + .gloss-collapse {
+  border-top: 1px solid var(--border);
+}
+.gloss-collapse-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-2);
 }
+/* The label itself IS the toggle — no second header, just a chevron + the
+   existing title (or, collapsed, a one-line status in its place). */
+.gloss-collapse-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.gloss-collapse-toggle label {
+  cursor: pointer;
+}
+.gloss-chevron {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.gloss-chevron.open {
+  transform: rotate(90deg);
+}
+.gloss-collapse-summary {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gloss-collapse-body {
+  margin-top: 0.5rem;
+  padding-left: 1.4rem; /* lines up under the title, past the chevron */
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.gloss-collapse-body textarea {
+  width: 100%;
+  resize: vertical;
+}
 .gloss-context-actions {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 0.35rem;
 }
-.gloss-context textarea {
-  width: 100%;
-  resize: vertical;
+.gloss-context-actions button {
+  white-space: nowrap;
 }
 
-/* Character → gender grid (speaker particles). */
+/* Character → gender + persona/register grid (speaker particles). */
 .char-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-  gap: 0.35rem 0.6rem;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.25rem 0.6rem;
   margin-top: 0.4rem;
-  max-height: 220px;
+  max-height: 260px;
   overflow-y: auto;
 }
 .char-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.4rem;
 }
 .char-row .char-name {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1394,6 +1447,34 @@ code {
 }
 .char-row select {
   flex: 0 0 auto;
+}
+/* The persona/register note takes a full second line under name + gender. */
+.char-row .char-note {
+  flex: 1 1 100%;
+  min-width: 0;
+  font-size: 0.8em;
+}
+/* Denser than the global input padding — the cast grid can get long. */
+.char-row .char-note,
+.char-row select {
+  padding: 0.25rem 0.4rem;
+}
+
+/* Grouped section (Term suggestions / Glossary terms) with an eyebrow label, so the
+   modal reads as organized groups rather than one long form. */
+.gloss-section {
+  margin-bottom: 1.1rem;
+}
+.gloss-section:last-child {
+  margin-bottom: 0;
+}
+.gloss-section-label {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  font-weight: 600;
+  margin: 0 0 0.35rem;
 }
 
 .gloss-add {
@@ -1443,17 +1524,15 @@ code {
   margin-bottom: 0.8rem;
 }
 .suggest-panel {
-  margin-bottom: 1rem;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  overflow: hidden;
+  margin-bottom: 0;
 }
+/* Same thin-divider language as the collapse rows/table below — no boxed card,
+   no separate header fill, so this doesn't compete with the rest of the modal. */
 .suggest-head {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.5rem 0.7rem;
-  background: var(--panel2);
+  padding: 0.4rem 0;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
@@ -1496,8 +1575,7 @@ code {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
-  padding: 0.5rem 0.7rem;
-  background: var(--panel);
+  padding: 0.5rem 0;
   border-bottom: 1px solid var(--border);
 }
 .suggest-progress .tb-progress {
@@ -1522,7 +1600,7 @@ code {
   grid-template-columns: auto 1fr 1fr auto;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.3rem 0.7rem;
+  padding: 0.3rem;
   border-bottom: 1px solid var(--border);
 }
 .cand-term {
