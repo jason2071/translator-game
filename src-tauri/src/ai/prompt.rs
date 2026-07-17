@@ -324,21 +324,47 @@ pub fn gender_directive(chars: &[(String, String)], target_lang: &str) -> Option
     ))
 }
 
+/// A system directive giving the model a short persona/register note per speaker (who
+/// they are, how they talk, their relationships) so it picks fitting pronouns, honorifics,
+/// and politeness level per line. Unlike [`gender_directive`] this is **not** Thai-gated —
+/// register/persona helps any target language. `chars` is `(name, note)`; entries with an
+/// empty note are skipped; returns `None` when none carry a note.
+pub fn persona_directive(chars: &[(String, String)], _target_lang: &str) -> Option<String> {
+    let lines: Vec<String> = chars
+        .iter()
+        .filter(|(n, note)| !n.trim().is_empty() && !note.trim().is_empty())
+        .map(|(n, note)| format!("- {}: {}", n.trim(), note.trim()))
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Speaker personas & register — who each speaker is and how they talk. Use these to \
+         pick the right pronouns, honorifics, and politeness level per line; read each item's \
+         `ctx` for the speaker:\n{}",
+        lines.join("\n")
+    ))
+}
+
 /// Build the (system, user) prompt to FIND the person characters among candidate names
 /// and label each one's GENDER, so [`gender_directive`] can drive gendered Thai
 /// particles. Candidates come from dialogue speakers and mined proper nouns, so the
 /// model must DROP non-persons (items, places, UI/system labels). `candidates` is
 /// `(name, joined_sample_lines)`. The response is parsed by [`parse_gender_classify`].
 pub fn build_gender_classify(candidates: &[(String, String)]) -> (String, String) {
-    let sys = "You are labeling the CHARACTERS of a video game with their gender, so a \
-        translator can choose gendered Thai politeness particles (ครับ male / ค่ะ female). \
-        The user gives candidate names, each optionally with a few sample lines. KEEP only \
-        the ones that are PERSON characters (people who speak or are addressed) and DROP \
-        anything that is an item, place, skill, UI label, or system string. For each kept \
-        character answer male, female, or neutral — use neutral only for a narrator, system \
-        voice, a group, or a genuinely ambiguous person. Respond with ONLY a JSON array of \
-        objects {\"name\": \"<name>\", \"gender\": \"<male|female|neutral>\"}, with the name \
-        exactly as given, omitting every dropped candidate. No prose, no reasoning."
+    let sys = "You are labeling the CHARACTERS of a video game so a translator can pick the \
+        right gendered Thai politeness particles (ครับ male / ค่ะ female) AND fitting pronouns \
+        and register. The user gives candidate names, each optionally with a few sample lines. \
+        KEEP only the ones that are PERSON characters (people who speak or are addressed) and \
+        DROP anything that is an item, place, skill, UI label, or system string. For each kept \
+        character give: `gender` = male, female, or neutral (neutral only for a narrator, system \
+        voice, a group, or a genuinely ambiguous person); and `note` = a SHORT Thai persona/ \
+        register hint (≤15 words) — who they are, how they speak, and their relationship to \
+        others (e.g. \"น้องสาว protagonist, เรียกพี่, พูดกันเอง\" or \"หัวหน้า, ทางการ, ใช้ ผม/คุณ\"). \
+        Leave `note` an empty string if the sample lines don't support one — do not invent. \
+        Respond with ONLY a JSON array of objects \
+        {\"name\": \"<name>\", \"gender\": \"<male|female|neutral>\", \"note\": \"<thai hint>\"}, \
+        with the name exactly as given, omitting every dropped candidate. No prose, no reasoning."
         .to_string();
     let user = candidates
         .iter()
@@ -354,9 +380,66 @@ pub fn build_gender_classify(candidates: &[(String, String)]) -> (String, String
     (sys, user)
 }
 
-/// Parse a gender-classify response into `(name, gender)` pairs (gender normalized).
+/// Build the (system, user) prompt to write a SHORT persona/register `note` for each
+/// already-known character — the corpus feeds [`persona_directive`]. Unlike
+/// [`build_gender_classify`] these candidates are known speakers, so it doesn't drop
+/// non-persons; it focuses entirely on the note. `candidates` is `(name, sample_lines)`.
+/// Parsed by [`parse_persona_classify`].
+pub fn build_persona_classify(candidates: &[(String, String)]) -> (String, String) {
+    let sys = "You are writing a SHORT persona/register note for each CHARACTER of a video \
+        game, so a translator can pick fitting pronouns, honorifics, and politeness level. \
+        The user gives character names, each with a few of their own sample lines. For each \
+        name return `note` = a concise Thai hint (≤15 words): who they are, how they speak \
+        (formal / casual / rude / childish / etc.), and their relationship to others when the \
+        lines show it — e.g. \"น้องสาว protagonist, เรียกพี่, พูดกันเอง\" or \
+        \"หัวหน้าองค์กร, ทางการ, ใช้ ผม/คุณ\". If the sample lines don't support a persona, \
+        return an empty string for that name — do NOT invent details. Respond with ONLY a JSON \
+        array of objects {\"name\": \"<name>\", \"note\": \"<thai hint>\"}, with the name exactly \
+        as given. No prose, no reasoning."
+        .to_string();
+    let user = candidates
+        .iter()
+        .map(|(n, s)| {
+            if s.trim().is_empty() {
+                n.clone()
+            } else {
+                format!("{n}\n{s}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n---\n");
+    (sys, user)
+}
+
+/// Parse a persona-classify response into `(name, note)` pairs (note may be empty).
 /// Tolerant of ```json fences, `<think>` blocks, and an object-wrapped array.
-pub fn parse_gender_classify(text: &str) -> Vec<(String, String)> {
+pub fn parse_persona_classify(text: &str) -> Vec<(String, String)> {
+    let cleaned = strip_fences(&strip_reasoning(text));
+    let Some(arr) = extract_array(&cleaned) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in arr {
+        let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if name.is_empty() {
+            continue;
+        }
+        let note = e
+            .get("note")
+            .or_else(|| e.get("n"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        out.push((name.to_string(), note));
+    }
+    out
+}
+
+/// Parse a gender-classify response into `(name, gender, note)` triples (gender
+/// normalized; note is a free-text persona hint, empty when absent). Tolerant of
+/// ```json fences, `<think>` blocks, and an object-wrapped array.
+pub fn parse_gender_classify(text: &str) -> Vec<(String, String, String)> {
     let cleaned = strip_fences(&strip_reasoning(text));
     let Some(arr) = extract_array(&cleaned) else {
         return Vec::new();
@@ -372,7 +455,14 @@ pub fn parse_gender_classify(text: &str) -> Vec<(String, String)> {
             .or_else(|| e.get("g"))
             .and_then(|v| v.as_str())
             .unwrap_or("neutral");
-        out.push((name.to_string(), norm_gender(gender).to_string()));
+        let note = e
+            .get("note")
+            .or_else(|| e.get("n"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        out.push((name.to_string(), norm_gender(gender).to_string(), note));
     }
     out
 }
@@ -807,13 +897,51 @@ mod tests {
         assert!(user.contains("Mei\nI'm so happy today!"));
         assert!(user.contains("Coach")); // no sample → just the name
 
+        assert!(sys.contains("\"note\"")); // classify also drafts a persona note
         let got = parse_gender_classify(
-            "```json\n[{\"name\":\"Mei\",\"gender\":\"F\"},{\"name\":\"Coach\",\"gender\":\"male\"},{\"name\":\"X\",\"gender\":\"?\"}]\n```",
+            "```json\n[{\"name\":\"Mei\",\"gender\":\"F\",\"note\":\"น้องสาว, กันเอง\"},{\"name\":\"Coach\",\"gender\":\"male\"},{\"name\":\"X\",\"gender\":\"?\"}]\n```",
         );
         assert_eq!(got, vec![
-            ("Mei".to_string(), "female".to_string()),
-            ("Coach".to_string(), "male".to_string()),
-            ("X".to_string(), "neutral".to_string()),
+            ("Mei".to_string(), "female".to_string(), "น้องสาว, กันเอง".to_string()),
+            ("Coach".to_string(), "male".to_string(), "".to_string()),
+            ("X".to_string(), "neutral".to_string(), "".to_string()),
+        ]);
+    }
+
+    #[test]
+    fn persona_directive_lists_notes_and_skips_empty() {
+        let chars = vec![
+            ("Mei".to_string(), "น้องสาว protagonist, เรียกพี่, กันเอง".to_string()),
+            ("Boss".to_string(), "หัวหน้า, ทางการ".to_string()),
+            ("Ghost".to_string(), "".to_string()), // no note → skipped
+        ];
+        // Not Thai-gated: register/persona helps any target.
+        let d = persona_directive(&chars, "English").unwrap();
+        assert!(d.contains("Speaker personas"));
+        assert!(d.contains("- Mei: น้องสาว protagonist, เรียกพี่, กันเอง"));
+        assert!(d.contains("- Boss: หัวหน้า, ทางการ"));
+        assert!(!d.contains("Ghost"));
+
+        // No notes anywhere → nothing worth sending.
+        assert!(persona_directive(&[("N".into(), "".into())], "Thai").is_none());
+        assert!(persona_directive(&[], "Thai").is_none());
+    }
+
+    #[test]
+    fn persona_classify_prompt_and_parse() {
+        let (sys, user) = build_persona_classify(&[
+            ("Mei".into(), "Hi big bro! Wanna play?".into()),
+            ("Boss".into(), "".into()),
+        ]);
+        assert!(sys.contains("persona") && sys.contains("\"note\""));
+        assert!(user.contains("Mei\nHi big bro! Wanna play?"));
+
+        let got = parse_persona_classify(
+            "```json\n[{\"name\":\"Mei\",\"note\":\"น้องสาว, เรียกพี่\"},{\"name\":\"Boss\",\"note\":\"\"}]\n```",
+        );
+        assert_eq!(got, vec![
+            ("Mei".to_string(), "น้องสาว, เรียกพี่".to_string()),
+            ("Boss".to_string(), "".to_string()),
         ]);
     }
 }

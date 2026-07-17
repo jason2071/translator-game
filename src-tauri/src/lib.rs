@@ -288,7 +288,7 @@ fn characters_list(state: tauri::State<AppState>) -> Result<Vec<project::db::Cha
             list.iter().map(|c| c.name.clone()).collect();
         for name in project::db::distinct_speakers(&p.conn)? {
             if !have.contains(&name) {
-                list.push(project::db::Character { name, gender: String::new() });
+                list.push(project::db::Character { name, gender: String::new(), note: String::new() });
             }
         }
         list.sort_by(|a, b| a.name.cmp(&b.name));
@@ -300,6 +300,12 @@ fn characters_list(state: tauri::State<AppState>) -> Result<Vec<project::db::Cha
 #[tauri::command]
 fn character_set(name: String, gender: String, state: tauri::State<AppState>) -> Result<(), String> {
     with_project(&state, |p| project::db::character_set(&p.conn, &name, &gender))
+}
+
+/// Set (or clear, with an empty note) one speaker's persona/register note.
+#[tauri::command]
+fn character_set_note(name: String, note: String, state: tauri::State<AppState>) -> Result<(), String> {
+    with_project(&state, |p| project::db::character_set_note(&p.conn, &name, &note))
 }
 
 /// Delete every stored character row (before a clean re-classify).
@@ -381,7 +387,7 @@ async fn classify_genders(
     // (a big cast's JSON array is truncated mid-array → unparseable → nothing stored,
     // looking like a silent "found nothing"), and one bad chunk shouldn't lose the rest.
     let chunk = config.batch_size().min(30).max(1);
-    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut pairs: Vec<(String, String, String)> = Vec::new();
     let mut last_err: Option<String> = None;
     for group in todo.chunks(chunk) {
         let (sys, user) = ai::prompt::build_gender_classify(group);
@@ -394,7 +400,7 @@ async fn classify_genders(
             Ok(raw) => pairs.extend(
                 ai::prompt::parse_gender_classify(&raw)
                     .into_iter()
-                    .filter(|(name, gender)| trusted.contains(name) || gender != "neutral"),
+                    .filter(|(name, gender, _note)| trusted.contains(name) || gender != "neutral"),
             ),
             Err(e) => last_err = Some(e.to_string()),
         }
@@ -408,6 +414,98 @@ async fn classify_genders(
 
     with_project_mut(&state, |p| {
         project::db::characters_set_bulk(&mut p.conn, &pairs)?;
+        project::db::characters_list(&p.conn)
+    })
+}
+
+/// AI-write a short persona/register **note** for every character that lacks one,
+/// reading each speaker's own sample lines. Unlike `classify_genders` this processes the
+/// already-known cast (not just brand-new speakers) and stores ONLY the note — a manually
+/// chosen gender is never touched. The note drives `persona_directive` in the Run prompt so
+/// pronouns/politeness fit the character. Gathers the corpus under the lock, then does the
+/// network call with no lock held; classifies in small chunks so a big cast isn't truncated.
+#[tauri::command]
+async fn classify_personas(
+    config: ProviderConfig,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<project::db::Character>, String> {
+    // Candidates = every character/speaker whose note is still empty, each with a few of
+    // their own sample lines. Skip anyone who already has a note (manual or prior AI).
+    let todo: Vec<(String, String)> = {
+        let guard = state.project.lock().unwrap();
+        let p = guard.as_ref().ok_or("no project open")?;
+        let have_note: std::collections::HashSet<String> = project::db::characters_list(&p.conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|c| !c.note.trim().is_empty())
+            .map(|c| c.name)
+            .collect();
+        let samples: std::collections::HashMap<String, String> =
+            project::db::speaker_samples(&p.conn, 6)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .collect();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut todo: Vec<(String, String)> = Vec::new();
+        // Dialogue speakers first (they have sample lines), then any stored character
+        // without a note that isn't a dialogue speaker (e.g. a Name-only entry).
+        for n in project::db::distinct_speakers(&p.conn).map_err(|e| e.to_string())? {
+            let key = n.trim().to_lowercase();
+            if n.trim().is_empty() || have_note.contains(n.trim()) || !seen.insert(key) {
+                continue;
+            }
+            todo.push((n.trim().to_string(), samples.get(&n).cloned().unwrap_or_default()));
+        }
+        for c in project::db::characters_list(&p.conn).map_err(|e| e.to_string())? {
+            let key = c.name.trim().to_lowercase();
+            if c.name.trim().is_empty() || !c.note.trim().is_empty() || !seen.insert(key) {
+                continue;
+            }
+            todo.push((c.name.trim().to_string(), samples.get(&c.name).cloned().unwrap_or_default()));
+        }
+        todo.truncate(200);
+        todo
+    };
+    if todo.is_empty() {
+        return with_project(&state, |p| project::db::characters_list(&p.conn));
+    }
+
+    let key: Option<String> = if config.needs_key() {
+        Some(
+            keys::get_key(&config.kind)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("no API key stored for provider '{}'", config.kind))?,
+        )
+    } else {
+        None
+    };
+    let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
+    let chunk = config.batch_size().min(30).max(1);
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut last_err: Option<String> = None;
+    for group in todo.chunks(chunk) {
+        let (sys, user) = ai::prompt::build_persona_classify(group);
+        match provider
+            .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
+            .await
+        {
+            // Keep only names the model actually gave a note for (empty = "couldn't tell").
+            Ok(raw) => pairs.extend(
+                ai::prompt::parse_persona_classify(&raw)
+                    .into_iter()
+                    .filter(|(_name, note)| !note.trim().is_empty()),
+            ),
+            Err(e) => last_err = Some(e.to_string()),
+        }
+    }
+    if pairs.is_empty() {
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+    }
+
+    with_project_mut(&state, |p| {
+        project::db::characters_set_notes_bulk(&mut p.conn, &pairs)?;
         project::db::characters_list(&p.conn)
     })
 }
@@ -755,7 +853,7 @@ async fn translate_units(
     // source (dedup), and pre-fill any group whose source is already in TM. Only
     // genuinely-new distinct sources reach the AI, so repeated lines and
     // previously-translated strings are never re-billed.
-    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters) = {
+    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters, personas) = {
         let guard = state.project.lock().unwrap();
         let proj = guard.as_ref().ok_or("no project is open")?;
         let overwrite = scope.overwrite.unwrap_or(false);
@@ -887,13 +985,16 @@ async fn translate_units(
         let game_context = project::db::get_meta(&proj.conn, "game_context").ok().flatten().unwrap_or_default();
         // Setting-era preset → a register directive prepended to extra_system.
         let era = project::db::get_meta(&proj.conn, "era").ok().flatten().unwrap_or_default();
-        // Speaker → gender map → a Thai gendered-particle directive (per-line speaker
-        // arrives via each unit's `context`/`ctx`).
-        let characters: Vec<(String, String)> = project::db::characters_list(&proj.conn)
-            .map(|v| v.into_iter().map(|c| (c.name, c.gender)).collect())
-            .unwrap_or_default();
+        // Speaker → gender map → a Thai gendered-particle directive, and speaker → note
+        // map → a persona/register directive (per-line speaker arrives via each unit's
+        // `context`/`ctx`). One DB read, split into the two `(name, X)` maps.
+        let cast = project::db::characters_list(&proj.conn).unwrap_or_default();
+        let characters: Vec<(String, String)> =
+            cast.iter().map(|c| (c.name.clone(), c.gender.clone())).collect();
+        let personas: Vec<(String, String)> =
+            cast.into_iter().map(|c| (c.name, c.note)).collect();
 
-        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters)
+        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters, personas)
     };
 
     let mut summary = TranslateSummary {
@@ -934,6 +1035,9 @@ async fn translate_units(
             parts.push(dir);
         }
         if let Some(dir) = ai::prompt::gender_directive(&characters, &target_lang) {
+            parts.push(dir);
+        }
+        if let Some(dir) = ai::prompt::persona_directive(&personas, &target_lang) {
             parts.push(dir);
         }
         if !game_context.trim().is_empty() {
@@ -1428,8 +1532,10 @@ pub fn run() {
             glossary_add_bulk,
             characters_list,
             character_set,
+            character_set_note,
             characters_clear,
             classify_genders,
+            classify_personas,
             translate_units,
             translate_texts,
             remember_texts,

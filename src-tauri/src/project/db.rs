@@ -51,9 +51,12 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         -- Speaker → gender, so the AI can pick the right gendered Thai sentence
         -- particle (ครับ / ค่ะ) and first-person pronoun (ผม / ฉัน) per line. `name`
         -- matches a unit's `context` (the speaker). `gender` is male|female|neutral.
+        -- `note` is a free-text persona/register hint (who they are, how they speak,
+        -- relationships) fed to the Run prompt so pronouns/politeness fit the character.
         CREATE TABLE IF NOT EXISTS character (
             name   TEXT PRIMARY KEY,
-            gender TEXT NOT NULL
+            gender TEXT NOT NULL,
+            note   TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_unit_status ON unit(status);
@@ -62,6 +65,23 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_unit_source ON unit(source);
         "#,
     )?;
+    // Migrations for pre-existing project DBs (there is no version framework; every
+    // open re-runs init_schema, so these must be idempotent).
+    add_column_if_missing(conn, "character", "note", "TEXT")?;
+    Ok(())
+}
+
+/// Add `<column> <decl>` to `<table>` unless it already exists. Idempotent — safe to
+/// run on every open (SQLite `ALTER TABLE ADD COLUMN` errors if the column is present).
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let exists = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(|c| c.ok())
+        .any(|c| c == column);
+    if !exists {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"), [])?;
+    }
     Ok(())
 }
 
@@ -543,12 +563,16 @@ pub struct Character {
     pub name: String,
     /// "male" | "female" | "neutral".
     pub gender: String,
+    /// Free-text persona/register hint (who they are, how they speak, relationships).
+    /// Empty when unset. Fed to the Run prompt via `persona_directive`.
+    pub note: String,
 }
 
 pub fn characters_list(conn: &Connection) -> Result<Vec<Character>> {
-    let mut stmt = conn.prepare("SELECT name, gender FROM character ORDER BY name")?;
+    let mut stmt =
+        conn.prepare("SELECT name, gender, COALESCE(note, '') FROM character ORDER BY name")?;
     let rows = stmt.query_map([], |r| {
-        Ok(Character { name: r.get(0)?, gender: r.get(1)? })
+        Ok(Character { name: r.get(0)?, gender: r.get(1)?, note: r.get(2)? })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
@@ -571,21 +595,72 @@ pub fn character_set(conn: &Connection, name: &str, gender: &str) -> Result<()> 
     Ok(())
 }
 
-/// Upsert several (name, gender) rows in one transaction (auto-classify output).
-pub fn characters_set_bulk(conn: &mut Connection, items: &[(String, String)]) -> Result<usize> {
+/// Upsert one speaker's persona/register `note`, preserving any existing gender (or an
+/// empty gender for a brand-new speaker row). Clears the note when empty, and deletes the
+/// row entirely if that leaves both gender and note empty (matches `character_set` cleanup).
+pub fn character_set_note(conn: &Connection, name: &str, note: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(());
+    }
+    let note = note.trim();
+    conn.execute(
+        "INSERT INTO character(name, gender, note) VALUES(?1, '', ?2)
+         ON CONFLICT(name) DO UPDATE SET note = excluded.note",
+        params![name, note],
+    )?;
+    // Drop a row that now carries no information at all.
+    conn.execute(
+        "DELETE FROM character WHERE name=?1 AND (gender IS NULL OR gender='')
+           AND (note IS NULL OR note='')",
+        params![name],
+    )?;
+    Ok(())
+}
+
+/// Upsert several (name, gender, note) rows in one transaction (auto-classify output).
+pub fn characters_set_bulk(
+    conn: &mut Connection,
+    items: &[(String, String, String)],
+) -> Result<usize> {
     let tx = conn.transaction()?;
     let mut n = 0usize;
     {
         let mut stmt = tx.prepare(
-            "INSERT INTO character(name, gender) VALUES(?1, ?2)
-             ON CONFLICT(name) DO UPDATE SET gender = excluded.gender",
+            "INSERT INTO character(name, gender, note) VALUES(?1, ?2, ?3)
+             ON CONFLICT(name) DO UPDATE SET gender = excluded.gender, note = excluded.note",
         )?;
-        for (name, gender) in items {
-            let (name, gender) = (name.trim(), gender.trim());
+        for (name, gender, note) in items {
+            let (name, gender, note) = (name.trim(), gender.trim(), note.trim());
             if name.is_empty() || gender.is_empty() {
                 continue;
             }
-            stmt.execute(params![name, gender])?;
+            stmt.execute(params![name, gender, note])?;
+            n += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
+/// Upsert several (name, note) rows in one transaction, setting ONLY `note` and
+/// preserving each existing row's gender (a brand-new speaker row gets an empty gender).
+/// Used by the AI persona-fill pass so it never overwrites a manually chosen gender.
+/// Skips blank names and blank notes.
+pub fn characters_set_notes_bulk(conn: &mut Connection, items: &[(String, String)]) -> Result<usize> {
+    let tx = conn.transaction()?;
+    let mut n = 0usize;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO character(name, gender, note) VALUES(?1, '', ?2)
+             ON CONFLICT(name) DO UPDATE SET note = excluded.note",
+        )?;
+        for (name, note) in items {
+            let (name, note) = (name.trim(), note.trim());
+            if name.is_empty() || note.is_empty() {
+                continue;
+            }
+            stmt.execute(params![name, note])?;
             n += 1;
         }
     }

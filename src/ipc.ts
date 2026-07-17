@@ -115,9 +115,12 @@ export interface GlossaryEntry {
 
 // A speaker → gender row (for gendered Thai particles). `gender` is
 // "male" | "female" | "neutral", or "" when a speaker isn't classified yet.
+// `note` is a free-text persona/register hint (who they are, how they speak,
+// relationships), fed to the Run prompt so pronouns/politeness fit the character.
 export interface Character {
   name: string;
   gender: string;
+  note: string;
 }
 
 // Result of re-scanning the game into an existing project.
@@ -289,9 +292,13 @@ export const api = {
   charactersList: () => invoke<Character[]>("characters_list"),
   characterSet: (name: string, gender: string) =>
     invoke<void>("character_set", { name, gender }),
+  characterSetNote: (name: string, note: string) =>
+    invoke<void>("character_set_note", { name, note }),
   charactersClear: () => invoke<void>("characters_clear"),
   classifyGenders: (config: ProviderConfig) =>
     invoke<Character[]>("classify_genders", { config }),
+  classifyPersonas: (config: ProviderConfig) =>
+    invoke<Character[]>("classify_personas", { config }),
 
   translateUnits: (scope: TranslateScope, config: ProviderConfig) =>
     invoke<TranslateSummary>("translate_units", { scope, config }),
