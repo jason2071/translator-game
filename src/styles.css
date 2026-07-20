@@ -846,11 +846,13 @@ code {
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
-/* Left cluster: the Run configuration (langs, target, overwrite, provider). */
+/* Left cluster: the Run configuration (langs, target, overwrite, provider).
+   Tight gap + short labels so the whole row fits one line at normal widths —
+   a lone wrapped checkbox reads as a broken layout. */
 .tb-config {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   flex-wrap: wrap;
   flex: 1;
   min-width: 0;
@@ -884,50 +886,30 @@ code {
   min-width: 6rem;
   justify-content: center;
 }
-/* ⋯ overflow menu: an icon trigger and a popover list of secondary actions,
-   keeping the toolbar's right side to just Run + ⋯. */
-.tb-menu {
-  position: relative;
-  display: inline-flex;
-}
-.tb-menu-trigger {
+/* Secondary toolbar actions: always-visible compact buttons after Run —
+   icon-aligned, quieter than the primary, they light up on hover. */
+.tb-act {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  padding: 0.35rem 0.5rem;
-}
-.tb-menu-list {
-  position: absolute;
-  top: calc(100% + 0.35rem);
-  right: 0;
-  z-index: 30;
-  min-width: 15rem;
-  display: flex;
-  flex-direction: column;
-  padding: 0.3rem;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  box-shadow: var(--shadow-2);
-}
-.tb-menu-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  padding: 0.45rem 0.6rem;
-  background: transparent;
-  border: none;
-  border-radius: var(--r-sm);
-  color: var(--muted);
+  gap: 0.35rem;
+  padding: 0.3rem 0.55rem;
   font-size: var(--fs-sm);
-  text-align: left;
+  color: var(--muted);
   white-space: nowrap;
-  cursor: pointer;
 }
-.tb-menu-item:hover {
-  background: var(--panel2);
+.tb-act svg {
+  flex-shrink: 0;
+}
+.tb-act:hover:not(:disabled) {
   color: var(--fg);
+  border-color: var(--border-strong);
+}
+/* The Errors entry point carries its own signal color so failures stand out. */
+.tb-act-warn {
+  color: var(--warn);
+}
+.tb-act-warn:hover:not(:disabled) {
+  color: var(--warn);
 }
 /* Dedicated status strip under the toolbar: a full-width progress bar + summary,
    shown only while a Run/glossary job runs or a result/error is present. */
@@ -1407,32 +1389,55 @@ code {
   width: 100%;
   resize: vertical;
 }
+/* Action row at the top of the Characters body: left-aligned, wraps cleanly
+   (used to sit crammed beside the section title). */
 .gloss-context-actions {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   row-gap: 0.35rem;
 }
 .gloss-context-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   white-space: nowrap;
+  font-size: var(--fs-sm);
+  padding: 0.3rem 0.55rem;
+}
+.gloss-context-actions button svg {
+  flex-shrink: 0;
 }
 
-/* Character → gender + persona/register grid (speaker particles). */
+/* Character → gender + persona/register grid (speaker particles). One card per
+   character: name + gender on the first line, the note on its own line. A green
+   left edge marks characters that are already set up. */
 .char-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 0.25rem 0.6rem;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 0.5rem;
   margin-top: 0.4rem;
-  max-height: 260px;
+  /* Tall enough that the cast rarely needs its own scrollbar inside the
+     scrolling modal (double scrollbars read as clutter). */
+  max-height: min(48vh, 560px);
   overflow-y: auto;
+  padding: 2px 4px 2px 2px; /* focus rings + scrollbar breathing room */
 }
 .char-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: 0.35rem 0.5rem;
+  padding: 0.45rem 0.55rem;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--r-sm);
+}
+.char-row.set {
+  border-left-color: var(--ok);
 }
 .char-row .char-name {
   flex: 1 1 auto;
@@ -1440,10 +1445,11 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: 0.65;
+  font-weight: 600;
+  color: var(--muted);
 }
 .char-row.set .char-name {
-  opacity: 1;
+  color: var(--fg);
 }
 .char-row select {
   flex: 0 0 auto;
@@ -1454,10 +1460,12 @@ code {
   min-width: 0;
   font-size: 0.8em;
 }
-/* Denser than the global input padding — the cast grid can get long. */
+/* Denser than the global input padding (the cast can get long), and one shade
+   darker than the card so the fields read as wells inside it. */
 .char-row .char-note,
 .char-row select {
   padding: 0.25rem 0.4rem;
+  background: var(--panel);
 }
 
 /* Grouped section (Term suggestions / Glossary terms) with an eyebrow label, so the

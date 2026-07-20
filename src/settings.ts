@@ -18,6 +18,15 @@ export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   gemini: "Gemini (Google)",
 };
 
+/** Compact labels for tight spots (the Run toolbar); Settings keeps the full ones. */
+export const PROVIDER_LABELS_SHORT: Record<ProviderKind, string> = {
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  local: "Local",
+  anthropic: "Claude",
+  gemini: "Gemini",
+};
+
 /** All provider kinds, in display order (top selector + settings tabs). */
 export const PROVIDER_KINDS: ProviderKind[] = [
   "local",

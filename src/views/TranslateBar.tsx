@@ -2,11 +2,11 @@ import { useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { api, type TranslateScope, type TranslateSummary } from "../ipc";
 import { useStore } from "../store";
-import { useSettings, PROVIDER_LABELS, PROVIDER_KINDS } from "../settings";
+import { useSettings, PROVIDER_LABELS_SHORT, PROVIDER_KINDS } from "../settings";
 import { SOURCE_LANGS, TARGET_LANGS } from "../langs";
 import { useTranslation } from "../translation";
 import TransProgress from "../components/TransProgress";
-import { OverflowMenu, type MenuItem } from "../components/OverflowMenu";
+import { Icon } from "../components/Icon";
 
 export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => void }) {
   const filter = useStore((s) => s.filter);
@@ -36,6 +36,8 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
   // Only command-level failures (no API key / no project) surface here; per-unit
   // AI failures live in the Errors modal, so a Run no longer paints a red banner.
   const [err, setErr] = useState<string | null>(null);
+  const [rescanning, setRescanning] = useState(false);
+  const [rescanMsg, setRescanMsg] = useState<string | null>(null);
 
   async function translate(scope: TranslateScope) {
     setErr(null);
@@ -108,53 +110,42 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
     }
   }
 
+  // Re-scan the game into this project: pick up text the engine gained support
+  // for since import (new tiers, new harvests) + backfill speaker context —
+  // keeping every translation. Same op as the Glossary panel's "Rescan game".
+  async function rescan() {
+    setRescanning(true);
+    setErr(null);
+    setSummary(null);
+    setRescanMsg(null);
+    try {
+      const r = await api.rescanProject();
+      await refreshMeta();
+      await refreshTotal();
+      await useStore.getState().reloadUnits();
+      setRescanMsg(
+        r.added > 0 || r.contextFilled > 0
+          ? `Rescanned: +${r.added} new line(s), filled ${r.contextFilled} speaker(s).`
+          : "Rescanned — nothing new in the game.",
+      );
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setRescanning(false);
+    }
+  }
+
   const failed = stats?.failed ?? 0;
 
-  // Secondary/contextual actions, collapsed into the ⋯ overflow menu so the
-  // toolbar's right side stays just Run + ⋯. Only the currently-relevant items
-  // appear; an empty list hides the menu entirely (see OverflowMenu).
-  const menuItems: MenuItem[] = [];
-  if ((filter.search || filter.context) && total > 0 && !running) {
-    menuItems.push({
-      key: "retranslate",
-      icon: "retry",
-      label: filter.context
-        ? `Re-translate ${filter.context} (${total})`
-        : `Re-translate matches (${total})`,
-      title: filter.context
-        ? `Re-translate every line of "${filter.context}" (overwrites their translations)`
-        : "Re-translate every unit matching the current search (overwrites their translations)",
-      onClick: retranslateMatches,
-    });
-  }
-  if ((filter.search || filter.context || filter.file) && total > 0 && !running) {
-    menuItems.push({
-      key: "copy-source",
-      icon: "copy",
-      label: "Copy source → translation",
-      title:
-        "Fill the untranslated/failed lines in this view with their source text, to hand-edit (keeps existing translations)",
-      onClick: fillSource,
-    });
-  }
-  if (failed > 0 && !running) {
-    menuItems.push({
-      key: "retry-failed",
-      icon: "retry",
-      label: `Retry failed (${failed})`,
-      title: "Re-translate every unit that failed a previous run",
-      onClick: retryFailed,
-    });
-  }
-  if (failed > 0) {
-    menuItems.push({
-      key: "errors",
-      icon: "warn",
-      label: `Errors (${failed})`,
-      title: "See which units failed and why",
-      onClick: onOpenErrors,
-    });
-  }
+  // Secondary/contextual actions, shown as visible buttons next to Run (no
+  // overflow menu — everything findable at a glance). Contextual ones still only
+  // appear when they apply.
+  const showRetranslate = (filter.search || filter.context) && total > 0 && !running;
+  const showCopySource = (filter.search || filter.context || filter.file) && total > 0 && !running;
+  // Long character names would blow the button row up — the full name stays in
+  // the tooltip.
+  const ctx = filter.context;
+  const ctxShort = ctx && ctx.length > 14 ? `${ctx.slice(0, 13)}…` : ctx;
 
   return (
     <>
@@ -199,7 +190,7 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
           >
             {PROVIDER_KINDS.map((k) => (
               <option key={k} value={k}>
-                {PROVIDER_LABELS[k]}
+                {PROVIDER_LABELS_SHORT[k]}
               </option>
             ))}
           </select>
@@ -208,7 +199,7 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
             className="tb-scope"
             title="Run translates this — click a file (or 'All files') in the sidebar to change it"
           >
-            Target: <b>{filter.file ?? "All files"}</b>
+            <b>{filter.file ?? "All files"}</b>
           </span>
 
           <label className="chk" title="Re-translate units that already have a translation">
@@ -218,13 +209,75 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
               onChange={(e) => setOverwrite(e.target.checked)}
               disabled={running}
             />
-            Overwrite existing
+            Overwrite
           </label>
         </div>
 
-        {/* Right: the primary Run/Cancel action, plus a ⋯ overflow menu holding the
-            secondary actions that only apply in the current context. */}
+        {/* Right: the secondary actions as plain visible buttons (contextual
+            ones appear only when relevant), then the primary Run/Cancel at the
+            far right edge. */}
         <div className="tb-actions">
+          {showRetranslate && (
+            <button
+              className="ghost tb-act"
+              onClick={retranslateMatches}
+              title={
+                ctx
+                  ? `Re-translate every line of "${ctx}" (overwrites their translations)`
+                  : "Re-translate every unit matching the current search (overwrites their translations)"
+              }
+            >
+              <Icon name="retry" size={14} />
+              {ctx ? `Re-translate ${ctxShort} (${total})` : `Re-translate (${total})`}
+            </button>
+          )}
+          {showCopySource && (
+            <button
+              className="ghost tb-act"
+              onClick={fillSource}
+              title="Fill the untranslated/failed lines in this view with their source text, to hand-edit (keeps existing translations)"
+            >
+              <Icon name="copy" size={14} />
+              Copy source
+            </button>
+          )}
+          {failed > 0 && !running && (
+            <button
+              className="ghost tb-act"
+              onClick={retryFailed}
+              title="Re-translate every unit that failed a previous run"
+            >
+              <Icon name="retry" size={14} />
+              Retry failed ({failed})
+            </button>
+          )}
+          {failed > 0 && (
+            <button
+              className="ghost tb-act tb-act-warn"
+              onClick={onOpenErrors}
+              title="See which units failed and why"
+            >
+              <Icon name="warn" size={14} />
+              Errors ({failed})
+            </button>
+          )}
+          {!running && (
+            <button
+              className="ghost tb-act"
+              onClick={() => {
+                if (!rescanning) rescan();
+              }}
+              disabled={rescanning}
+              title="Re-scan the game: pull in new text the engine now supports + fill in speakers on existing lines (keeps translations)"
+            >
+              <Icon name="retry" size={14} />
+              {rescanning ? "Rescanning…" : "Rescan game"}
+            </button>
+          )}
+
+          {(showRetranslate || showCopySource || failed > 0 || !running) && (
+            <span className="tb-sep" />
+          )}
           {!running ? (
             <button className="primary tb-run" onClick={run}>
               Run
@@ -234,15 +287,15 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
               Cancel
             </button>
           )}
-
-          <OverflowMenu items={menuItems} />
         </div>
       </div>
 
-      {(running || glossaryBusy || summary || err) && (
+      {(running || glossaryBusy || summary || err || rescanning || rescanMsg) && (
         <div className="tb-status">
           <TransProgress kind="units" />
           <TransProgress kind="glossary" />
+          {rescanning && <span>Rescanning the game…</span>}
+          {rescanMsg && !rescanning && <span className="export-ok">{rescanMsg}</span>}
           {summary && (
             <span className="export-ok">
               {summary.cancelled ? "Cancelled — " : "Done — "}

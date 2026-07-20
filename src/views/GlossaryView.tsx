@@ -7,7 +7,6 @@ import { useGlossarySuggest } from "../glossarySuggest";
 import { useTranslation } from "../translation";
 import TransProgress from "../components/TransProgress";
 import { Icon } from "../components/Icon";
-import { OverflowMenu, type MenuItem } from "../components/OverflowMenu";
 
 export default function GlossaryView() {
   const [entries, setEntries] = useState<GlossaryEntry[]>([]);
@@ -342,44 +341,6 @@ function CharactersPanel() {
   const empty = chars !== null && chars.length === 0;
   const locked = busy || rescanning;
 
-  // Secondary/contextual actions live in a "⋯" menu so the primary AI-find button
-  // stays the one clear action; Clear (destructive) is here too, not in the main row.
-  const menuItems: MenuItem[] = [
-    {
-      key: "rescan",
-      icon: "retry",
-      label: rescanning ? "Rescanning…" : "Rescan game",
-      title:
-        "Re-scan the game: pull in new text the engine now supports + fill in speakers on existing lines (keeps translations)",
-      onClick: () => {
-        if (!locked) rescan();
-      },
-    },
-    ...(!empty
-      ? [
-          {
-            key: "notes",
-            icon: "sparkle" as const,
-            label: busy ? "Filling…" : noNote > 0 ? `AI fill notes (${noNote})` : "Redo notes",
-            title:
-              "Read each character's sample lines and draft a persona/register note with AI, so pronouns and politeness fit them (doesn't change gender)",
-            onClick: () => {
-              if (!locked) classifyNotes();
-            },
-          },
-          {
-            key: "clear",
-            icon: "trash" as const,
-            label: "Clear all characters",
-            title: "Remove every character (e.g. to redo the AI find from scratch)",
-            onClick: () => {
-              if (!locked) clearAll();
-            },
-          },
-        ]
-      : []),
-  ];
-
   return (
     <div className="gloss-collapse">
       <div className="gloss-collapse-head">
@@ -392,8 +353,9 @@ function CharactersPanel() {
           <Icon name="chevron-right" size={14} className={`gloss-chevron${open ? " open" : ""}`} />
           {open ? (
             <label>
-              Characters{" "}
-              <span className="hint">(gender → ครับ/ค่ะ · note → persona/register · this project)</span>
+              Characters
+              {chars !== null && chars.length > 0 ? ` · ${chars.length}` : ""}{" "}
+              <span className="hint">(gender → ครับ/ค่ะ · persona note · this project)</span>
             </label>
           ) : (
             <span className="gloss-collapse-summary">
@@ -402,7 +364,11 @@ function CharactersPanel() {
             </span>
           )}
         </button>
-        {open && (
+      </div>
+      {open && (
+        <div className="gloss-collapse-body">
+          {/* Every action as a visible button on its own tidy row — nothing
+              tucked behind a ⋯ menu (and no crowding next to the title). */}
           <div className="gloss-context-actions">
             <button
               className="ghost"
@@ -419,12 +385,36 @@ function CharactersPanel() {
                     ? `Auto-classify (${unset})`
                     : "Re-classify"}
             </button>
-            <OverflowMenu items={menuItems} />
+            {!empty && (
+              <button
+                className="ghost"
+                onClick={classifyNotes}
+                disabled={locked}
+                title="Read each character's sample lines and draft a persona/register note with AI, so pronouns and politeness fit them (doesn't change gender)"
+              >
+                <Icon name="sparkle" size={14} />{" "}
+                {busy ? "Filling…" : noNote > 0 ? `AI fill notes (${noNote})` : "Redo notes"}
+              </button>
+            )}
+            <button
+              className="ghost"
+              onClick={rescan}
+              disabled={locked}
+              title="Re-scan the game: pull in new text the engine now supports + fill in speakers on existing lines (keeps translations)"
+            >
+              <Icon name="retry" size={14} /> {rescanning ? "Rescanning…" : "Rescan game"}
+            </button>
+            {!empty && (
+              <button
+                className="ghost"
+                onClick={clearAll}
+                disabled={locked}
+                title="Remove every character (e.g. to redo the AI find from scratch)"
+              >
+                <Icon name="trash" size={14} /> Clear all
+              </button>
+            )}
           </div>
-        )}
-      </div>
-      {open && (
-        <div className="gloss-collapse-body">
           {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
           {chars === null ? (
             <p className="hint">Loading…</p>
