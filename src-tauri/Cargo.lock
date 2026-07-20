@@ -3163,7 +3163,7 @@ dependencies = [
 
 [[package]]
 name = "rpgmaker-translator"
-version = "0.12.22"
+version = "0.12.23"
 dependencies = [
  "anyhow",
  "async-trait",
