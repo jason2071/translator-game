@@ -302,19 +302,38 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
 /// (`unsupported format character` when a Thai letter follows). A literal percent must
 /// be `%%`. Idempotent: an already-escaped `%%` stays `%%`.
 ///
+/// Text inside `[...]` interpolations is left untouched: that content is *Python
+/// code* Ren'Py `py_eval`s at display time, so doubling a modulo there
+/// (`[day_number % 7]` → `% %  7`) is a SyntaxError at runtime. `[[` is Ren'Py's
+/// escaped literal bracket — plain text, not an interpolation.
+///
 /// `pub(super)` so the **tl-source** splice path ([`super::renpy::export_tl_from_source`])
 /// applies the same escaping as [`fill_tl`] — both write into a Ren'Py say/`new` string.
 pub(super) fn escape_percent(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
+    let mut depth = 0usize; // [..] nesting (interpolations index like [a[i % 7]])
     let mut it = s.chars().peekable();
     while let Some(c) = it.next() {
-        if c == '%' {
-            out.push_str("%%");
-            if it.peek() == Some(&'%') {
-                it.next(); // consume the pair so `%%` doesn't become `%%%%`
+        match c {
+            '[' if depth == 0 && it.peek() == Some(&'[') => {
+                it.next();
+                out.push_str("[["); // escaped literal bracket — still text
             }
-        } else {
-            out.push(c);
+            '[' => {
+                depth += 1;
+                out.push(c);
+            }
+            ']' => {
+                depth = depth.saturating_sub(1);
+                out.push(c);
+            }
+            '%' if depth == 0 => {
+                out.push_str("%%");
+                if it.peek() == Some(&'%') {
+                    it.next(); // consume the pair so `%%` doesn't become `%%%%`
+                }
+            }
+            _ => out.push(c),
         }
     }
     out
@@ -440,6 +459,20 @@ translate thai start_abc:
         assert_eq!(escape_percent("10%%"), "10%%"); // already escaped -> unchanged
         assert_eq!(escape_percent("no percent"), "no percent");
         assert_eq!(escape_percent("a%b%c"), "a%%b%%c");
+    }
+
+    #[test]
+    fn escape_percent_leaves_interpolation_code_alone() {
+        // `[...]` content is Python evaluated at display time — a doubled modulo
+        // is a SyntaxError (crashed NWHH's day/time HUD). Nested indexing counts.
+        assert_eq!(
+            escape_percent("Day [day_number] ([days_of_week[day_number % 7]]) 50%"),
+            "Day [day_number] ([days_of_week[day_number % 7]]) 50%%"
+        );
+        // `[[` is an escaped literal bracket — the text after it is still text.
+        assert_eq!(escape_percent("[[a] 10%"), "[[a] 10%%");
+        // Unbalanced close never underflows.
+        assert_eq!(escape_percent("] 10%"), "] 10%%");
     }
 
     #[test]
