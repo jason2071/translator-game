@@ -13,7 +13,10 @@
 //! must keep those intact just like control codes.
 //!
 //! Python/screen/style/transform blocks are skipped so their code strings are
-//! not mistaken for dialogue.
+//! not mistaken for dialogue — but screen/python bodies are still harvested for
+//! *display* strings (bare `text "…"` literals, python-level quest names and
+//! `renpy.notify` messages), which translate at render time via the
+//! `translate <lang> strings` table; see the harvesting section below.
 
 use super::codes::ExtractOpts;
 use super::renpy_tl::{self, Say};
@@ -119,11 +122,12 @@ impl GameEngine for RenpyEngine {
         }
         let mut units = Vec::new();
         let mut files: Vec<(String, String)> = Vec::new();
+        let mut py_seen: HashSet<String> = HashSet::new(); // dedupe python display strings project-wide
         for path in rpys {
             let rel = rel_path(&dir, &path);
             let content =
                 std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
-            extract_rpy(&rel, &content, &mut units);
+            extract_rpy(&rel, &content, &mut units, &mut py_seen);
             files.push((rel, content));
         }
         // Character names — a cross-file pass, since `define c = Character(name_var)`
@@ -136,13 +140,16 @@ impl GameEngine for RenpyEngine {
         let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
 
         // Group applied units by file. Character-name units (pointer `name#<char>`)
-        // aren't byte spans — they're applied via the `tl/` zzz Character re-define,
-        // not an in-place splice — so skip them here.
+        // and python display strings (`str#…`) aren't spliceable spans — names are
+        // applied via the `tl/` zzz Character re-define, python strings via the
+        // strings-table (splicing the constructor arg would desync `find_quest`-style
+        // lookups keyed by the English text) — so skip them here.
         let mut by_file: BTreeMap<&str, Vec<&TransUnit>> = BTreeMap::new();
         for u in units {
             if u.status.is_applied()
                 && u.translation.is_some()
                 && !u.pointer.starts_with("name#")
+                && !u.pointer.starts_with("str#")
             {
                 by_file.entry(u.file.as_str()).or_default().push(u);
             }
@@ -588,22 +595,45 @@ fn parse_pointer(p: &str) -> Option<(usize, usize)> {
 // Line-based extraction
 // ---------------------------------------------------------------------------
 
+/// What kind of non-dialogue block a header opens. The body is never dialogue,
+/// but `Screen` and `Python` bodies still carry display strings worth harvesting
+/// (bare screen literals, python-level quest names / notify messages).
+#[derive(Clone, Copy, PartialEq)]
+enum SkipKind {
+    Screen,
+    Python,
+    /// style/transform/layeredimage/testcase — pure props/assets, harvest nothing.
+    Other,
+}
+
+fn skip_kind_of(head: &str) -> Option<SkipKind> {
+    match head {
+        "python" => Some(SkipKind::Python),
+        "screen" => Some(SkipKind::Screen),
+        "style" | "transform" | "layeredimage" | "testcase" => Some(SkipKind::Other),
+        _ => None,
+    }
+}
+
 /// Blocks whose bodies are code/UI, not dialogue — skip everything indented
-/// under them.
-fn is_block_skip(trimmed: &str) -> bool {
-    const HEADS: &[&str] = &[
-        "python",
-        "screen ",
-        "screen:",
-        "style ",
-        "style:",
-        "transform ",
-        "transform:",
-        "layeredimage ",
-        "testcase ",
+/// under them (returning what kind of block, so display strings can still be
+/// harvested from screen/python bodies).
+fn block_skip_kind(trimmed: &str) -> Option<SkipKind> {
+    const HEADS: &[(&str, SkipKind)] = &[
+        ("python", SkipKind::Python),
+        ("screen ", SkipKind::Screen),
+        ("screen:", SkipKind::Screen),
+        ("style ", SkipKind::Other),
+        ("style:", SkipKind::Other),
+        ("transform ", SkipKind::Other),
+        ("transform:", SkipKind::Other),
+        ("layeredimage ", SkipKind::Other),
+        ("testcase ", SkipKind::Other),
     ];
-    if HEADS.iter().any(|h| trimmed.starts_with(h)) {
-        return true;
+    for (h, k) in HEADS {
+        if trimmed.starts_with(h) {
+            return Some(*k);
+        }
     }
     // `init [priority] <python|screen|style|transform|layeredimage|testcase> …:` —
     // a block whose body is raw code / screen-language / style props, regardless of
@@ -621,15 +651,12 @@ fn is_block_skip(trimmed: &str) -> bool {
             if head.map(|t| t.parse::<i64>().is_ok()).unwrap_or(false) {
                 head = toks.next(); // consume the optional priority
             }
-            if matches!(
-                head.map(|t| t.trim_end_matches(':')),
-                Some("python" | "screen" | "style" | "transform" | "layeredimage" | "testcase")
-            ) {
-                return true;
+            if let Some(h) = head {
+                return skip_kind_of(h.trim_end_matches(':'));
             }
         }
     }
-    false
+    None
 }
 
 /// Statements whose leading keyword means any string on the line is not
@@ -746,6 +773,187 @@ fn gettext_spans(line: &str) -> Vec<(usize, usize)> {
         i += 1;
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Display-string harvesting (bare screen literals + python-level UI text)
+// ---------------------------------------------------------------------------
+//
+// Two sources of user-visible text that neither the say/menu path nor Ren'Py's
+// own `translate` scanner sees (the scanner only collects `_()`/`__()`/`_p()`):
+//
+//   1. Bare screen literals: `text "Quest Log"` / `textbutton "Close"` in a
+//      `screen` block the game dev forgot to `_()`-wrap.
+//   2. Python-level display strings: `$ q = Quest("Go to University", …)`,
+//      `$ renpy.notify("Objective complete")` — stored in variables and shown
+//      later via `text _qn`.
+//
+// Both are translatable *at display time*: every string a screen renders runs
+// through `renpy.substitutions.substitute` → `translate_string`, which consults
+// the `translate <lang> strings` table — even when the text came from a
+// variable. So these units are exported as strings-block entries (see
+// `setup_language`), which translates the display while python-side identity
+// (e.g. `find_quest("Go to University")` keyed by the English name) is untouched.
+
+/// Inner byte spans of every single/double-quoted string on a python-ish line
+/// (`#` starts a comment; `\` escapes are honored).
+fn python_string_spans(line: &str) -> Vec<(usize, usize)> {
+    let b = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'#' => break,
+            b'"' | b'\'' => match first_string(&line[i..]) {
+                Some((rel, len, after)) => {
+                    out.push((i + rel, len));
+                    i += after;
+                }
+                None => break, // unterminated
+            },
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// `s` with `[interpolations]` and `{text tags}` removed, so a string that is
+/// *only* markup doesn't count as display text.
+fn strip_markup(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let (mut sq, mut br) = (0i32, 0i32);
+    for c in s.chars() {
+        match c {
+            '[' => sq += 1,
+            ']' => sq = (sq - 1).max(0),
+            '{' => br += 1,
+            '}' => br = (br - 1).max(0),
+            _ if sq == 0 && br == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Baseline "is this worth showing a translator" filter shared by both harvests:
+/// must contain a letter outside markup, and must not look like an asset path or
+/// a `#rrggbb` colour.
+fn display_text_ok(s: &str) -> bool {
+    if s.contains('/') || s.starts_with('#') {
+        return false;
+    }
+    strip_markup(s).chars().any(|c| c.is_alphabetic())
+}
+
+/// Python-string filter: multi-word text is display-worthy; a single word is
+/// accepted only from a `renpy.notify(…)` line (`allow_single`) and only when it
+/// doesn't look like an identifier/attribute (`_`/`.`) — dict keys, flags and
+/// style names stay untouched.
+fn python_display_ok(s: &str, allow_single: bool) -> bool {
+    if !display_text_ok(s) {
+        return false;
+    }
+    let stripped = strip_markup(s);
+    if stripped.trim().contains(char::is_whitespace) {
+        return true;
+    }
+    allow_single && !s.contains('_') && !s.contains('.')
+}
+
+/// For a screen statement whose argument is display text (`text "…"`,
+/// `textbutton "…"`, `label "…"`), the byte offset (into `trimmed`) where that
+/// argument starts — and only when the argument is a *string literal directly
+/// after the keyword*. `text scene["name"]:` (the string is a dict key) or
+/// `text prompt style "input_prompt"` (the string is a style name) must NOT
+/// match: splicing those corrupts lookups / renames styles and crashes Ren'Py.
+fn screen_text_arg(trimmed: &str) -> Option<usize> {
+    for k in ["text ", "textbutton ", "label "] {
+        if let Some(rest) = trimmed.strip_prefix(k) {
+            let arg = rest.trim_start();
+            if arg.starts_with('"') || arg.starts_with('\'') {
+                return Some(trimmed.len() - arg.len());
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// Harvest display strings from one python-ish line (a `$`/`define`/`default`
+/// statement, a `python` block body line, or a multi-line expression
+/// continuation). Emitted with a `str#` pointer: matched into the translation by
+/// *display string*, never spliced in place (splicing the constructor arg would
+/// desync python-side lookups keyed by the English text).
+fn harvest_python_line(
+    file: &str,
+    raw: &str,
+    line_start: usize,
+    seen: &mut HashSet<usize>,
+    py_seen: &mut HashSet<String>,
+    out: &mut Vec<TransUnit>,
+) {
+    // Character names have their own pass (`extract_character_names`); docstrings
+    // are code commentary, not UI.
+    if raw.contains("Character(") || raw.contains("\"\"\"") || raw.contains("'''") {
+        return;
+    }
+    let allow_single = raw.contains("renpy.notify(");
+    for (rel, len) in python_string_spans(raw) {
+        if len == 0 {
+            continue;
+        }
+        let s = &raw[rel..rel + len];
+        if !python_display_ok(s, allow_single) {
+            continue;
+        }
+        let abs = line_start + rel;
+        if !seen.insert(abs) {
+            continue; // already harvested as a `_()` string
+        }
+        // One unit per distinct string project-wide: these are matched by their
+        // text (a strings-table entry), so repeats (`find_quest("Go to University")`
+        // at 20 call sites) add nothing but grid noise.
+        if !py_seen.insert(s.to_string()) {
+            continue;
+        }
+        out.push(TransUnit::new(file, format!("str#{abs}:{len}"), UnitKind::Term, s));
+    }
+}
+
+/// Harvest a bare screen literal (`text "Quest Log"`). Keeps a real byte-span
+/// pointer: the launcher (`tl/`) export path translates it via the strings
+/// table, while the in-place fallback can still splice it directly.
+/// `arg` is the offset of the literal within the trimmed statement (from
+/// [`screen_text_arg`] — the quote directly after the keyword).
+fn harvest_screen_literal(
+    file: &str,
+    raw: &str,
+    indent: usize,
+    arg: usize,
+    line_start: usize,
+    seen: &mut HashSet<usize>,
+    out: &mut Vec<TransUnit>,
+) {
+    // `text "who" id "who"` — a say-screen placeholder replaced at runtime; the
+    // literal is an id, not display text.
+    if raw.contains(" id ") {
+        return;
+    }
+    let Some((rel, len, _)) = first_string(&raw[indent + arg..]) else {
+        return;
+    };
+    if len == 0 {
+        return;
+    }
+    let rel = indent + arg + rel;
+    let s = &raw[rel..rel + len];
+    if !display_text_ok(s) {
+        return;
+    }
+    let abs = line_start + rel;
+    if seen.insert(abs) {
+        out.push(TransUnit::new(file, format!("{abs}:{len}"), UnitKind::Term, s));
+    }
 }
 
 /// Every `.rpy` at or under `dir` (a plain recursive walk — unlike [`collect_rpy`],
@@ -898,8 +1106,13 @@ fn extract_from_tl(file: &str, src_lang: &str, content: &str, out: &mut Vec<Tran
     }
 }
 
-fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
-    let mut skip_indent: Option<usize> = None;
+fn extract_rpy(
+    file: &str,
+    content: &str,
+    out: &mut Vec<TransUnit>,
+    py_seen: &mut HashSet<String>,
+) {
+    let mut skip_indent: Option<(usize, SkipKind)> = None;
     let mut skip_expr_depth: i32 = 0; // open brackets of a multi-line define/default/$
     let mut seen: HashSet<usize> = HashSet::new(); // inner-start offsets already taken
     let mut offset = 0usize; // byte offset of the current line within the file
@@ -933,27 +1146,49 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>) {
         }
 
         // A multi-line define/default/$ (a Python dict/Character(...) spanning
-        // lines) — skip its bare strings (colour values, dict keys, asset paths).
-        // Any `_()` strings on these lines were already harvested above.
+        // lines) — its bare strings are colour values, dict keys, asset paths…
+        // except display text (quest names/objectives), which the python harvest
+        // picks out. Any `_()` strings were already harvested above.
         let delta = bracket_delta(raw);
         if skip_expr_depth > 0 {
             skip_expr_depth = (skip_expr_depth + delta).max(0);
+            harvest_python_line(file, raw, line_start, &mut seen, py_seen, out);
             continue;
         }
 
         // Leaving a skipped block? A line at or below its indent ends it, and is
-        // then processed normally for bare say/menu strings.
-        if let Some(si) = skip_indent {
+        // then processed normally for bare say/menu strings. Inside the block,
+        // screen/python bodies still yield display strings.
+        if let Some((si, kind)) = skip_indent {
             if indent > si {
+                match kind {
+                    SkipKind::Python => {
+                        harvest_python_line(file, raw, line_start, &mut seen, py_seen, out)
+                    }
+                    SkipKind::Screen => {
+                        if trimmed.starts_with('$') || first_token(trimmed) == "default" {
+                            harvest_python_line(file, raw, line_start, &mut seen, py_seen, out);
+                        } else if let Some(arg) = screen_text_arg(trimmed) {
+                            harvest_screen_literal(file, raw, indent, arg, line_start, &mut seen, out);
+                        }
+                    }
+                    SkipKind::Other => {}
+                }
                 continue;
             }
             skip_indent = None;
         }
-        if is_block_skip(trimmed) {
-            skip_indent = Some(indent);
+        if let Some(kind) = block_skip_kind(trimmed) {
+            skip_indent = Some((indent, kind));
             continue;
         }
-        if is_line_skip(first_token(trimmed)) {
+        let first = first_token(trimmed);
+        if is_line_skip(first) {
+            // Inline python (`$ …`) and define/default values can hold display
+            // strings (quest names, notify messages) — harvest before skipping.
+            if trimmed.starts_with('$') || first == "define" || first == "default" {
+                harvest_python_line(file, raw, line_start, &mut seen, py_seen, out);
+            }
             // If the statement opens brackets, it continues on the next lines.
             if delta > 0 {
                 skip_expr_depth = delta;
@@ -1238,7 +1473,7 @@ pub fn dialogue_blocks(content: &str) -> Vec<DiaBlock> {
             }
             skip_indent = None;
         }
-        if is_block_skip(trimmed) {
+        if block_skip_kind(trimmed).is_some() {
             skip_indent = Some(indent);
             continue;
         }
@@ -1482,7 +1717,17 @@ pub fn export_tl(
             }
         }
     }
-    let lookup = |s: &str| map.get(s).map(|t| t.to_string());
+    // Track which sources the skeleton consumed: whatever remains of the Term
+    // units afterwards has no skeleton entry (Ren'Py's scanner only collects
+    // `_()` strings — bare screen literals and python display strings are
+    // invisible to it) and is emitted as a strings block in zzz_translator.rpy.
+    let used: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    let lookup = |s: &str| {
+        map.get(s).map(|t| {
+            used.borrow_mut().insert(s.to_string());
+            t.to_string()
+        })
+    };
 
     let mut files = 0usize;
     let mut stack = vec![dir.clone()];
@@ -1510,9 +1755,27 @@ pub fn export_tl(
         .filter_map(|u| Some((u.context.clone()?, u.translation.clone()?)))
         .collect();
 
+    // Term units the skeleton never consumed (screen literals, python display
+    // strings) → extra strings-block entries, deduped by source.
+    let mut extra_seen: HashSet<&str> = HashSet::new();
+    let mut extra: Vec<(String, String)> = Vec::new();
+    {
+        let used = used.borrow();
+        for u in units {
+            if u.kind != UnitKind::Term || !u.status.is_applied() {
+                continue;
+            }
+            let Some(t) = &u.translation else { continue };
+            if used.contains(u.source.as_str()) || !extra_seen.insert(u.source.as_str()) {
+                continue;
+            }
+            extra.push((u.source.clone(), t.clone()));
+        }
+    }
+
     // Make the language selectable (default to it) and remap the game's fonts to a
     // glyph-capable one so the translation isn't rendered as "NO GLYPH" boxes.
-    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &names)?;
+    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &names, &extra)?;
 
     Ok(Some(TlExport { files, dir }))
 }
@@ -1600,7 +1863,8 @@ fn export_tl_from_source(
 
     // Make the target selectable + readable (menu entry, default language, Thai font).
     // No Character re-defines: any `_()`-wrapped name translates via the strings blocks.
-    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &[])?;
+    // No extra strings either: tl-source units are all spliced into the retagged tree.
+    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &[], &[])?;
     Ok(TlExport {
         files,
         dir: data_dir.join("tl").join(&lang),
@@ -1666,15 +1930,42 @@ fn add_language_option(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// Evaluate the escape sequences of a `.rpy` string literal's raw inner text
+/// (the form stored as a unit's `source`), yielding the runtime string — which
+/// is what a strings-block `old` line must match after Ren'Py evals it.
+fn unescape_rpy(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other), // \" \' \\ … → the char itself
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 /// Write a small global `.rpy` that (1) defaults the game to `lang` if it has no
-/// language of its own and (2) — when a target-language font is available —
+/// language of its own, (2) — when a target-language font is available —
 /// remaps every font the game uses to it, scoped to `lang` via a
-/// `translate <lang> python:` block so English is unaffected.
+/// `translate <lang> python:` block so English is unaffected, and (3) emits a
+/// `translate <lang> strings` block for display strings Ren'Py's own scanner
+/// can't collect (bare screen literals, python-level quest names / notify text) —
+/// every displayed string passes through `translate_string`, so these entries
+/// translate the UI without touching python-side identity.
 fn setup_language(
     data_dir: &Path,
     lang: &str,
     label: &str,
     names: &[(String, String)],
+    strings: &[(String, String)],
 ) -> Result<()> {
     // Add the language to the game's own Settings language menu, if it has one.
     add_language_option(data_dir, lang, label)?;
@@ -1699,6 +1990,23 @@ fn setup_language(
             s.push_str(&format!("    {ch} = Character({}, kind={ch})\n", py_str(name)));
         }
         s.push('\n');
+    }
+
+    // Display strings with no skeleton entry. `old` = the runtime string (source
+    // unescaped, then re-escaped for the file); `new` gets the same `%`-escaping
+    // as every other strings-block translation.
+    if !strings.is_empty() {
+        s.push_str(&format!("translate {lang} strings:\n"));
+        for (old, new) in strings {
+            s.push_str(&format!(
+                "    old \"{}\"\n",
+                renpy_tl::quote_unicode(&unescape_rpy(old))
+            ));
+            s.push_str(&format!(
+                "    new \"{}\"\n\n",
+                renpy_tl::quote_unicode(&renpy_tl::escape_percent(new))
+            ));
+        }
     }
 
     // The bundled font (Sarabun) covers Thai + Latin, so only remap fonts for a
@@ -1867,7 +2175,8 @@ mod tests {
 
     fn extract(src: &str) -> Vec<TransUnit> {
         let mut out = Vec::new();
-        extract_rpy("script.rpy", src, &mut out);
+        let mut py_seen = HashSet::new();
+        extract_rpy("script.rpy", src, &mut out, &mut py_seen);
         out
     }
 
@@ -2000,11 +2309,17 @@ init python:
         assert!(texts.contains(&"Second choice"));
         assert!(texts.contains(&"You picked first."));
 
-        // Code / UI / asset strings must NOT be extracted.
+        // Code / asset strings must NOT be extracted.
         assert!(!texts.contains(&"audio/v1.ogg"));
-        assert!(!texts.contains(&"This is UI, not dialogue."));
-        assert!(!texts.contains(&"code string"));
         assert!(!texts.iter().any(|t| t.contains("Eileen")));
+
+        // Bare screen literals and multi-word python strings ARE harvested now
+        // (as Term units, translated via the strings table at display time).
+        let ui = units.iter().find(|u| u.source == "This is UI, not dialogue.").unwrap();
+        assert_eq!(ui.kind, UnitKind::Term);
+        let code = units.iter().find(|u| u.source == "code string").unwrap();
+        assert_eq!(code.kind, UnitKind::Term);
+        assert!(code.pointer.starts_with("str#"), "python strings are display-matched, not spliced");
     }
 
     #[test]
@@ -2071,8 +2386,10 @@ label x:
         assert!(texts.contains(&"Start Game"));
         assert!(texts.contains(&"Options"));
         assert!(texts.contains(&"Progress saved."));
-        // Unwrapped screen text (no _()) is still skipped.
-        assert!(!texts.contains(&"Unwrapped"));
+        // Unwrapped screen text (no _()) is harvested too, as a spliceable Term.
+        let unwrapped = units.iter().find(|u| u.source == "Unwrapped").unwrap();
+        assert_eq!(unwrapped.kind, UnitKind::Term);
+        assert!(!unwrapped.pointer.starts_with("str#"), "screen literals keep a byte span");
         assert_eq!(
             units.iter().find(|u| u.source == "Start Game").unwrap().kind,
             UnitKind::Term
@@ -2357,10 +2674,106 @@ define g = Character(_(\"Gwen\"))
     fn setup_language_writes_character_name_overrides() {
         let d = tempfile::tempdir().unwrap();
         let names = vec![("rin".to_string(), "\u{e23}\u{e34}\u{e19}".to_string())];
-        setup_language(d.path(), "thai", "\u{e44}\u{e17}\u{e22}", &names).unwrap();
+        setup_language(d.path(), "thai", "\u{e44}\u{e17}\u{e22}", &names, &[]).unwrap();
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
         assert!(zzz.contains("translate thai python:"));
         // Re-defines the character inheriting the original via kind=.
         assert!(zzz.contains("rin = Character(\"\u{e23}\u{e34}\u{e19}\", kind=rin)"));
+    }
+
+    #[test]
+    fn setup_language_writes_extra_strings_block() {
+        let d = tempfile::tempdir().unwrap();
+        let strings = vec![
+            ("Go to University".to_string(), "ไปมหาวิทยาลัย".to_string()),
+            // Source with an escaped quote: `old` must carry the runtime string,
+            // re-escaped for the file. Translation with a literal `%` → doubled.
+            ("Say \\\"hi\\\"".to_string(), "ลด 50% เลย".to_string()),
+        ];
+        setup_language(d.path(), "thai", "ไทย", &[], &strings).unwrap();
+        let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
+        assert!(zzz.contains("translate thai strings:"), "strings block present: {zzz}");
+        assert!(zzz.contains("    old \"Go to University\"\n    new \"ไปมหาวิทยาลัย\""));
+        assert!(zzz.contains("old \"Say \\\"hi\\\"\""), "escapes normalized: {zzz}");
+        assert!(zzz.contains("50%%"), "literal percent doubled in `new`");
+    }
+
+    #[test]
+    fn harvests_python_quest_strings_and_dedupes() {
+        // The Nothing-Weird-Happens-Here case: quest names/objectives are bare
+        // python strings, shown later via `text _qn` — extract them once each as
+        // display-matched Terms; keys/paths/colors stay out.
+        let src = r##"
+label quests:
+    $ go_to_university = Quest("Go to University", "Start your new life as a student.")
+    $ go_to_university.add_objective("Wait for Monday to start studying", completed=False)
+    $ uni = find_quest("Go to University")
+    $ renpy.notify("Saved")
+    $ renpy.notify("✓ Objective complete: Find your classroom")
+    $ event_done["aunt_housework_done"] = True
+    $ color = "#ffe066"
+    $ portrait = "images/quests/uni.png"
+"##;
+        let units = extract(src);
+        let terms: Vec<&TransUnit> = units.iter().filter(|u| u.kind == UnitKind::Term).collect();
+        let texts: Vec<&str> = terms.iter().map(|u| u.source.as_str()).collect();
+
+        assert!(texts.contains(&"Go to University"));
+        assert!(texts.contains(&"Start your new life as a student."));
+        assert!(texts.contains(&"Wait for Monday to start studying"));
+        assert!(texts.contains(&"Saved"), "notify single-word is display text");
+        assert!(texts.contains(&"✓ Objective complete: Find your classroom"));
+        // Deduped: the find_quest() repeat adds no second unit.
+        assert_eq!(texts.iter().filter(|t| **t == "Go to University").count(), 1);
+        // Keys / colors / paths stay out.
+        assert!(!texts.iter().any(|t| t.contains("aunt_housework")));
+        assert!(!texts.contains(&"#ffe066"));
+        assert!(!texts.iter().any(|t| t.contains("images/")));
+        // All python strings are display-matched (`str#`), never spliced.
+        assert!(terms.iter().all(|u| u.pointer.starts_with("str#")));
+    }
+
+    #[test]
+    fn harvests_bare_screen_literals() {
+        let src = r##"
+screen quest_log():
+    modal True
+    add "bg phone 2.png"
+    key "dismiss" action Hide("quest_log")
+    text "Quest Log":
+        size 30
+        color "#7daad4"
+    text "›":
+        size 30
+    textbutton "Close" action Hide("quest_log")
+    label "Objectives"
+    text _qn
+    text scene["name"]:
+        size 26
+    text prompt style "input_prompt"
+    $ _bg = "#2c3e6618"
+"##;
+        let units = extract(src);
+        let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+
+        assert!(texts.contains(&"Quest Log"));
+        assert!(texts.contains(&"Close"));
+        assert!(texts.contains(&"Objectives"));
+        // Punctuation-only literal, asset path, key name, colors: all out.
+        assert!(!texts.contains(&"›"));
+        assert!(!texts.contains(&"bg phone 2.png"));
+        assert!(!texts.contains(&"dismiss"));
+        assert!(!texts.contains(&"quest_log"));
+        assert!(!texts.iter().any(|t| t.starts_with('#')));
+        // The string must directly follow the keyword: a dict key
+        // (`text scene["name"]`) or a style name (`… style "input_prompt"`) is
+        // code — splicing it breaks lookups / renames the style.
+        assert!(!texts.contains(&"name"));
+        assert!(!texts.contains(&"input_prompt"));
+        // Screen literals keep spliceable byte spans; content matches the span.
+        for u in units.iter().filter(|u| u.kind == UnitKind::Term) {
+            let (s, l) = parse_pointer(&u.pointer).unwrap();
+            assert_eq!(&src[s..s + l], u.source);
+        }
     }
 }

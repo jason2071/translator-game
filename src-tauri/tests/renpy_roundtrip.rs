@@ -42,11 +42,27 @@ fn extract_finds_dialogue_not_code() {
     assert!(texts.contains(&"Options"));
     assert!(texts.contains(&"Progress saved."));
 
-    // Asset names, unwrapped screen/UI text, and python code are NOT extracted.
+    // Asset names are NOT extracted.
     assert!(!texts.contains(&"audio/hello.ogg"));
-    assert!(!texts.contains(&"HUD text, not dialogue."));
-    assert!(!texts.contains(&"Menu button"));
-    assert!(!texts.contains(&"python code string"));
+
+    // Bare screen literals ARE harvested (Term, spliceable byte span) — shown
+    // verbatim in-game, so they need translation even without `_()`.
+    let hud = units
+        .iter()
+        .find(|u| u.source == "HUD text, not dialogue.")
+        .expect("bare screen literal harvested");
+    assert_eq!(hud.kind, UnitKind::Term);
+    assert!(!hud.pointer.starts_with("str#"));
+    assert!(texts.contains(&"Menu button"));
+
+    // Multi-word python strings are harvested too, display-matched via the
+    // strings table (`str#` pointer — never spliced in place).
+    let code = units
+        .iter()
+        .find(|u| u.source == "python code string")
+        .expect("python display string harvested");
+    assert_eq!(code.kind, UnitKind::Term);
+    assert!(code.pointer.starts_with("str#"));
 
     // A Character's display name IS extracted (so it can be translated) — as a Name
     // unit keyed to the character variable.
