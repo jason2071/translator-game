@@ -34,6 +34,7 @@ export default function GlossaryView() {
 
   return (
     <div className="glossary">
+      <GlossaryAiBar />
       <div className="gloss-setup">
         <GameContextPanel />
         <CharactersPanel />
@@ -99,6 +100,89 @@ export default function GlossaryView() {
   );
 }
 
+// The AI provider + model used by everything on this screen (game-context draft,
+// character classify, term suggestions) — independent of the Run provider. Lives
+// at the top of the modal, outside every collapsible panel, so it stays visible
+// when the panels below are collapsed.
+function GlossaryAiBar() {
+  const glossaryProvider = useSettings((s) => s.glossaryProvider);
+  const setGlossaryProvider = useSettings((s) => s.setGlossaryProvider);
+  // Select the raw model string, never `configFor()` — that builds a fresh object
+  // every call, so as a zustand selector it would re-render forever.
+  const model = useSettings((s) => s.providers[glossaryProvider]?.model ?? "");
+  const updateProvider = useSettings((s) => s.updateProvider);
+  const [models, setModels] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Model lists are per-provider; drop them when the provider changes.
+  useEffect(() => {
+    setModels([]);
+    setErr(null);
+  }, [glossaryProvider]);
+
+  async function refresh() {
+    setLoading(true);
+    setErr(null);
+    try {
+      const list = await api.listModels(useSettings.getState().configFor(glossaryProvider));
+      setModels(list);
+      if (list.length === 0) setErr("No models returned.");
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="gloss-ai-bar">
+      <span className="gloss-section-label">AI for this screen</span>
+      <select
+        className="gloss-provider"
+        value={glossaryProvider}
+        onChange={(e) => setGlossaryProvider(e.target.value as ProviderKind)}
+        title="AI provider for glossary, characters + game-context help (independent of the Run provider)"
+      >
+        {PROVIDER_KINDS.map((k) => (
+          <option key={k} value={k}>
+            {PROVIDER_LABELS[k]}
+          </option>
+        ))}
+      </select>
+      {models.length > 0 ? (
+        <select
+          className="gloss-provider"
+          value={models.includes(model) ? model : ""}
+          onChange={(e) =>
+            e.target.value && updateProvider(glossaryProvider, { model: e.target.value })
+          }
+          title="Model for this provider"
+        >
+          <option value="">— pick one of {models.length} —</option>
+          {models.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          className="gloss-model"
+          placeholder="model id"
+          value={model}
+          onChange={(e) => updateProvider(glossaryProvider, { model: e.target.value })}
+          title="Model for this provider"
+        />
+      )}
+      <button className="ghost" onClick={refresh} disabled={loading}>
+        <Icon name="retry" size={14} /> {loading ? "…" : "Models"}
+      </button>
+      {err && <span className="error">{err}</span>}
+    </div>
+  );
+}
+
 // Setting-era presets. The value is the key the backend maps to a register
 // directive (see `ai::prompt::era_directive`); "" = none (rely on game context).
 const ERA_OPTIONS: { value: string; label: string }[] = [
@@ -120,11 +204,9 @@ function GameContextPanel() {
   const project = useStore((s) => s.project);
   const setGameContext = useStore((s) => s.setGameContext);
   const setEra = useStore((s) => s.setEra);
+  // Provider/model for "AI draft" is picked in the always-visible bar at the top
+  // of this screen (GlossaryAiBar) — shared with characters + term suggestions.
   const glossaryConfig = useSettings((s) => s.glossaryConfig);
-  // The AI provider here governs BOTH "AI draft" (context) and the glossary's
-  // "AI suggest" — surfaced at the top so it's visible before either is run.
-  const glossaryProvider = useSettings((s) => s.glossaryProvider);
-  const setGlossaryProvider = useSettings((s) => s.setGlossaryProvider);
   const [drafting, setDrafting] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   // Collapsed by default; only springs open if there's nothing here yet, since
@@ -191,19 +273,6 @@ function GameContextPanel() {
               {ERA_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
-                </option>
-              ))}
-            </select>
-            <select
-              className="gloss-provider"
-              value={glossaryProvider}
-              onChange={(e) => setGlossaryProvider(e.target.value as ProviderKind)}
-              disabled={drafting}
-              title="AI provider for glossary + game-context help (independent of the Run provider)"
-            >
-              {PROVIDER_KINDS.map((k) => (
-                <option key={k} value={k}>
-                  {PROVIDER_LABELS[k]}
                 </option>
               ))}
             </select>

@@ -1332,6 +1332,28 @@ code {
 .gloss-setup {
   margin-bottom: 1.2rem;
 }
+/* Provider + model for every AI action on this screen. Sits above the collapsible
+   panels so it stays visible when Game context / Characters are collapsed. */
+.gloss-ai-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  padding-bottom: 0.6rem;
+  margin-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+.gloss-ai-bar .gloss-section-label {
+  margin: 0;
+  white-space: nowrap;
+}
+.gloss-ai-bar .gloss-provider {
+  max-width: 15rem;
+}
+.gloss-model {
+  min-width: 10rem;
+  max-width: 15rem;
+}
 .gloss-collapse {
   padding: 0.5rem 0;
 }
