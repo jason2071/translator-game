@@ -8,9 +8,13 @@ Guidance for AI coding agents working in this repo. Keep it lean; `CLAUDE.md` an
 Desktop app to translate RPG / visual-novel games by hand or via AI. **Tauri v2**
 (Rust core) + **React / Vite / TypeScript**. The Rust side owns all heavy logic
 (parse, extract, inject, DB, AI orchestration, keychain); the frontend is a thin
-view over Tauri `invoke` commands + events. Five engines ship: **RPGMaker MV/MZ**
+view over Tauri `invoke` commands + events. Eleven engines ship: **RPGMaker MV/MZ**
 (JSON), **Ren'Py** (`.rpy`), **TyranoScript** (`.ks`), **KiriKiri** (`.ks`,
-Shift-JIS/UTF-16), **Godot** (`.po`/`.csv`).
+Shift-JIS/UTF-16), **Godot** (`.po`/`.csv`), **Unity Naninovel** (managed text +
+compiled dialogue via bundled UnityPy helper), **Unity CSV localization**
+(`StreamingAssets/Localization/<lang>/*.csv`), **Unity TextTable** (Mono
+Addressables), **Hendrix** (MV/MZ with `game_messages.csv`), **Forger acod**
+(Assassin's Creed Odyssey/Valhalla), and **ac-loctext** (Assassin's Creed Origins).
 
 ## Setup & commands
 
@@ -23,6 +27,7 @@ pnpm tauri build             # release binary + installer
 cd src-tauri
 cargo build                  # compile the Rust core
 cargo test                   # all Rust tests (unit + integration)
+cargo test --lib             # only lib unit tests (protect, ai::prompt)
 cargo test roundtrip_identity        # a single test by name
 cargo test --test extract_roundtrip  # one integration test file
 ```
@@ -35,18 +40,24 @@ cargo test --test extract_roundtrip  # one integration test file
 - **`cargo test` is green.** Every engine has a `roundtrip_identity` test; keep it.
 - Run `cargo test` after any Rust change and `pnpm build` after any frontend change.
 
+Dev API keys go in a `.env` (copy `.env.example`). `pnpm tauri dev` loads it in
+debug builds; release builds ignore `.env` and read the OS keychain.
+
 ## Architecture
 
 ```
 src-tauri/src/
-  engine/    GameEngine trait + registry (engines() = detection order); mvmz /
-             renpy / tyrano / kirikiri / godot; codes.rs, protect.rs, encoding.rs
-  project/   SQLite store (db.rs), open/create + backup/export (mod.rs)
+  engine/    GameEngine trait + registry in mod.rs (engines() = detection order);
+             hendrix, mvmz, renpy, kirikiri, tyrano, godot, unity (Naninovel),
+             unity_csv, unity_textbl, forger_acod, ac_loctext; plus codes.rs,
+             protect.rs, encoding.rs, rpa.rs (Ren'Py archive unpack),
+             renpy_tl.rs (Ren'Py tl/<lang>/ fill), unrpyc.rs (decompile .rpyc)
+  project/   SQLite store (db.rs), open/create + backup/export + export_mod (mod.rs)
   ai/        TranslationProvider trait; openai/anthropic/gemini; prompt + retry
-  keys.rs    OS keychain (keyring)
+  keys.rs    OS keychain (keyring) + .env fallback in debug builds
   lib.rs     #[tauri::command] surface + AI orchestration (translate_units)
 src/         React UI; ipc.ts mirrors the command surface; Zustand stores split by
-             concern (store.ts, settings.ts, translation.ts, errors.ts, …)
+             concern (store.ts, settings.ts, translation.ts, errors.ts, ...)
 ```
 
 ## Invariants — do not break (read the file before changing these)
@@ -71,12 +82,21 @@ src/         React UI; ipc.ts mirrors the command surface; Zustand stores split 
   rename. Change a field name on both sides.
 - **Secrets vs config split.** API keys live only in the OS keychain (`keys.rs`),
   loaded server-side; the frontend can set/check/clear but never read them back.
-  Non-secret config lives in localStorage.
+  Non-secret config lives in localStorage. Debug builds also read `.env`.
 - **Game files are read-only until Export.** All state lives in the sidecar
   `<game>/.rpgtl/`. Export snapshots original bytes into `.rpgtl/source/` so
   re-export is idempotent.
 - **Ren'Py exports as `tl/<lang>/`, not in place** (drives the game's bundled
-  Ren'Py to generate the skeleton; source `.rpy` are never touched).
+  Ren'Py to generate the skeleton; source `.rpy` are never touched). Falls back to
+  in-place inject when no bundled launcher is found. Compiled-only Ren'Py (no
+  source `.rpy`) is auto-decompiled via the vendored `unrpyc` helper.
+- **Two export modes.** `project::export` writes into the game (in-place).
+  `project::export_mod` builds a staging mirror and zips it to
+  `.rpgtl/mods/<lang>-<ts>.zip` — the game is never touched. Not available for
+  Ren'Py or Hendrix (their export is already additive).
+- **Tests copy the fixture; never dirty it.** Integration tests copy
+  `tests/fixtures/mz-sample` to a temp dir before writing. Each engine has its own
+  `tests/<engine>_roundtrip.rs`.
 
 ## Conventions
 
@@ -96,7 +116,7 @@ engine-agnostic. See `docs/ROADMAP.md`.
 
 ## Where to look
 
-- `CLAUDE.md` — the same guidance with full rationale for each invariant.
+- `CLAUDE.md` — full rationale for each invariant, engine-by-engine detail.
 - `README.md` — user-facing overview, providers, project layout.
 - `docs/` — Obsidian vault; start at `docs/Home.md`. `docs/ENGINES.md`,
   `docs/ROADMAP.md`, `docs/QA-TEST-PLAN.md`, `docs/games/` (per-game research).
