@@ -264,7 +264,7 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
             if trimmed.starts_with("new ") {
                 if let Some(old) = pending_old.take() {
                     if let Some(tr) = lookup(&old) {
-                        let tr = escape_percent(&tr);
+                        let tr = escape_percent_like(&old, &tr);
                         push_line(&mut out, &format!("{indent}new \"{}\"", quote_unicode(&tr)), nl);
                         continue;
                     }
@@ -284,7 +284,7 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
                 if let Some(tr) = lookup(src) {
                     let mut rebuilt = String::new();
                     rebuilt.push_str(&body[..s - 1]); // up to and incl. the opening quote's position
-                    rebuilt.push_str(&encode_say_string(&escape_percent(&tr)));
+                    rebuilt.push_str(&encode_say_string(&escape_percent_like(src, &tr)));
                     rebuilt.push_str(&body[s + l + 1..]); // after the closing quote
                     push_line(&mut out, &rebuilt, nl);
                     continue;
@@ -294,6 +294,44 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
         push_line(&mut out, body, nl);
     }
     out
+}
+
+/// Escape the translation's `%` the way the *source* string is escaped.
+///
+/// `%`-substitution is not universal: Ren'Py applies it to say text and menu
+/// captions only (`what % tag_quoting_dict`), never to a `strings`-block entry a
+/// screen or python `_()` looks up. So a source that carries a **bare** `%` is one
+/// the game consumes raw — a `strftime` format (`"%m/%d/%Y"`), a `"…([pdBO]%)"`
+/// screen label — and doubling it in the translation ships a literal `%%` to the
+/// player (the phone clock read `%%m/%%d/%%Y`). Mirror the source instead: bare `%`
+/// in, bare `%` out; otherwise escape as before, which keeps say lines safe.
+pub(super) fn escape_percent_like(src: &str, tr: &str) -> String {
+    if has_bare_percent(src) {
+        tr.to_string()
+    } else {
+        escape_percent(tr)
+    }
+}
+
+/// Whether `s` contains a `%` that isn't part of an escaped `%%` pair — i.e. an
+/// odd-length run of `%`.
+fn has_bare_percent(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let start = i;
+            while i < b.len() && b[i] == b'%' {
+                i += 1;
+            }
+            if (i - start) % 2 == 1 {
+                return true;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 /// Double every literal `%` in a translation. Ren'Py runs displayed text through
@@ -459,6 +497,17 @@ translate thai start_abc:
         assert_eq!(escape_percent("10%%"), "10%%"); // already escaped -> unchanged
         assert_eq!(escape_percent("no percent"), "no percent");
         assert_eq!(escape_percent("a%b%c"), "a%%b%%c");
+    }
+
+    #[test]
+    fn escape_percent_like_mirrors_the_source() {
+        // strftime / screen-label sources are consumed raw — keep `%` single, or the
+        // phone clock renders the literal text `%%H:%%M`.
+        assert_eq!(escape_percent_like("%H:%M", "%H:%M น."), "%H:%M น.");
+        assert_eq!(escape_percent_like("Opacity ([o]%)", "ความทึบ ([o]%)"), "ความทึบ ([o]%)");
+        // A source with no bare `%` (say text, escaped `%%`) still gets the escaping.
+        assert_eq!(escape_percent_like("Now 50%% off", "ลด 50%"), "ลด 50%%");
+        assert_eq!(escape_percent_like("Hello", "ลด 50%"), "ลด 50%%");
     }
 
     #[test]

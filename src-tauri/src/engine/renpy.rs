@@ -1265,26 +1265,6 @@ fn extract_rpy(
     }
 }
 
-/// A double-quoted Python string literal for `s`, keeping Unicode verbatim (only
-/// `"`, `\`, and the usual control chars are escaped). Unlike Rust's `{:?}`, it never
-/// turns a Thai combining mark into `\u{…}` (invalid Python).
-fn py_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            _ => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 /// A Python identifier: non-empty, `[A-Za-z_][A-Za-z0-9_]*`.
 fn is_ident(s: &str) -> bool {
     let mut cs = s.chars();
@@ -1747,22 +1727,20 @@ pub fn export_tl(
         }
     }
 
-    // Character names — re-`define` each translated Character under the language
-    // (Ren'Py's `translate` never touches a bare `Character("…")` name).
-    let names: Vec<(String, String)> = units
-        .iter()
-        .filter(|u| u.kind == UnitKind::Name && u.status.is_applied())
-        .filter_map(|u| Some((u.context.clone()?, u.translation.clone()?)))
-        .collect();
-
     // Term units the skeleton never consumed (screen literals, python display
-    // strings) → extra strings-block entries, deduped by source.
+    // strings) → extra strings-block entries, deduped by source. Character names
+    // ride the same block: a say-name goes through `substitute(who)` at display
+    // time, which translates it like any other string. (Re-`define`ing the
+    // Character in a `translate <lang> python:` block instead would work too, but
+    // it *writes the store* — the Character then lands in every save file, and
+    // pickling one whose `callback=` is an init-python function raises
+    // `PicklingError: … not the same object as store.<fn>` when the player saves.)
     let mut extra_seen: HashSet<&str> = HashSet::new();
     let mut extra: Vec<(String, String)> = Vec::new();
     {
         let used = used.borrow();
         for u in units {
-            if u.kind != UnitKind::Term || !u.status.is_applied() {
+            if !matches!(u.kind, UnitKind::Term | UnitKind::Name) || !u.status.is_applied() {
                 continue;
             }
             let Some(t) = &u.translation else { continue };
@@ -1775,7 +1753,7 @@ pub fn export_tl(
 
     // Make the language selectable (default to it) and remap the game's fonts to a
     // glyph-capable one so the translation isn't rendered as "NO GLYPH" boxes.
-    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &names, &extra)?;
+    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &extra)?;
 
     Ok(Some(TlExport { files, dir }))
 }
@@ -1831,11 +1809,12 @@ fn export_tl_from_source(
                     return Err(anyhow!("stale pointer {} in {} — re-extract needed", u.pointer, rel));
                 }
                 let tr = u.translation.clone().unwrap_or_default();
-                // Double literal `%` (→ `%%`) before quoting: Ren'Py runs a say/`new`
-                // string through `%`-substitution, so a bare `%` (e.g. "50%") followed
-                // by a letter crashes at runtime. `fill_tl` does the same for the
-                // non-source tl path.
-                let tr = renpy_tl::escape_percent(&tr);
+                // Escape literal `%` (→ `%%`) the way the source does: Ren'Py
+                // `%`-substitutes say text, so a bare `%` (e.g. "50%") followed by a
+                // letter crashes at runtime — but a source that itself carries a bare
+                // `%` is a raw format string (strftime, screen label) the game consumes
+                // as-is. `fill_tl` does the same for the non-source tl path.
+                let tr = renpy_tl::escape_percent_like(&u.source, &tr);
                 bytes.splice(start..start + len, renpy_tl::quote_unicode(&tr).into_bytes());
             }
         }
@@ -1864,7 +1843,7 @@ fn export_tl_from_source(
     // Make the target selectable + readable (menu entry, default language, Thai font).
     // No Character re-defines: any `_()`-wrapped name translates via the strings blocks.
     // No extra strings either: tl-source units are all spliced into the retagged tree.
-    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &[], &[])?;
+    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &[])?;
     Ok(TlExport {
         files,
         dir: data_dir.join("tl").join(&lang),
@@ -1964,7 +1943,6 @@ fn setup_language(
     data_dir: &Path,
     lang: &str,
     label: &str,
-    names: &[(String, String)],
     strings: &[(String, String)],
 ) -> Result<()> {
     // Add the language to the game's own Settings language menu, if it has one.
@@ -1978,33 +1956,19 @@ fn setup_language(
         "init 1000 python:\n    if config.language is None:\n        config.language = \"{lang}\"\n\n"
     ));
 
-    // Re-define each translated Character under the language, inheriting the original
-    // via `kind=` so its colour/outlines/etc. carry over — only the name changes. Runs
-    // when the language is selected, so the store variable the say-statements reference
-    // now points at the translated character.
-    if !names.is_empty() {
-        s.push_str(&format!("translate {lang} python:\n"));
-        for (ch, name) in names {
-            // A Python string literal that keeps Unicode verbatim — Rust's `{:?}` would
-            // escape Thai combining marks to `\u{…}`, which isn't valid Python.
-            s.push_str(&format!("    {ch} = Character({}, kind={ch})\n", py_str(name)));
-        }
-        s.push('\n');
-    }
-
-    // Display strings with no skeleton entry. `old` = the runtime string (source
-    // unescaped, then re-escaped for the file); `new` gets the same `%`-escaping
-    // as every other strings-block translation.
+    // Display strings with no skeleton entry, plus the character names (a say-name
+    // is translated at display time by `substitute(who)`, so a strings entry renames
+    // the speaker without touching the store — see the caller). `old` = the runtime
+    // string (source unescaped, then re-escaped for the file); `new` gets the same
+    // source-mirrored `%`-escaping as every other strings-block translation.
     if !strings.is_empty() {
         s.push_str(&format!("translate {lang} strings:\n"));
         for (old, new) in strings {
-            s.push_str(&format!(
-                "    old \"{}\"\n",
-                renpy_tl::quote_unicode(&unescape_rpy(old))
-            ));
+            let old = unescape_rpy(old);
+            s.push_str(&format!("    old \"{}\"\n", renpy_tl::quote_unicode(&old)));
             s.push_str(&format!(
                 "    new \"{}\"\n\n",
-                renpy_tl::quote_unicode(&renpy_tl::escape_percent(new))
+                renpy_tl::quote_unicode(&renpy_tl::escape_percent_like(&old, new))
             ));
         }
     }
@@ -2022,16 +1986,34 @@ fn setup_language(
             s.push_str(&format!("        {r:?},\n"));
         }
         s.push_str("    ]\n");
-        // Point every game font at the bundled Thai face. (A FontGroup that kept the
-        // original font for non-Thai glyphs would be cleaner for untranslated CJK, but
-        // Ren'Py's `config.font_replacement_map` only accepts a font *string*, not a
-        // FontGroup — passing one crashes `load_face`. Untranslated Japanese names are
-        // instead handled by translating the names themselves; see
-        // `extract_character_names`.)
-        s.push_str("    for _f in _tl_fonts:\n");
-        s.push_str("        for _b in (False, True):\n");
-        s.push_str("            for _i in (False, True):\n");
-        s.push_str("                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
+        // Preferred: a *glyph-level* fallback. `config.font_transforms` (Ren'Py 8.1+)
+        // runs on the font of every text segment — style fonts and inline `{font=…}`
+        // alike — and, unlike `config.font_replacement_map`, may return a FontGroup.
+        // So Thai code points come from the bundled face and every other glyph keeps
+        // the game's own font: symbols the Thai face lacks (⚫ U+26AB in a phone
+        // typing indicator, ♡) render instead of turning into tofu boxes.
+        s.push_str("    _tl_groups = {}\n");
+        s.push_str("    def _tl_font_group(_f):\n");
+        s.push_str("        if not isinstance(_f, str):\n"); // ImageFont/FontGroup: leave alone
+        s.push_str("            return _f\n");
+        s.push_str("        _g = _tl_groups.get(_f)\n");
+        s.push_str("        if _g is None:\n");
+        s.push_str("            try:\n");
+        s.push_str("                _g = FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_f, None, None)\n");
+        s.push_str("            except Exception:\n");
+        s.push_str("                _g = _f\n");
+        s.push_str("            _tl_groups[_f] = _g\n");
+        s.push_str("        return _g\n");
+        s.push_str("    if hasattr(config, \"font_transforms\"):\n");
+        s.push_str("        config.font_transforms[\"rpgtl_thai\"] = _tl_font_group\n");
+        s.push_str("        preferences.font_transform = \"rpgtl_thai\"\n");
+        // Fallback for older Ren'Py, which has no font transform: swap the font file
+        // outright. Whole-face, so glyphs missing from the Thai face become tofu.
+        s.push_str("    else:\n");
+        s.push_str("        for _f in _tl_fonts:\n");
+        s.push_str("            for _b in (False, True):\n");
+        s.push_str("                for _i in (False, True):\n");
+        s.push_str("                    config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
     }
 
     std::fs::write(data_dir.join(GENERATED_RPY), s)
@@ -2671,14 +2653,32 @@ define g = Character(_(\"Gwen\"))
     }
 
     #[test]
-    fn setup_language_writes_character_name_overrides() {
+    fn setup_language_translates_character_names_as_strings() {
         let d = tempfile::tempdir().unwrap();
-        let names = vec![("rin".to_string(), "\u{e23}\u{e34}\u{e19}".to_string())];
-        setup_language(d.path(), "thai", "\u{e44}\u{e17}\u{e22}", &names, &[]).unwrap();
+        // A name rides the strings block like any other string — `substitute(who)`
+        // translates the say-name at display time. Never a `translate python` re-define:
+        // that writes the store, so the Character lands in saves and pickling one whose
+        // `callback=` is an init-python function crashes the save.
+        let names = vec![("Rin".to_string(), "\u{e23}\u{e34}\u{e19}".to_string())];
+        setup_language(d.path(), "thai", "\u{e44}\u{e17}\u{e22}", &names).unwrap();
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
-        assert!(zzz.contains("translate thai python:"));
-        // Re-defines the character inheriting the original via kind=.
-        assert!(zzz.contains("rin = Character(\"\u{e23}\u{e34}\u{e19}\", kind=rin)"));
+        assert!(zzz.contains("    old \"Rin\"\n    new \"\u{e23}\u{e34}\u{e19}\""), "{zzz}");
+        assert!(!zzz.contains("kind=rin"), "no Character re-define: {zzz}");
+    }
+
+    #[test]
+    fn setup_language_installs_a_glyph_level_font_fallback() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("gui")).unwrap();
+        std::fs::write(d.path().join("gui/game.ttf"), b"fake").unwrap();
+        setup_language(d.path(), "thai", "ไทย", &[]).unwrap();
+        let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
+        // Thai code points come from the bundled face, every other glyph from the
+        // game's own font — a whole-face swap turns symbols like ⚫ into tofu.
+        assert!(zzz.contains("FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_f, None, None)"), "{zzz}");
+        assert!(zzz.contains("preferences.font_transform = \"rpgtl_thai\""), "{zzz}");
+        // Older Ren'Py has no font transform — the whole-face swap stays as fallback.
+        assert!(zzz.contains("config.font_replacement_map[_f, _b, _i]"), "{zzz}");
     }
 
     #[test]
@@ -2689,13 +2689,20 @@ define g = Character(_(\"Gwen\"))
             // Source with an escaped quote: `old` must carry the runtime string,
             // re-escaped for the file. Translation with a literal `%` → doubled.
             ("Say \\\"hi\\\"".to_string(), "ลด 50% เลย".to_string()),
+            // A source that carries a bare `%` is a raw format string the game feeds to
+            // strftime — the translation must keep its `%` single.
+            ("%m/%d/%Y".to_string(), "%d/%m/%Y".to_string()),
         ];
-        setup_language(d.path(), "thai", "ไทย", &[], &strings).unwrap();
+        setup_language(d.path(), "thai", "ไทย", &strings).unwrap();
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
         assert!(zzz.contains("translate thai strings:"), "strings block present: {zzz}");
         assert!(zzz.contains("    old \"Go to University\"\n    new \"ไปมหาวิทยาลัย\""));
         assert!(zzz.contains("old \"Say \\\"hi\\\"\""), "escapes normalized: {zzz}");
         assert!(zzz.contains("50%%"), "literal percent doubled in `new`");
+        assert!(
+            zzz.contains("    old \"%m/%d/%Y\"\n    new \"%d/%m/%Y\""),
+            "strftime format kept single-`%`: {zzz}"
+        );
     }
 
     #[test]
