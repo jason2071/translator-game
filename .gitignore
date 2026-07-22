@@ -53,3 +53,6 @@ pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .tauri-updater.key.pub
+
+# Playwright MCP artifacts
+.playwright-mcp/
