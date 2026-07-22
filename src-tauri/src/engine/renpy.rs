@@ -1979,19 +1979,15 @@ fn setup_language(
         let font_rel = "fonts/tl_font.ttf";
         copy_target_font(&data_dir.join(font_rel))?;
         let refs = collect_font_refs(data_dir);
-        s.push_str(&format!("translate {lang} python:\n"));
+
+        // `_tl_font_group` MUST live in `init python`, not `translate python`.
+        // Translate blocks re-execute on language change and save-load, creating a
+        // new function object each time. When Ren'Py saves the game it pickles
+        // `config.font_transforms["rpgtl_thai"]` (pointing at the old object), and
+        // on load the new object fails identity check → PicklingError.  init python
+        // runs once, so the function object is stable across save-roundtrips.
+        s.push_str("init python:\n");
         s.push_str(&format!("    _tl_font = \"{font_rel}\"\n"));
-        s.push_str("    _tl_fonts = [\n");
-        for r in &refs {
-            s.push_str(&format!("        {r:?},\n"));
-        }
-        s.push_str("    ]\n");
-        // Preferred: a *glyph-level* fallback. `config.font_transforms` (Ren'Py 8.1+)
-        // runs on the font of every text segment — style fonts and inline `{font=…}`
-        // alike — and, unlike `config.font_replacement_map`, may return a FontGroup.
-        // So Thai code points come from the bundled face and every other glyph keeps
-        // the game's own font: symbols the Thai face lacks (⚫ U+26AB in a phone
-        // typing indicator, ♡) render instead of turning into tofu boxes.
         s.push_str("    _tl_groups = {}\n");
         s.push_str("    def _tl_font_group(_f):\n");
         s.push_str("        if not isinstance(_f, str):\n"); // ImageFont/FontGroup: leave alone
@@ -2006,6 +2002,25 @@ fn setup_language(
         s.push_str("        return _g\n");
         s.push_str("    if hasattr(config, \"font_transforms\"):\n");
         s.push_str("        config.font_transforms[\"rpgtl_thai\"] = _tl_font_group\n");
+        s.push_str("\n");
+
+        // Per-language activation + fallback stay in `translate python` where they
+        // belong (only active when the language is Thai). The font-infra references
+        // (_tl_font, _tl_groups, _tl_font_group) come from the init block above via
+        // the Ren'Py store, which init-sets once and the translate block inherits.
+        s.push_str(&format!("translate {lang} python:\n"));
+        s.push_str("    _tl_fonts = [\n");
+        for r in &refs {
+            s.push_str(&format!("        {r:?},\n"));
+        }
+        s.push_str("    ]\n");
+        // Preferred: a *glyph-level* fallback. `config.font_transforms` (Ren'Py 8.1+)
+        // runs on the font of every text segment — style fonts and inline `{font=…}`
+        // alike — and, unlike `config.font_replacement_map`, may return a FontGroup.
+        // So Thai code points come from the bundled face and every other glyph keeps
+        // the game's own font: symbols the Thai face lacks (⚫ U+26AB in a phone
+        // typing indicator, ♡) render instead of turning into tofu boxes.
+        s.push_str("    if hasattr(config, \"font_transforms\"):\n");
         s.push_str("        preferences.font_transform = \"rpgtl_thai\"\n");
         // Fallback for older Ren'Py, which has no font transform: swap the font file
         // outright. Whole-face, so glyphs missing from the Thai face become tofu.
