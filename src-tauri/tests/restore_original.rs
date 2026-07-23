@@ -29,7 +29,7 @@ fn restore_puts_original_game_files_back() {
     write(root, "game/script.rpy", SCRIPT);
     let original = std::fs::read(root.join("game/script.rpy")).unwrap();
 
-    let (project, fresh) = project::open_or_create(root, "en", "Thai").unwrap();
+    let (mut project, fresh) = project::open_or_create(root, "en", "Thai").unwrap();
     assert!(fresh, "first open should extract the project");
 
     // Translate every unit so export actually changes the file.
@@ -43,7 +43,7 @@ fn restore_puts_original_game_files_back() {
     let game_file = root.join("game/script.rpy");
 
     // Export in place: the file changes and the original is snapshotted.
-    project::export(&project, true, false).unwrap();
+    project::export(&mut project, true, false).unwrap();
     let translated = std::fs::read(&game_file).unwrap();
     assert_ne!(translated, original, "export should have changed the game file");
     assert!(root.join(".rpgtl/source/script.rpy").exists(), "original snapshotted");
@@ -60,7 +60,7 @@ fn restore_puts_original_game_files_back() {
         still.iter().all(|u| u.translation.is_some()),
         "restore must not clear the DB translations"
     );
-    project::export(&project, true, false).unwrap();
+    project::export(&mut project, true, false).unwrap();
     assert_eq!(
         std::fs::read(&game_file).unwrap(),
         translated,
@@ -96,7 +96,7 @@ fn restore_undoes_embed_font_artifacts() {
     std::fs::create_dir_all(root.join("js")).unwrap();
     std::fs::write(root.join("js/plugins.js"), plugins0).unwrap();
 
-    let (project, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+    let (mut project, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
     // Translate every unit so every data file (System.json included) is touched and
     // snapshotted — then the MZ font repoint in System.json is reverted via source/.
     for u in db::all_units(&project.conn).unwrap() {
@@ -104,7 +104,7 @@ fn restore_undoes_embed_font_artifacts() {
     }
 
     // Export in place WITH font embedding.
-    project::export(&project, true, true).unwrap();
+    project::export(&mut project, true, true).unwrap();
     assert!(root.join(".rpgtl/source/System.json").exists(), "System.json snapshotted");
     assert!(root.join("fonts/Sarabun-Regular.ttf").is_file(), "font TTF added");
     assert!(root.join("js/plugins/RPGTL_ThaiText.js").is_file(), "outline plugin added");

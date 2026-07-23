@@ -32,7 +32,7 @@ fn open_edit_export_reopen() {
     let (_tmp, root) = temp_game();
 
     // First open extracts the game into the DB.
-    let (proj, fresh) = project::open_or_create(&root, "auto", "Thai").unwrap();
+    let (mut proj, fresh) = project::open_or_create(&root, "auto", "Thai").unwrap();
     assert!(fresh, "first open should extract");
     let info = proj.info(fresh).unwrap();
     assert!(info.stats.total > 0);
@@ -66,7 +66,7 @@ fn open_edit_export_reopen() {
     assert_eq!(stats.translated, 1);
 
     // Export: backup + patch in place.
-    let res = project::export(&proj, true, false).unwrap();
+    let res = project::export(&mut proj, true, false).unwrap();
     assert_eq!(res.units_applied, 1);
     assert_eq!(res.files_written, 1);
     let backup_dir = res.backup_dir.expect("backup created");
@@ -172,14 +172,14 @@ fn export_mod_byte_span_engine_leaves_the_game_untouched() {
 #[test]
 fn export_mod_reads_pristine_bytes_after_a_prior_inplace_export() {
     let (_tmp, root) = godot_game();
-    let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+    let (mut proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
     let units = project::db::list_units(&proj.conn, &UnitFilter::default()).unwrap();
     let greet = units.iter().find(|u| u.source == "Hello").unwrap();
     project::db::update_unit(&proj.conn, greet.id, Some("สวัสดี"), Status::Translated.as_str())
         .unwrap();
 
     // In-place export first: the game CSV is now translated (byte layout changed).
-    project::export(&proj, true, false).unwrap();
+    project::export(&mut proj, true, false).unwrap();
     let game = std::fs::read_to_string(root.join("loc").join("ui.csv")).unwrap();
     assert!(game.contains("GREET,สวัสดี"));
 

@@ -31,7 +31,7 @@ fn second_export_is_idempotent_and_valid() {
     let root = d.path();
     write(root, "game/script.rpy", SCRIPT);
 
-    let (project, fresh) = project::open_or_create(root, "en", "Thai").unwrap();
+    let (mut project, fresh) = project::open_or_create(root, "en", "Thai").unwrap();
     assert!(fresh, "first open should extract the project");
 
     // Translate every unit to a Thai string that is longer in bytes than its
@@ -46,7 +46,7 @@ fn second_export_is_idempotent_and_valid() {
     let game_file = root.join("game/script.rpy");
 
     // First export: patches the game file in place and snapshots the original.
-    project::export(&project, true, false).unwrap();
+    project::export(&mut project, true, false).unwrap();
     let after1 = std::fs::read(&game_file).unwrap();
     std::str::from_utf8(&after1).expect("first export must be valid UTF-8");
     assert!(
@@ -56,13 +56,13 @@ fn second_export_is_idempotent_and_valid() {
     assert!(root.join(".rpgtl/source/script.rpy").exists(), "original snapshotted");
 
     // Second export must reproduce the file byte-for-byte — not corrupt it.
-    project::export(&project, true, false).unwrap();
+    project::export(&mut project, true, false).unwrap();
     let after2 = std::fs::read(&game_file).unwrap();
     std::str::from_utf8(&after2).expect("second export must be valid UTF-8 (no mid-char splice)");
     assert_eq!(after1, after2, "re-export must be idempotent");
 
     // And stays stable across further exports.
-    project::export(&project, false, false).unwrap();
+    project::export(&mut project, false, false).unwrap();
     let after3 = std::fs::read(&game_file).unwrap();
     assert_eq!(after1, after3, "further exports stay idempotent");
 }
@@ -73,7 +73,7 @@ fn export_repairs_a_pre_fix_translated_file_from_earliest_backup() {
     let root = d.path();
     write(root, "game/script.rpy", SCRIPT);
 
-    let (project, _) = project::open_or_create(root, "en", "Thai").unwrap();
+    let (mut project, _) = project::open_or_create(root, "en", "Thai").unwrap();
     let original: Vec<u8> = SCRIPT.as_bytes().to_vec();
     for u in &db::all_units(&project.conn).unwrap() {
         let tr = format!("\u{e41}\u{e1b}\u{e25} \u{2014} {}", u.source);
@@ -89,14 +89,14 @@ fn export_repairs_a_pre_fix_translated_file_from_earliest_backup() {
 
     // Export must seed the snapshot from the earliest backup (= original), repair
     // the live file, and produce valid, idempotent output — not corrupt it.
-    project::export(&project, true, false).unwrap();
+    project::export(&mut project, true, false).unwrap();
     let after1 = std::fs::read(root.join("game/script.rpy")).unwrap();
     std::str::from_utf8(&after1).expect("repaired export is valid UTF-8");
     assert!(String::from_utf8_lossy(&after1).contains("\u{e41}\u{e1b}\u{e25} \u{2014}"));
     let snap = std::fs::read(root.join(".rpgtl/source/script.rpy")).unwrap();
     assert_eq!(snap, original, "snapshot seeded from the earliest backup = original");
 
-    project::export(&project, true, false).unwrap();
+    project::export(&mut project, true, false).unwrap();
     let after2 = std::fs::read(root.join("game/script.rpy")).unwrap();
     assert_eq!(after1, after2, "idempotent after repair");
 }
@@ -143,7 +143,7 @@ fn forger_acod_reexport_is_idempotent() {
     ]);
     std::fs::write(root.join("Kassandra_UI.acod"), &bytes).unwrap();
 
-    let (project, fresh) = project::open_or_create(root, "en", "Thai").unwrap();
+    let (mut project, fresh) = project::open_or_create(root, "en", "Thai").unwrap();
     assert!(fresh, "first open detects Forger .acod and extracts");
     let units = db::all_units(&project.conn).unwrap();
     assert_eq!(units.len(), 3, "three non-empty records");
@@ -154,7 +154,7 @@ fn forger_acod_reexport_is_idempotent() {
     }
 
     let game_file = root.join("Kassandra_UI.acod");
-    project::export(&project, true, false).unwrap();
+    project::export(&mut project, true, false).unwrap();
     let after1 = std::fs::read(&game_file).unwrap();
     assert_eq!(&after1[..2], &[0xFF, 0xFE], "export stays UTF-16LE with a BOM");
     assert!(
@@ -167,10 +167,10 @@ fn forger_acod_reexport_is_idempotent() {
     );
 
     // Second and third exports must reproduce the file byte-for-byte.
-    project::export(&project, true, false).unwrap();
+    project::export(&mut project, true, false).unwrap();
     let after2 = std::fs::read(&game_file).unwrap();
     assert_eq!(after1, after2, "forger re-export must be idempotent (UTF-16 splice)");
-    project::export(&project, false, false).unwrap();
+    project::export(&mut project, false, false).unwrap();
     let after3 = std::fs::read(&game_file).unwrap();
     assert_eq!(after1, after3, "further exports stay idempotent");
 }
@@ -204,7 +204,7 @@ fn ac_loctext_reexport_is_idempotent() {
     ]);
     std::fs::write(root.join("LocalizationData.txt"), &bytes).unwrap();
 
-    let (project, fresh) = project::open_or_create(root, "en", "Thai").unwrap();
+    let (mut project, fresh) = project::open_or_create(root, "en", "Thai").unwrap();
     assert!(fresh, "first open detects aclocexport text and extracts");
     let units = db::all_units(&project.conn).unwrap();
     assert_eq!(units.len(), 3, "three records");
@@ -215,7 +215,7 @@ fn ac_loctext_reexport_is_idempotent() {
     }
 
     let game_file = root.join("LocalizationData.txt");
-    project::export(&project, true, false).unwrap();
+    project::export(&mut project, true, false).unwrap();
     let after1 = std::fs::read(&game_file).unwrap();
     std::str::from_utf8(&after1).expect("export stays valid UTF-8");
     assert!(!after1.starts_with(&[0xEF, 0xBB, 0xBF]), "no BOM introduced");
@@ -230,10 +230,10 @@ fn ac_loctext_reexport_is_idempotent() {
     // Headers and blank separators survive — output is still aclocimport-shaped.
     assert!(String::from_utf8_lossy(&after1).contains("Id: [0x000D1792]\r\n"));
 
-    project::export(&project, true, false).unwrap();
+    project::export(&mut project, true, false).unwrap();
     let after2 = std::fs::read(&game_file).unwrap();
     assert_eq!(after1, after2, "ac-loctext re-export must be idempotent");
-    project::export(&project, false, false).unwrap();
+    project::export(&mut project, false, false).unwrap();
     let after3 = std::fs::read(&game_file).unwrap();
     assert_eq!(after1, after3, "further exports stay idempotent");
 }

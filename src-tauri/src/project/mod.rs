@@ -157,7 +157,7 @@ pub struct ExportResult {
 /// straight into the game's data directory. When `embed_font` is set, also drop
 /// the bundled Thai font into the game and repoint its fonts at it (RPGMaker
 /// only; Ren'Py handles its own font remap in the `tl/<lang>/` path).
-pub fn export(project: &Project, make_backup: bool, embed_font: bool) -> Result<ExportResult> {
+pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Result<ExportResult> {
     let eng = engine::detect(&project.root)
         .ok_or_else(|| anyhow!("engine no longer detected for this project"))?;
     let units = db::all_units(&project.conn)?;
@@ -172,16 +172,33 @@ pub fn export(project: &Project, make_backup: bool, embed_font: bool) -> Result<
         let lang = db::get_meta(&project.conn, "target_lang")?
             .unwrap_or_else(|| "translated".to_string());
         if let Some(tl) = engine::renpy::export_tl(&project.root, &project.data_dir, &units, &lang)? {
+            // The generated skeleton also lists Ren'Py's built-in UI strings (quit /
+            // main-menu confirmations, save-load prompts) — from `renpy/common`, which
+            // extraction skips, so they had no unit and stayed English. Harvest the
+            // still-untranslated ones into the DB now; a subsequent Run translates them
+            // and the next export fills them.
+            let harvested = engine::renpy::harvest_tl_untranslated(&tl.dir, &units);
+            let added = if harvested.is_empty() {
+                0
+            } else {
+                db::merge_units(&mut project.conn, &harvested)?.0
+            };
             // No backup: the source `.rpy` are never touched (translations live in
             // the generated `tl/<lang>/` tree). `files_written` is the tl count.
+            let mut note = format!(
+                "Wrote {} Ren'Py translation file(s) to tl/{lang}/ (source untouched). Pick “{lang}” as the language in-game to see it.",
+                tl.files
+            );
+            if added > 0 {
+                note.push_str(&format!(
+                    " Found {added} untranslated in-game UI string(s) (menus/prompts) — Run again, then re-export to translate them."
+                ));
+            }
             return Ok(ExportResult {
                 files_written: tl.files,
                 units_applied: applied.len(),
                 backup_dir: None,
-                note: Some(format!(
-                    "Wrote {} Ren'Py translation file(s) to tl/{lang}/ (source untouched). Pick “{lang}” as the language in-game to see it.",
-                    tl.files
-                )),
+                note: Some(note),
             });
         }
     }

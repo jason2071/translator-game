@@ -1706,6 +1706,102 @@ pub struct TlExport {
     pub dir: PathBuf,
 }
 
+/// Harvest the engine/UI strings the generated skeleton exposes but the project
+/// never had a unit for. Ren'Py's `translate` scans `renpy/common/*.rpy` too, so
+/// `tl/<lang>/common.rpy` (and friends) list every built-in string — quit/main-menu
+/// confirmations, save/load prompts, page navigation — as `old "X"\n new "X"`
+/// (untranslated: `new == old`). Our extractor deliberately skips `renpy/common`
+/// (so the SDK's strings never masquerade as game text), so those lines stay
+/// English forever. Return them as fresh `Term` units keyed by their byte span in
+/// the skeleton (a `str#` pointer → display-matched, never spliced) so the caller
+/// can merge them into the DB; the next Run translates them and the following
+/// export's [`renpy_tl::fill_tl`] fills them (it matches `new` by the `old` source).
+///
+/// `have` is the set of source strings already covered by a unit — skip those, so a
+/// game string that also appears in a `strings` block isn't duplicated.
+pub fn harvest_tl_untranslated(dir: &Path, existing: &[TransUnit]) -> Vec<TransUnit> {
+    let have: HashSet<&str> = existing.iter().map(|u| u.source.as_str()).collect();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().and_then(|x| x.to_str()) != Some("rpy") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&p) else { continue };
+            // File path relative to the game dir (`tl/<lang>/common.rpy`), matching
+            // how the fill loop and the rest of the engine name Ren'Py files.
+            let rel = p
+                .strip_prefix(dir.parent().and_then(|q| q.parent()).unwrap_or(&d))
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .replace('\\', "/");
+            harvest_untranslated_strings(&rel, &content, &have, &mut seen, &mut out);
+        }
+    }
+    out
+}
+
+/// The `translate <lang> strings:` half of [`harvest_tl_untranslated`], for one file.
+fn harvest_untranslated_strings(
+    file: &str,
+    content: &str,
+    have: &HashSet<&str>,
+    seen: &mut HashSet<String>,
+    out: &mut Vec<TransUnit>,
+) {
+    let mut in_strings = false;
+    let mut pending_old: Option<(usize, usize, String)> = None; // (abs, len, text)
+    let mut offset = 0usize;
+    for line in content.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
+        let raw = line.strip_suffix('\n').unwrap_or(line);
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        let trimmed = raw.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("translate ") {
+            in_strings = rest.trim_end_matches(':').ends_with("strings");
+            pending_old = None;
+            continue;
+        }
+        if !in_strings || trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("old ") {
+            pending_old = first_string(raw).and_then(|(rel, len, _)| {
+                (len > 0).then(|| (line_start + rel, len, raw[rel..rel + len].to_string()))
+            });
+        } else if trimmed.starts_with("new ") {
+            if let Some((abs, len, old)) = pending_old.take() {
+                if let Some((r, l, _)) = first_string(raw) {
+                    let new = &raw[r..r + l];
+                    // Untranslated (Ren'Py wrote `new == old`), still worth translating
+                    // (has a letter), and not already a unit or harvested this run.
+                    if new == old
+                        && display_text_ok(&old)
+                        && !have.contains(old.as_str())
+                        && seen.insert(old.clone())
+                    {
+                        out.push(TransUnit::new(
+                            file,
+                            format!("str#{abs}:{len}"),
+                            UnitKind::Term,
+                            &old,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Export translations the Ren'Py-native way: run the game's own bundled Ren'Py
 /// to generate the `game/tl/<lang>/` skeleton (so every translation identifier is
 /// exactly what Ren'Py expects), then fill it from the project's translations.
@@ -1851,8 +1947,15 @@ pub fn export_tl(
 
 /// The `tl/<lang>/` folder the units were extracted *from*, if any — their `file`
 /// begins `tl/<lang>/…`. `None` for base-script units (the normal flow).
+///
+/// Only a **spliceable** unit (a byte-span pointer) counts: those come from
+/// importing a game that ships a `tl/<en>/` source tree. Synthetic units with a
+/// `str#`/`name#`/`pylist#` pointer are display-matched, and
+/// [`harvest_tl_untranslated`] gives engine-UI units a `tl/<lang>/common.rpy` file —
+/// they must NOT flip export into tl-source mode.
 fn tl_source_lang(units: &[TransUnit]) -> Option<String> {
     units.iter().find_map(|u| {
+        parse_pointer(&u.pointer)?; // spliceable byte span only
         let rest = u.file.strip_prefix("tl/")?;
         rest.split('/').next().map(str::to_string)
     })
@@ -2063,6 +2166,35 @@ fn setup_language(
                 renpy_tl::quote_unicode(&renpy_tl::escape_percent_like(&old, new))
             ));
         }
+
+        // The same table again, as a `config.replace_text` hook. The strings block
+        // above only fires on the string a statement *names*, and `translate_string`
+        // runs **before** `[…]` interpolation — so a line like
+        // `m "[renpy.random.choice(hesitation)]"`, whose text is picked at runtime
+        // from a list built inside a label, is never translated by it. `replace_text`
+        // runs on each TEXT token after interpolation, which is the only place that
+        // value can still be caught. Values are unescaped here: `%`-substitution has
+        // already happened by then. Installed at init (not under the language) so
+        // switching languages can't chain the hook onto itself; the guard inside
+        // keeps the source language untouched.
+        s.push_str("init 1001 python:\n");
+        s.push_str("    _tl_text = {\n");
+        for (old, new) in strings {
+            s.push_str(&format!(
+                "        \"{}\": \"{}\",\n",
+                renpy_tl::quote_unicode(&unescape_rpy(old)),
+                renpy_tl::quote_unicode(new)
+            ));
+        }
+        s.push_str("    }\n");
+        s.push_str("    _tl_prev_replace_text = config.replace_text\n");
+        s.push_str("    def _tl_replace_text(_t):\n");
+        s.push_str("        if _tl_prev_replace_text is not None:\n");
+        s.push_str("            _t = _tl_prev_replace_text(_t)\n");
+        s.push_str(&format!("        if config.language != \"{lang}\":\n"));
+        s.push_str("            return _t\n");
+        s.push_str("        return _tl_text.get(_t, _t)\n");
+        s.push_str("    config.replace_text = _tl_replace_text\n\n");
     }
 
     // Interpolated word lists (`days_of_week`, `parts_of_day`). `"Day [n]
@@ -2296,6 +2428,33 @@ mod tests {
         let mut py_seen = HashSet::new();
         extract_rpy("script.rpy", src, &mut out, &mut py_seen);
         out
+    }
+
+    #[test]
+    fn harvests_untranslated_engine_strings_from_the_skeleton() {
+        let d = tempfile::tempdir().unwrap();
+        let tl = d.path().join("tl").join("thai");
+        std::fs::create_dir_all(&tl).unwrap();
+        std::fs::write(
+            tl.join("common.rpy"),
+            "translate thai strings:\n\
+             \n    old \"Are you sure you want to quit?\"\n    new \"Are you sure you want to quit?\"\n\
+             \n    old \"Start\"\n    new \"\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}\"\n\
+             \n    old \"Already have unit\"\n    new \"Already have unit\"\n",
+        )
+        .unwrap();
+
+        // A game already has a unit for "Already have unit" — don't duplicate it.
+        let existing = vec![TransUnit::new("script.rpy", "1:1", UnitKind::Term, "Already have unit")];
+        let got = harvest_tl_untranslated(&tl, &existing);
+
+        let sources: Vec<&str> = got.iter().map(|u| u.source.as_str()).collect();
+        assert_eq!(sources, vec!["Are you sure you want to quit?"], "{got:?}");
+        let u = &got[0];
+        assert_eq!(u.file, "tl/thai/common.rpy");
+        assert!(u.pointer.starts_with("str#"), "display-matched, not spliced: {}", u.pointer);
+        // A harvested tl/ unit must never flip a re-export into tl-source mode.
+        assert_eq!(tl_source_lang(&got), None);
     }
 
     #[test]
@@ -2879,6 +3038,13 @@ define g = Character(_(\"Gwen\"))
         assert!(zzz.contains("translate thai strings:"), "strings block present: {zzz}");
         assert!(zzz.contains("    old \"Go to University\"\n    new \"ไปมหาวิทยาลัย\""));
         assert!(zzz.contains("old \"Say \\\"hi\\\"\""), "escapes normalized: {zzz}");
+        // Same table as a post-interpolation hook, so a line whose text is picked at
+        // runtime (`m "[renpy.random.choice(hesitation)]"`) still translates.
+        assert!(zzz.contains("config.replace_text = _tl_replace_text"), "{zzz}");
+        assert!(
+            zzz.contains("\"Go to University\": \"ไปมหาวิทยาลัย\","),
+            "hook table carries the unescaped translation: {zzz}"
+        );
         assert!(zzz.contains("50%%"), "literal percent doubled in `new`");
         assert!(
             zzz.contains("    old \"%m/%d/%Y\"\n    new \"%d/%m/%Y\""),

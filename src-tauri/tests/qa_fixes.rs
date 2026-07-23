@@ -71,7 +71,7 @@ fn inject_rejects_a_stale_pointer() {
 #[test]
 fn export_without_backup_still_patches() {
     let (_tmp, root) = game_with_layout("data");
-    let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+    let (mut proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
     let units = project::db::list_units(&proj.conn, &UnitFilter::default()).unwrap();
     let title = units
         .iter()
@@ -80,7 +80,7 @@ fn export_without_backup_still_patches() {
     project::db::update_unit(&proj.conn, title.id, Some("แปลแล้ว"), Status::Translated.as_str())
         .unwrap();
 
-    let res = project::export(&proj, false, false).unwrap();
+    let res = project::export(&mut proj, false, false).unwrap();
     assert!(res.backup_dir.is_none(), "backup=false must skip backup");
     assert_eq!(res.units_applied, 1);
     let patched: serde_json::Value =
