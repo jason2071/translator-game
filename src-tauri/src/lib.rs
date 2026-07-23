@@ -837,6 +837,21 @@ fn is_thai_lang(lang: &str) -> bool {
     l == "th" || l.starts_with("th-") || l.contains("thai")
 }
 
+/// Whether a model's "translation" is actually an asset path it echoed instead of
+/// translating — e.g. a weak local model returning
+/// `images/Week 12/.../sc w12beach s078a.jpg` for a line of dialogue. Such a value
+/// is never a real translation, and shipping it puts a raw file path on screen, so
+/// the unit is failed instead of stored. Matches a path-shaped token (a `/` plus a
+/// known asset extension); real translations never contain one.
+fn looks_like_asset_path(s: &str) -> bool {
+    const ASSET_EXT: [&str; 12] = [
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".ogg", ".mp3", ".wav", ".opus", ".webm",
+        ".mp4", ".ttf",
+    ];
+    let lower = s.to_ascii_lowercase();
+    s.contains('/') && ASSET_EXT.iter().any(|e| lower.contains(e))
+}
+
 /// Translate the selected units with the given provider. Async: emits
 /// `translate://progress` events and can be cancelled via `cancel_translation`.
 #[tauri::command]
@@ -1182,6 +1197,12 @@ async fn translate_units(
                     // context) into this output. Reject when the translation's code
                     // set no longer matches the source's, so we never store text
                     // carrying another unit's markup.
+                    // A weak model sometimes echoes a nearby asset path instead of
+                    // translating; never store that (it would print a file path in
+                    // game) — fail the unit so it's retried.
+                    Ok(t) if looks_like_asset_path(&t) => {
+                        "The model returned an asset path, not a translation".to_string()
+                    }
                     Ok(t) if protect::codes_match(&engine_id, &g.source, &t) => {
                         // Into a non-CJK script, swap CJK brackets (「」『』…) the bundled
                         // Thai font can't render for ASCII parens, so they don't ship as
@@ -1573,7 +1594,18 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::is_cjk_lang;
+    use super::{is_cjk_lang, looks_like_asset_path};
+
+    #[test]
+    fn asset_paths_are_rejected_as_translations() {
+        assert!(looks_like_asset_path("images/Week 12/MOW/C Beach Date/Sex/sc w12cbeachdate s078a.jpg"));
+        assert!(looks_like_asset_path("audio/type3.ogg"));
+        assert!(looks_like_asset_path("gui/fonts/tl_font.TTF"));
+        // Real translations never trip it — even ones with a slash or a dotted word.
+        assert!(!looks_like_asset_path("ยังเลยค่ะ ขอโทษด้วยนะคะ"));
+        assert!(!looks_like_asset_path("50% เลยนะ"));
+        assert!(!looks_like_asset_path("เขา/เธอ")); // slash but no asset extension
+    }
 
     #[test]
     fn cjk_targets_keep_their_brackets() {
