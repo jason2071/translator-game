@@ -983,7 +983,17 @@ async fn translate_units(
             } else if overwrite {
                 None
             } else {
-                project::db::tm_lookup(&proj.conn, &g.source).ok().flatten()
+                project::db::tm_lookup(&proj.conn, &g.source)
+                    .ok()
+                    .flatten()
+                    // A TM entry a bad Run poisoned (foreign inline codes, e.g. an
+                    // `[undefined_var]` bled from a misaligned line, or an asset path)
+                    // must not be re-applied — it would crash Ren'Py or print junk.
+                    // Drop it so the unit goes to the AI instead.
+                    .filter(|tm| {
+                        protect::codes_match(&engine_id, &g.source, tm)
+                            && !looks_like_asset_path(tm)
+                    })
             };
             if let Some(tm) = tm {
                 for id in &g.ids {
