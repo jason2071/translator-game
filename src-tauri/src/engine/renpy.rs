@@ -2262,6 +2262,12 @@ fn setup_language(
         s.push_str("        return _g\n");
         s.push_str("    if hasattr(config, \"font_transforms\"):\n");
         s.push_str("        config.font_transforms[\"rpgtl_thai\"] = _tl_font_group\n");
+        // The bundled Thai face renders taller/heavier than the game's Latin font at
+        // the same point size, so it crowds boxes laid out for English. Scale just the
+        // Thai TTF down (keyed by its filename) — English glyphs keep scale 1.0, so
+        // only Thai shrinks, game-wide. Set at init: English never uses this font.
+        s.push_str("    if hasattr(config, \"ftfont_scale\"):\n");
+        s.push_str("        config.ftfont_scale[_tl_font] = 0.9\n");
         s.push_str("\n");
 
         // Per-language activation + fallback stay in `translate python` where they
@@ -2289,6 +2295,21 @@ fn setup_language(
         s.push_str("            for _b in (False, True):\n");
         s.push_str("                for _i in (False, True):\n");
         s.push_str("                    config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
+        // Thai has no spaces, so Ren'Py's default (space-based) line breaking can't
+        // wrap a Thai run — a long line overflows its box / screen edge instead of
+        // wrapping (quest objectives ran off the phone screen). `"anywhere"` lets a
+        // break fall between any two characters, so every Thai text fits its width.
+        // Set on the base style, under the language, so all screens + dialogue inherit
+        // it only while Thai is active. (No dictionary word-breaking in this Ren'Py;
+        // "anywhere" is the widely-used Thai fallback.)
+        s.push_str("    style.default.language = \"anywhere\"\n");
+        // Thai dialogue crowds a say box sized for Latin even after the 0.9 font scale,
+        // so drop the dialogue point size ~12%. Derive it from the game's own
+        // `gui.text_size` (the stable base, never mutated) rather than the live style
+        // size, so re-running this block on a language switch recomputes the same value
+        // instead of compounding. Guarded: not every game defines gui.text_size.
+        s.push_str("    if getattr(getattr(store, \"gui\", None), \"text_size\", None):\n");
+        s.push_str("        style.say_dialogue.size = int(round(gui.text_size * 0.88))\n");
     }
 
     std::fs::write(data_dir.join(GENERATED_RPY), s)
