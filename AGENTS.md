@@ -35,8 +35,9 @@ cargo test --test extract_roundtrip  # one integration test file
 ## Gates — must pass before you're done
 
 - **Rust builds warning-free.** Warnings are treated as breakage here.
-- **`pnpm build` is clean.** `tsc` is strict with `noUnusedLocals` — no unused
-  imports/vars/exports. There is no separate linter.
+- **`pnpm build` is clean.** `tsc` is strict with `noUnusedLocals` and
+  `noUnusedParameters` — no unused imports, vars, params, or exports. There is no
+  separate linter.
 - **`cargo test` is green.** Every engine has a `roundtrip_identity` test; keep it.
 - Run `cargo test` after any Rust change and `pnpm build` after any frontend change.
 
