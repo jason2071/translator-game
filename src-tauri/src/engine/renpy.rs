@@ -150,6 +150,7 @@ impl GameEngine for RenpyEngine {
                 && u.translation.is_some()
                 && !u.pointer.starts_with("name#")
                 && !u.pointer.starts_with("str#")
+                && !u.pointer.starts_with("pylist#")
             {
                 by_file.entry(u.file.as_str()).or_default().push(u);
             }
@@ -842,6 +843,16 @@ fn display_text_ok(s: &str) -> bool {
     if s.contains('/') || s.starts_with('#') {
         return false;
     }
+    // An asset filename ("door h.png", "817506__soft-tap.mp3") reads as prose —
+    // spaces, letters — but naming it in the translation breaks the lookup.
+    const ASSET_EXT: [&str; 12] = [
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".ogg", ".mp3", ".wav", ".opus", ".webm",
+        ".mp4", ".ttf",
+    ];
+    let lower = s.to_ascii_lowercase();
+    if ASSET_EXT.iter().any(|e| lower.ends_with(e)) {
+        return false;
+    }
     strip_markup(s).chars().any(|c| c.is_alphabetic())
 }
 
@@ -879,6 +890,56 @@ fn screen_text_arg(trimmed: &str) -> Option<usize> {
     None
 }
 
+/// Screen lines whose string arguments are display text rather than an asset path,
+/// a style name or a variable name: Ren'Py's own `tooltip` property, and the
+/// `Set*Variable` / `Notify` actions games use to feed a tooltip or status widget
+/// (`hovered SetVariable("tooltip_text", "Now is not the time…")`). The value is
+/// shown through a `text` widget, so it translates via the strings table like any
+/// other display string — [`harvest_python_line`]'s whitespace rule already drops
+/// the variable-name argument.
+fn screen_text_carrier(trimmed: &str) -> bool {
+    first_token(trimmed) == "tooltip"
+        || trimmed.contains("SetVariable(")
+        || trimmed.contains("SetScreenVariable(")
+        || trimmed.contains("SetLocalVariable(")
+        || trimmed.contains("Notify(")
+}
+
+/// `define days_of_week = ["Sunday", "Monday", …]` — a list literal whose elements
+/// are *all* string literals. These are UI words the game interpolates
+/// (`"Day [day_number] ([days_of_week[i]]), [parts_of_day[p]]"`), and interpolation
+/// runs *after* `translate_string`, so a strings-table entry never reaches them:
+/// the list in the store has to be replaced (see [`setup_language`]). Returns the
+/// variable and each element's text.
+fn string_list_define(trimmed: &str) -> Option<(String, Vec<String>)> {
+    let body = trimmed
+        .strip_prefix("define ")
+        .or_else(|| trimmed.strip_prefix("default "))?;
+    let eq = assign_eq(body)?;
+    let var = body[..eq].trim();
+    if !is_ident(var) {
+        return None;
+    }
+    let rhs = body[eq + 1..].trim();
+    let rhs = rhs.split('#').next().unwrap_or(rhs).trim(); // drop a trailing comment
+    let inner = rhs.strip_prefix('[')?.strip_suffix(']')?;
+    let mut items = Vec::new();
+    let mut rest = inner.trim();
+    while !rest.is_empty() {
+        let (r, l, after) = first_string(rest)?; // a non-string element disqualifies the list
+        if rest[..r.saturating_sub(1)].trim() != "" {
+            return None;
+        }
+        items.push(rest[r..r + l].to_string());
+        rest = rest[after..].trim_start();
+        rest = rest.strip_prefix(',').unwrap_or(rest).trim_start();
+    }
+    if items.is_empty() || !items.iter().all(|s| display_text_ok(s)) {
+        return None;
+    }
+    Some((var.to_string(), items))
+}
+
 /// Harvest display strings from one python-ish line (a `$`/`define`/`default`
 /// statement, a `python` block body line, or a multi-line expression
 /// continuation). Emitted with a `str#` pointer: matched into the translation by
@@ -897,7 +958,10 @@ fn harvest_python_line(
     if raw.contains("Character(") || raw.contains("\"\"\"") || raw.contains("'''") {
         return;
     }
-    let allow_single = raw.contains("renpy.notify(");
+    // A notify message or a tooltip is often one word ("Map", "2nd Floor") — still
+    // display text. The identifier rule below keeps the `SetVariable("tooltip_text",
+    // …)` target out.
+    let allow_single = raw.contains("renpy.notify(") || screen_text_carrier(raw.trim_start());
     for (rel, len) in python_string_spans(raw) {
         if len == 0 {
             continue;
@@ -1166,7 +1230,10 @@ fn extract_rpy(
                         harvest_python_line(file, raw, line_start, &mut seen, py_seen, out)
                     }
                     SkipKind::Screen => {
-                        if trimmed.starts_with('$') || first_token(trimmed) == "default" {
+                        if trimmed.starts_with('$')
+                            || first_token(trimmed) == "default"
+                            || screen_text_carrier(trimmed)
+                        {
                             harvest_python_line(file, raw, line_start, &mut seen, py_seen, out);
                         } else if let Some(arg) = screen_text_arg(trimmed) {
                             harvest_screen_literal(file, raw, indent, arg, line_start, &mut seen, out);
@@ -1187,6 +1254,19 @@ fn extract_rpy(
             // Inline python (`$ …`) and define/default values can hold display
             // strings (quest names, notify messages) — harvest before skipping.
             if trimmed.starts_with('$') || first == "define" || first == "default" {
+                // A list of display words (weekdays, times of day) is reached only by
+                // replacing the store value — `pylist#<var>#<index>`, applied by the
+                // zzz `translate <lang> python:` block, never spliced.
+                if let Some((var, items)) = string_list_define(trimmed) {
+                    for (i, s) in items.iter().enumerate() {
+                        out.push(TransUnit::new(
+                            file,
+                            format!("pylist#{var}#{i}"),
+                            UnitKind::Term,
+                            s,
+                        ));
+                    }
+                }
                 harvest_python_line(file, raw, line_start, &mut seen, py_seen, out);
             }
             // If the statement opens brackets, it continues on the next lines.
@@ -1737,6 +1817,9 @@ pub fn export_tl(
     // `PicklingError: … not the same object as store.<fn>` when the player saves.)
     let mut extra_seen: HashSet<&str> = HashSet::new();
     let mut extra: Vec<(String, String)> = Vec::new();
+    // `pylist#<var>#<index>` units: interpolated list words, applied by replacing the
+    // store value rather than through the strings table.
+    let mut lists: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
     {
         let used = used.borrow();
         for u in units {
@@ -1744,6 +1827,14 @@ pub fn export_tl(
                 continue;
             }
             let Some(t) = &u.translation else { continue };
+            if let Some(rest) = u.pointer.strip_prefix("pylist#") {
+                if let Some((var, idx)) = rest.split_once('#') {
+                    if let Ok(i) = idx.parse::<usize>() {
+                        lists.entry(var.to_string()).or_default().push((i, t.clone()));
+                    }
+                }
+                continue;
+            }
             if used.contains(u.source.as_str()) || !extra_seen.insert(u.source.as_str()) {
                 continue;
             }
@@ -1753,7 +1844,7 @@ pub fn export_tl(
 
     // Make the language selectable (default to it) and remap the game's fonts to a
     // glyph-capable one so the translation isn't rendered as "NO GLYPH" boxes.
-    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &extra)?;
+    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &extra, &lists)?;
 
     Ok(Some(TlExport { files, dir }))
 }
@@ -1843,7 +1934,7 @@ fn export_tl_from_source(
     // Make the target selectable + readable (menu entry, default language, Thai font).
     // No Character re-defines: any `_()`-wrapped name translates via the strings blocks.
     // No extra strings either: tl-source units are all spliced into the retagged tree.
-    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &[])?;
+    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &[], &BTreeMap::new())?;
     Ok(TlExport {
         files,
         dir: data_dir.join("tl").join(&lang),
@@ -1944,6 +2035,7 @@ fn setup_language(
     lang: &str,
     label: &str,
     strings: &[(String, String)],
+    lists: &BTreeMap<String, Vec<(usize, String)>>,
 ) -> Result<()> {
     // Add the language to the game's own Settings language menu, if it has one.
     add_language_option(data_dir, lang, label)?;
@@ -1971,6 +2063,35 @@ fn setup_language(
                 renpy_tl::quote_unicode(&renpy_tl::escape_percent_like(&old, new))
             ));
         }
+    }
+
+    // Interpolated word lists (`days_of_week`, `parts_of_day`). `"Day [n]
+    // ([days_of_week[i]])"` is translated *before* interpolation, so the list value
+    // itself must change — a strings entry never reaches it. Replace with a new list
+    // (a copy, so the game's own `define`d object is left alone) under the language;
+    // a list of strings pickles cleanly, so this is safe to leave in the store.
+    if !lists.is_empty() {
+        s.push_str(&format!("translate {lang} python:\n"));
+        s.push_str("    _tl_lists = {\n");
+        for (var, items) in lists {
+            let mut items = items.clone();
+            items.sort_by_key(|(i, _)| *i);
+            s.push_str(&format!("        \"{var}\": {{"));
+            for (i, t) in &items {
+                s.push_str(&format!("{i}: \"{}\", ", renpy_tl::quote_unicode(t)));
+            }
+            s.push_str("},\n");
+        }
+        s.push_str("    }\n");
+        s.push_str("    for _v, _m in _tl_lists.items():\n");
+        s.push_str("        try:\n");
+        s.push_str("            _l = list(getattr(store, _v))\n");
+        s.push_str("            for _i, _t in _m.items():\n");
+        s.push_str("                if _i < len(_l):\n");
+        s.push_str("                    _l[_i] = _t\n");
+        s.push_str("            setattr(store, _v, _l)\n");
+        s.push_str("        except Exception:\n");
+        s.push_str("            pass\n\n");
     }
 
     // The bundled font (Sarabun) covers Thai + Latin, so only remap fonts for a
@@ -2675,10 +2796,55 @@ define g = Character(_(\"Gwen\"))
         // that writes the store, so the Character lands in saves and pickling one whose
         // `callback=` is an init-python function crashes the save.
         let names = vec![("Rin".to_string(), "\u{e23}\u{e34}\u{e19}".to_string())];
-        setup_language(d.path(), "thai", "\u{e44}\u{e17}\u{e22}", &names).unwrap();
+        setup_language(d.path(), "thai", "\u{e44}\u{e17}\u{e22}", &names, &BTreeMap::new()).unwrap();
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
         assert!(zzz.contains("    old \"Rin\"\n    new \"\u{e23}\u{e34}\u{e19}\""), "{zzz}");
         assert!(!zzz.contains("kind=rin"), "no Character re-define: {zzz}");
+    }
+
+    #[test]
+    fn harvests_screen_tooltip_actions_and_interpolated_word_lists() {
+        // NothingWeirdHappensHere: the tooltip never reached the AI (a screen action
+        // argument), and the weekday/time words render through interpolation, which
+        // runs after `translate_string` — so they need the store value replaced.
+        let src = concat!(
+            "define days_of_week = [\"Sunday\", \"Monday\", \"Tuesday\"]\n",
+            "define parts_of_day = [\"morning\", \"late night\"]\n",
+            "define doors = [\"button/door.png\", \"door h.png\"]\n",
+            "screen university():\n",
+            "    imagebutton:\n",
+            "        idle \"button/p map.png\"\n",
+            "        hovered SetVariable(\"tooltip_text\", \"Now is not the time.\")\n",
+            "        unhovered SetVariable(\"tooltip_text\", \"\")\n",
+        );
+        let mut units = Vec::new();
+        extract_rpy("navigation.rpy", src, &mut units, &mut HashSet::new());
+
+        let tip = units.iter().find(|u| u.source == "Now is not the time.");
+        assert!(tip.is_some(), "screen tooltip harvested: {units:?}");
+        // The variable name (no whitespace) and the empty reset string stay out.
+        assert!(!units.iter().any(|u| u.source == "tooltip_text"));
+
+        let list: Vec<(&str, &str)> = units
+            .iter()
+            .filter(|u| u.pointer.starts_with("pylist#"))
+            .map(|u| (u.pointer.as_str(), u.source.as_str()))
+            .collect();
+        assert!(list.contains(&("pylist#days_of_week#1", "Monday")), "{list:?}");
+        assert!(list.contains(&("pylist#parts_of_day#1", "late night")), "{list:?}");
+        // Asset lists are not display text — a path (`/`) or a bare filename.
+        assert!(!list.iter().any(|(p, _)| p.starts_with("pylist#doors#")), "{list:?}");
+    }
+
+    #[test]
+    fn setup_language_replaces_interpolated_word_lists() {
+        let d = tempfile::tempdir().unwrap();
+        let mut lists = BTreeMap::new();
+        lists.insert("days_of_week".to_string(), vec![(1usize, "จันทร์".to_string())]);
+        setup_language(d.path(), "thai", "ไทย", &[], &lists).unwrap();
+        let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
+        assert!(zzz.contains("\"days_of_week\": {1: \"จันทร์\", },"), "{zzz}");
+        assert!(zzz.contains("setattr(store, _v, _l)"), "{zzz}");
     }
 
     #[test]
@@ -2686,7 +2852,7 @@ define g = Character(_(\"Gwen\"))
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("gui")).unwrap();
         std::fs::write(d.path().join("gui/game.ttf"), b"fake").unwrap();
-        setup_language(d.path(), "thai", "ไทย", &[]).unwrap();
+        setup_language(d.path(), "thai", "ไทย", &[], &BTreeMap::new()).unwrap();
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
         // Thai code points come from the bundled face, every other glyph from the
         // game's own font — a whole-face swap turns symbols like ⚫ into tofu.
@@ -2708,7 +2874,7 @@ define g = Character(_(\"Gwen\"))
             // strftime — the translation must keep its `%` single.
             ("%m/%d/%Y".to_string(), "%d/%m/%Y".to_string()),
         ];
-        setup_language(d.path(), "thai", "ไทย", &strings).unwrap();
+        setup_language(d.path(), "thai", "ไทย", &strings, &BTreeMap::new()).unwrap();
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
         assert!(zzz.contains("translate thai strings:"), "strings block present: {zzz}");
         assert!(zzz.contains("    old \"Go to University\"\n    new \"ไปมหาวิทยาลัย\""));
