@@ -36,6 +36,9 @@ pub struct ProjectInfo {
     /// Per-project setting-era preset (e.g. "ancient", "modern") that seeds a
     /// register directive into the prompt. Empty = unset. See `ai::prompt::era_directive`.
     pub era: String,
+    /// Whether character-name units are translated. Default true; when false, Run
+    /// skips `Name` units and export keeps the original name.
+    pub translate_names: bool,
     pub stats: Stats,
     /// True if this open just extracted the game (fresh project).
     pub freshly_extracted: bool,
@@ -135,6 +138,10 @@ impl Project {
                 .unwrap_or_else(|| "Thai".into()),
             game_context: db::get_meta(&self.conn, "game_context")?.unwrap_or_default(),
             era: db::get_meta(&self.conn, "era")?.unwrap_or_default(),
+            // Default on: absent meta (older projects) means translate names.
+            translate_names: db::get_meta(&self.conn, "translate_names")?
+                .map(|v| v != "0")
+                .unwrap_or(true),
             stats: db::stats(&self.conn)?,
             freshly_extracted,
         })
@@ -171,7 +178,10 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
     if eng.id() == "renpy" {
         let lang = db::get_meta(&project.conn, "target_lang")?
             .unwrap_or_else(|| "translated".to_string());
-        if let Some(tl) = engine::renpy::export_tl(&project.root, &project.data_dir, &units, &lang)? {
+        let translate_names = db::get_meta(&project.conn, "translate_names")?
+            .map(|v| v != "0")
+            .unwrap_or(true);
+        if let Some(tl) = engine::renpy::export_tl(&project.root, &project.data_dir, &units, &lang, translate_names)? {
             // The generated skeleton also lists Ren'Py's built-in UI strings (quit /
             // main-menu confirmations, save-load prompts) — from `renpy/common`, which
             // extraction skips, so they had no unit and stayed English. Harvest the

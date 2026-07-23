@@ -39,6 +39,7 @@ interface AppStore {
   setLanguages: (source: string, target: string) => Promise<void>;
   setGameContext: (text: string) => Promise<void>;
   setEra: (era: string) => Promise<void>;
+  setTranslateNames: (on: boolean) => Promise<void>;
   setFilter: (patch: Partial<UnitFilter>) => Promise<void>;
   reloadUnits: () => Promise<void>;
   refreshMeta: () => Promise<void>;
@@ -147,6 +148,12 @@ export const useStore = create<AppStore>((set, get) => ({
     const p = get().project;
     if (p) set({ project: { ...p, era } });
     api.setEra(era).catch(() => {});
+  },
+
+  setTranslateNames: async (on) => {
+    const p = get().project;
+    if (p) set({ project: { ...p, translateNames: on } });
+    api.setTranslateNames(on).catch(() => {});
   },
 
   setFilter: async (patch) => {

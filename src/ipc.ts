@@ -62,6 +62,7 @@ export interface ProjectInfo {
   targetLang: string;
   gameContext: string;
   era: string;
+  translateNames: boolean;
   stats: Stats;
   freshlyExtracted: boolean;
 }
@@ -227,6 +228,7 @@ export const api = {
     invoke<void>("set_languages", { source, target }),
   setGameContext: (text: string) => invoke<void>("set_game_context", { text }),
   setEra: (era: string) => invoke<void>("set_era", { era }),
+  setTranslateNames: (on: boolean) => invoke<void>("set_translate_names", { on }),
 
   listUnits: (filter: UnitFilter) =>
     invoke<TransUnit[]>("list_units", { filter }),

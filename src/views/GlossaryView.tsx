@@ -484,6 +484,14 @@ function CharactersPanel() {
               </button>
             )}
           </div>
+          <label className="chk gloss-name-toggle" title="Off = keep character names in the source language: Run skips them and export leaves the original name in the game.">
+            <input
+              type="checkbox"
+              checked={project.translateNames}
+              onChange={(e) => useStore.getState().setTranslateNames(e.target.checked)}
+            />
+            Translate character names
+          </label>
           {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
           {chars === null ? (
             <p className="hint">Loading…</p>

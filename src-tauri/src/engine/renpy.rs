@@ -1816,6 +1816,7 @@ pub fn export_tl(
     data_dir: &Path,
     units: &[TransUnit],
     target_lang: &str,
+    translate_names: bool,
 ) -> Result<Option<TlExport>> {
     // tl-source mode: the units were read from an existing `tl/<src>/` tree (their file
     // paths live under `tl/`). Produce `tl/<target>/` by retagging that tree — no
@@ -1920,6 +1921,11 @@ pub fn export_tl(
         let used = used.borrow();
         for u in units {
             if !matches!(u.kind, UnitKind::Term | UnitKind::Name) || !u.status.is_applied() {
+                continue;
+            }
+            // Keep character names in the source language when the toggle is off,
+            // even if a prior Run had translated them.
+            if !translate_names && u.kind == UnitKind::Name {
                 continue;
             }
             let Some(t) = &u.translation else { continue };

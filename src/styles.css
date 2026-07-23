@@ -1413,6 +1413,9 @@ code {
 }
 /* Action row at the top of the Characters body: left-aligned, wraps cleanly
    (used to sit crammed beside the section title). */
+.gloss-name-toggle {
+  margin-top: 0.4rem;
+}
 .gloss-context-actions {
   display: flex;
   align-items: center;

@@ -542,7 +542,7 @@ fn cmd_tlexport(rest: &[String]) {
     let units = db::all_units(&conn).unwrap();
     let data_dir = engine::renpy::game_dir(&root).expect("not a Ren'Py game");
     println!("target_lang={lang}  units={}", units.len());
-    match engine::renpy::export_tl(&root, &data_dir, &units, &lang) {
+    match engine::renpy::export_tl(&root, &data_dir, &units, &lang, true) {
         Ok(Some(tl)) => println!("OK: filled {} tl files under {}", tl.files, tl.dir.display()),
         Ok(None) => println!("no bundled Ren'Py launcher — would fall back to in-place inject"),
         Err(e) => println!("ERROR: {e:#}"),

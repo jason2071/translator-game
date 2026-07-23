@@ -156,6 +156,16 @@ fn set_era(era: String, state: tauri::State<AppState>) -> Result<(), String> {
     with_project(&state, |p| project::db::set_meta(&p.conn, "era", &era))
 }
 
+/// Toggle whether character-name units are translated. When off, Run skips `Name`
+/// units and export keeps the original name (see `translate_units` / `export_tl`).
+/// Persisted per-project in the sidecar DB; default on.
+#[tauri::command]
+fn set_translate_names(on: bool, state: tauri::State<AppState>) -> Result<(), String> {
+    with_project(&state, |p| {
+        project::db::set_meta(&p.conn, "translate_names", if on { "1" } else { "0" })
+    })
+}
+
 // --- grid browse & edit ---------------------------------------------------
 
 #[tauri::command]
@@ -858,6 +868,12 @@ async fn translate_units(
         let proj = guard.as_ref().ok_or("no project is open")?;
         let overwrite = scope.overwrite.unwrap_or(false);
         let engine_id = proj.engine_id.clone();
+        // When name translation is off, Name units are left for the game's original.
+        let translate_names = project::db::get_meta(&proj.conn, "translate_names")
+            .ok()
+            .flatten()
+            .map(|v| v != "0")
+            .unwrap_or(true);
 
         let candidates = if let Some(ids) = &scope.ids {
             project::db::units_by_ids(&proj.conn, ids).map_err(|e| e.to_string())?
@@ -907,6 +923,10 @@ async fn translate_units(
                     || u.status == Status::Untranslated
                     || u.status == Status::Failed)
             {
+                continue;
+            }
+            // Keep character names in the source language when the toggle is off.
+            if !translate_names && u.kind == model::UnitKind::Name {
                 continue;
             }
             total_units += 1;
@@ -1511,6 +1531,7 @@ pub fn run() {
             set_languages,
             set_game_context,
             set_era,
+            set_translate_names,
             list_units,
             count_units,
             copy_source_to_translation,
