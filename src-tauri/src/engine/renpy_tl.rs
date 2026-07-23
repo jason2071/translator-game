@@ -165,6 +165,32 @@ impl IdGen {
     }
 }
 
+/// Decode a Ren'Py string literal's escapes to their characters (`\n` → newline,
+/// `\"` → `"`, `\\` → `\`, …). A translation is stored in **raw file form** — the
+/// escapes survive extraction and masking verbatim, so a `\n` the source carried
+/// comes back as the two characters `\` `n`. Re-quoting that directly would double
+/// the backslash (`\\n`) and Ren'Py would print a literal `\n` on screen, so decode
+/// first and let [`quote_unicode`] / [`encode_say_string`] re-escape exactly once.
+pub(crate) fn decode_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            // `\ ` (hard space), `\"`, `\'`, `\\`, `\[`, `\{`, … → the char itself.
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 /// Escape a string for a Ren'Py `strings` translation (`quote_unicode`): the
 /// text between the quotes of an `old`/`new` line. Does NOT add the quotes.
 pub fn quote_unicode(s: &str) -> String {
@@ -276,7 +302,7 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
             if trimmed.starts_with("new ") {
                 if let Some(old) = pending_old.take() {
                     if let Some(tr) = lookup(&old) {
-                        let tr = escape_percent_like(&old, &tr);
+                        let tr = escape_percent_like(&old, &decode_escapes(&tr));
                         push_line(&mut out, &format!("{indent}new \"{}\"", quote_unicode(&tr)), nl);
                         continue;
                     }
@@ -299,7 +325,7 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
                 if let Some(tr) = lookup(src) {
                     let mut rebuilt = String::new();
                     rebuilt.push_str(&body[..s - 1]); // up to and incl. the opening quote's position
-                    rebuilt.push_str(&encode_say_string(&escape_percent_like(src, &tr)));
+                    rebuilt.push_str(&encode_say_string(&escape_percent_like(src, &decode_escapes(&tr))));
                     rebuilt.push_str(&body[s + l + 1..]); // after the closing quote
                     push_line(&mut out, &rebuilt, nl);
                     continue;
@@ -481,6 +507,16 @@ translate thai start_abc:
         let got = fill(skel, &[("Hello.", "สวัสดี")]);
         assert!(got.contains("    e \"\u{e2a}\u{e27}\u{e31}\u{e2a}\u{e14}\u{e35}\"")); // e "สวัสดี"
         assert!(got.contains("    # e \"Hello.\"")); // original comment untouched
+    }
+
+    #[test]
+    fn fill_preserves_a_newline_escape_in_the_translation() {
+        // The translation carries `\n` as the two source characters (raw file form).
+        // It must ship as a single `\n` escape, not `\\n` (which renders literally).
+        let skel = "translate thai x_1:\n\n    # e \"a\\nb\"\n    e \"a\\nb\"\n";
+        let got = fill(skel, &[("a\\nb", "ก\\nข")]);
+        assert!(got.contains("    e \"ก\\nข\""), "single newline escape: {got}");
+        assert!(!got.contains("\\\\n"), "no doubled backslash: {got}");
     }
 
     #[test]

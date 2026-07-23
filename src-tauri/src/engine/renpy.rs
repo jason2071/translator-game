@@ -2014,7 +2014,7 @@ fn export_tl_from_source(
                 // letter crashes at runtime — but a source that itself carries a bare
                 // `%` is a raw format string (strftime, screen label) the game consumes
                 // as-is. `fill_tl` does the same for the non-source tl path.
-                let tr = renpy_tl::escape_percent_like(&u.source, &tr);
+                let tr = renpy_tl::escape_percent_like(&u.source, &renpy_tl::decode_escapes(&tr));
                 bytes.splice(start..start + len, renpy_tl::quote_unicode(&tr).into_bytes());
             }
         }
@@ -2166,10 +2166,11 @@ fn setup_language(
         s.push_str(&format!("translate {lang} strings:\n"));
         for (old, new) in strings {
             let old = unescape_rpy(old);
+            let new = renpy_tl::decode_escapes(new);
             s.push_str(&format!("    old \"{}\"\n", renpy_tl::quote_unicode(&old)));
             s.push_str(&format!(
                 "    new \"{}\"\n\n",
-                renpy_tl::quote_unicode(&renpy_tl::escape_percent_like(&old, new))
+                renpy_tl::quote_unicode(&renpy_tl::escape_percent_like(&old, &new))
             ));
         }
 
@@ -2189,7 +2190,7 @@ fn setup_language(
             s.push_str(&format!(
                 "        \"{}\": \"{}\",\n",
                 renpy_tl::quote_unicode(&unescape_rpy(old)),
-                renpy_tl::quote_unicode(new)
+                renpy_tl::quote_unicode(&renpy_tl::decode_escapes(new))
             ));
         }
         s.push_str("    }\n");
@@ -2216,7 +2217,7 @@ fn setup_language(
             items.sort_by_key(|(i, _)| *i);
             s.push_str(&format!("        \"{var}\": {{"));
             for (i, t) in &items {
-                s.push_str(&format!("{i}: \"{}\", ", renpy_tl::quote_unicode(t)));
+                s.push_str(&format!("{i}: \"{}\", ", renpy_tl::quote_unicode(&renpy_tl::decode_escapes(t))));
             }
             s.push_str("},\n");
         }
