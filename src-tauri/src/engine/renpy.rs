@@ -840,7 +840,14 @@ fn strip_markup(s: &str) -> String {
 /// must contain a letter outside markup, and must not look like an asset path or
 /// a `#rrggbb` colour.
 fn display_text_ok(s: &str) -> bool {
-    if s.contains('/') || s.starts_with('#') {
+    if s.starts_with('#') {
+        return false;
+    }
+    // A `/` alone doesn't mean a path: real dialogue uses it too ("(Fri/Sat)",
+    // "he/she"). Only reject a slash-bearing string that has NO whitespace — a path
+    // (`images/week1/scene`) never has spaces, prose almost always does. This keeps
+    // sentences like "…late night (Fri/Sat)…" that the old blanket `/` reject dropped.
+    if s.contains('/') && !s.trim().contains(char::is_whitespace) {
         return false;
     }
     // An asset filename ("door h.png", "817506__soft-tap.mp3") reads as prose —
@@ -3095,6 +3102,7 @@ label quests:
     $ event_done["aunt_housework_done"] = True
     $ color = "#ffe066"
     $ portrait = "images/quests/uni.png"
+    $ q.add_objective("Visit Melissa: living room late night (Fri/Sat), room night (Tue/Thu)")
 "##;
         let units = extract(src);
         let terms: Vec<&TransUnit> = units.iter().filter(|u| u.kind == UnitKind::Term).collect();
@@ -3103,6 +3111,11 @@ label quests:
         assert!(texts.contains(&"Go to University"));
         assert!(texts.contains(&"Start your new life as a student."));
         assert!(texts.contains(&"Wait for Monday to start studying"));
+        // A sentence with a slash ("(Fri/Sat)") is prose, not an asset path — extract it.
+        assert!(
+            texts.iter().any(|t| t.contains("(Fri/Sat)")),
+            "slash-bearing sentence must be extracted: {texts:?}"
+        );
         assert!(texts.contains(&"Saved"), "notify single-word is display text");
         assert!(texts.contains(&"✓ Objective complete: Find your classroom"));
         // Deduped: the find_quest() repeat adds no second unit.
