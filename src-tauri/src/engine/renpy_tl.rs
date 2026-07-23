@@ -233,6 +233,11 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
     let mut in_strings = false;
     let mut expect_say = false;
     let mut pending_old: Option<String> = None;
+    // The `# m "…"` comment Ren'Py writes above each say line: the **original**
+    // text, and the only stable lookup key on a re-export. The say line itself
+    // already holds the previous translation by then, so keying off it would miss
+    // and silently keep the stale text.
+    let mut pending_src: Option<String> = None;
 
     for line in content.split_inclusive('\n') {
         let nl = line.ends_with('\n');
@@ -246,11 +251,18 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
             in_strings = rest.trim_end_matches(':').ends_with("strings");
             expect_say = !in_strings;
             pending_old = None;
+            pending_src = None;
             push_line(&mut out, body, nl);
             continue;
         }
 
         if trimmed.is_empty() || trimmed.starts_with('#') {
+            // `# game/lily.rpy:2785` carries no string; `# m "Not yet, sorry."` does.
+            if expect_say && trimmed.starts_with('#') {
+                if let Some((s, l)) = last_quoted(body) {
+                    pending_src = Some(body[s..s + l].to_string());
+                }
+            }
             push_line(&mut out, body, nl);
             continue;
         }
@@ -279,8 +291,11 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
         // Dialogue block: the first non-comment content line is the say.
         if expect_say {
             expect_say = false;
+            let commented = pending_src.take();
             if let Some((s, l)) = last_quoted(body) {
-                let src = &body[s..s + l];
+                // Key off the commented original when Ren'Py wrote one — on a
+                // re-export the say line is the *previous* translation.
+                let src: &str = commented.as_deref().unwrap_or(&body[s..s + l]);
                 if let Some(tr) = lookup(src) {
                     let mut rebuilt = String::new();
                     rebuilt.push_str(&body[..s - 1]); // up to and incl. the opening quote's position
@@ -482,6 +497,21 @@ translate thai start_abc:
         let got = fill(skel, &[("Start", "\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}")]);
         assert!(got.contains("    old \"Start\""));
         assert!(got.contains("    new \"\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}\""));
+    }
+
+    #[test]
+    fn fill_rekeys_off_the_comment_so_a_reexport_updates() {
+        // A second export runs against the tl file the first one filled: the say line
+        // is already Thai, so only the `# m "…"` comment still carries the source.
+        let skel = "\
+translate thai lily_1:
+
+    # m \"Not yet, sorry.\"
+    m \"\u{e22}\u{e31}\u{e07}\u{e40}\u{e25}\u{e22}\u{e04}\u{e48}\u{e30}\"
+";
+        let got = fill(skel, &[("Not yet, sorry.", "\u{e22}\u{e31}\u{e07}\u{e40}\u{e25}\u{e22}")]);
+        assert!(got.contains("    m \"\u{e22}\u{e31}\u{e07}\u{e40}\u{e25}\u{e22}\""), "{got}");
+        assert!(got.contains("    # m \"Not yet, sorry.\""), "comment untouched: {got}");
     }
 
     #[test]
