@@ -108,6 +108,16 @@ projects.
   punctuation (`「」『』【】〔〕〈〉《》（）`) to ASCII parens `( )` — the bundled Thai
   font can't render them, and parens are safe in every engine (unlike `[ ]` in Ren'Py
   or `{ }` in TMPro). Applies to new translations only.
+- **A Run issues batches concurrently.** `lib.rs::translate_units` builds every
+  batch's request up front and drives them through `futures::stream::buffered`
+  (`ProviderConfig::concurrency`, default 4, clamp 1..16); the per-item fallback for
+  a misaligned batch is bounded the same way. Only the HTTP is parallel — results are
+  consumed in completion order and the DB writes + `translate://` events stay
+  sequential, so the lock rule below still holds. The RPM throttle paces by
+  *position* (request `i` may not start before `start + i * interval`), because
+  sleeping between responses can't bound a rate when several are in flight. It was
+  strictly serial before, which made a Run's wall-clock the sum of every batch's
+  latency.
 - **Async commands must not hold the project lock across `.await`.**
   `AppState.project` is `Mutex<Option<Project>>` and its guard is `!Send`.
   `translate_units` gathers work under the lock, drops it, does all HTTP with no

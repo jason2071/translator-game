@@ -66,6 +66,8 @@ interface SettingsState {
   promptSeeded: boolean;
   batchSize: number;
   rpm: number;
+  /** How many batches a Run keeps in flight (1 = the old serial behaviour). */
+  concurrency: number;
   thinking: boolean;
   /** Message-box width limit (half-width chars); 0 disables the overflow guard. */
   maxLineWidth: number;
@@ -77,7 +79,7 @@ interface SettingsState {
     patch: Partial<
       Pick<
         SettingsState,
-        "tone" | "systemPrompt" | "batchSize" | "rpm" | "thinking" | "maxLineWidth"
+        "tone" | "systemPrompt" | "batchSize" | "rpm" | "concurrency" | "thinking" | "maxLineWidth"
       >
     >
   ) => void;
@@ -111,10 +113,10 @@ function load(): Partial<SettingsState> {
 }
 
 function persist(s: SettingsState) {
-  const { active, glossaryProvider, providers, tone, systemPrompt, promptSeeded, batchSize, rpm, thinking, maxLineWidth } = s;
+  const { active, glossaryProvider, providers, tone, systemPrompt, promptSeeded, batchSize, rpm, concurrency, thinking, maxLineWidth } = s;
   localStorage.setItem(
     KEY,
-    JSON.stringify({ active, glossaryProvider, providers, tone, systemPrompt, promptSeeded, batchSize, rpm, thinking, maxLineWidth })
+    JSON.stringify({ active, glossaryProvider, providers, tone, systemPrompt, promptSeeded, batchSize, rpm, concurrency, thinking, maxLineWidth })
   );
 }
 
@@ -133,6 +135,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
   promptSeeded: true,
   batchSize: saved.batchSize ?? 40,
   rpm: saved.rpm ?? 0,
+  concurrency: saved.concurrency ?? 4,
   thinking: saved.thinking ?? false,
   maxLineWidth: saved.maxLineWidth ?? DEFAULT_MAX_LINE_WIDTH,
 
@@ -164,6 +167,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
       systemPrompt: s.systemPrompt || undefined,
       batchSize: s.batchSize,
       rpm: s.rpm || undefined,
+      concurrency: s.concurrency,
       thinking: s.thinking,
     };
   },

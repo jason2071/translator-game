@@ -227,6 +227,15 @@ export default function SettingsView() {
           onChange={(e) => s.setShared({ batchSize: Number(e.target.value) })}
         />
 
+        <label>Parallel requests</label>
+        <input
+          type="number"
+          min="1"
+          max="16"
+          value={s.concurrency}
+          onChange={(e) => s.setShared({ concurrency: Number(e.target.value) })}
+        />
+
         <label>Rate limit (req/min, 0 = off)</label>
         <input
           type="number"

@@ -69,6 +69,10 @@ pub struct ProviderConfig {
     pub batch_size: Option<usize>,
     /// Requests per minute throttle (0/None = unlimited).
     pub rpm: Option<u32>,
+    /// How many batches may be in flight at once. A Run is otherwise strictly
+    /// serial — one request, wait, next — so its wall-clock is the sum of every
+    /// batch's latency. None = the default (4).
+    pub concurrency: Option<u32>,
     pub tone: Option<String>,
     pub system_prompt: Option<String>,
     /// Enable/disable model "thinking"/reasoning (mainly Ollama). None = default.
@@ -84,6 +88,12 @@ impl ProviderConfig {
     }
     pub fn batch_size(&self) -> usize {
         self.batch_size.unwrap_or(40).clamp(1, 200)
+    }
+    /// How many batches to keep in flight. Clamped to a sane range: 1 restores the
+    /// old serial behaviour, and beyond ~16 a provider starts answering with 429s
+    /// faster than the extra parallelism buys.
+    pub fn concurrency(&self) -> usize {
+        self.concurrency.unwrap_or(4).clamp(1, 16) as usize
     }
     /// Minimum milliseconds between requests derived from the RPM throttle.
     pub fn min_interval_ms(&self) -> u64 {

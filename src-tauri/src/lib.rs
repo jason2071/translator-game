@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use futures::StreamExt;
 use tauri::Emitter;
 
 /// The single open project (only one at a time in V1).
@@ -1097,20 +1098,29 @@ async fn translate_units(
     let batch_size = config.batch_size();
     let interval = config.min_interval_ms();
 
-    let mut first = true;
-    let mut base = 0usize; // index of the chunk's first group within to_ai
     let mut batch_no = 0usize; // for the periodic WAL checkpoint below
     let mut last_error: Option<String> = None; // first transport-level failure
-    for chunk in to_ai.chunks(batch_size) {
-        if state.cancel.load(Ordering::SeqCst) {
-            summary.cancelled = true;
-            break;
-        }
-        if interval > 0 && !first {
-            tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
-        }
-        first = false;
 
+    // Issue several batches at once. A Run used to be strictly serial — send,
+    // await, send — so its wall-clock was the *sum* of every batch's latency; with
+    // a remote model that is minutes per thousand units even though nothing is
+    // saturated. The HTTP calls run concurrently here, while the DB writes and the
+    // UI events below stay sequential (they need the project lock, which must never
+    // be held across an await).
+    let concurrency = config.concurrency();
+    let started = tokio::time::Instant::now();
+    let chunks: Vec<(usize, &[Group])> = {
+        let mut v = Vec::new();
+        let mut base = 0usize;
+        for chunk in to_ai.chunks(batch_size) {
+            v.push((base, chunk));
+            base += chunk.len();
+        }
+        v
+    };
+
+    let mut fetches = Vec::with_capacity(chunks.len());
+    for (i, &(base, chunk)) in chunks.iter().enumerate() {
         let items: Vec<BatchItem> = chunk
             .iter()
             .enumerate()
@@ -1121,8 +1131,6 @@ async fn translate_units(
                 neighbors: g.neighbors.clone(),
             })
             .collect();
-        let batch_units: usize = chunk.iter().map(|g| g.ids.len()).sum();
-
         let req = BatchReq {
             items,
             glossary: glossary.clone(),
@@ -1135,64 +1143,101 @@ async fn translate_units(
             max_tokens: config.max_tokens(),
             thinking: config.thinking,
         };
+        let provider = &*provider;
+        let client = &client;
+        let key = key.as_deref();
+        let cancel = state.cancel.clone();
+        fetches.push(async move {
+            // Pace by position, not by "since the last response": with several
+            // requests in flight, sleeping between responses would not bound the
+            // rate. Request i simply may not start before start + i * interval.
+            if interval > 0 {
+                let due = started + std::time::Duration::from_millis(interval * i as u64);
+                tokio::time::sleep_until(due).await;
+            }
+            if cancel.load(Ordering::SeqCst) {
+                return (base, chunk, req, None);
+            }
+            let res = provider.translate_batch(client, key, &req).await;
+            (base, chunk, req, Some(res))
+        });
+    }
 
-        // Batch in one call; on misalignment fall back to per-item — cancellable,
-        // with progress after every item so the UI never looks frozen.
-        // The batch's own error (e.g. "no JSON array found") becomes the reason
-        // for any of its items that stay unrecovered after the per-item fallback.
+    let mut stream = futures::stream::iter(fetches).buffered(concurrency);
+
+    while let Some((base, chunk, req, res)) = stream.next().await {
+        let Some(res) = res else {
+            summary.cancelled = true;
+            break;
+        };
+        let batch_units: usize = chunk.iter().map(|g| g.ids.len()).sum();
+
+        // On a batch whose response can't be re-aligned, retry its items one by one.
+        // Those singles also run concurrently — a misaligning model would otherwise
+        // turn one slow batch into `batch_size` slow requests back to back.
         let mut batch_error: Option<String> = None;
-        let results: Vec<Option<String>> =
-            match provider.translate_batch(&client, key.as_deref(), &req).await {
-                Ok(v) => {
-                    done += batch_units;
-                    v.into_iter().map(Some).collect()
-                }
-                Err(e) => {
-                    batch_error = Some(e.to_string());
-                    let mut out: Vec<Option<String>> = Vec::with_capacity(chunk.len());
-                    for (j, g) in chunk.iter().enumerate() {
-                        if state.cancel.load(Ordering::SeqCst) {
-                            break;
+        let results: Vec<Option<String>> = match res {
+            Ok(v) => {
+                done += batch_units;
+                v.into_iter().map(Some).collect()
+            }
+            Err(e) => {
+                batch_error = Some(e.to_string());
+                let mut singles = Vec::with_capacity(chunk.len());
+                for j in 0..chunk.len() {
+                    let single = BatchReq {
+                        items: vec![req.items[j].clone()],
+                        ..req.clone()
+                    };
+                    let provider = &*provider;
+                    let client = &client;
+                    let key = key.as_deref();
+                    let cancel = state.cancel.clone();
+                    singles.push(async move {
+                        if cancel.load(Ordering::SeqCst) {
+                            return None;
                         }
-                        let single = BatchReq {
-                            items: vec![req.items[j].clone()],
-                            ..req.clone()
-                        };
-                        let r = match provider
-                            .translate_batch(&client, key.as_deref(), &single)
-                            .await
-                        {
-                            Ok(mut v) => v.pop(),
-                            Err(e) => {
-                                // Network down / HTTP 401 / 429 rate-limit, etc.
-                                // Surface the first one live so the user isn't left
-                                // watching a Run silently mark everything Failed.
-                                let msg = e.to_string();
-                                if last_error.is_none() {
-                                    let _ = app.emit("translate://error", &msg);
-                                }
-                                last_error.get_or_insert(msg);
-                                None
-                            }
-                        };
-                        out.push(r);
-                        done += g.ids.len();
-                        let _ = app.emit(
-                            "translate://progress",
-                            Progress {
-                                done,
-                                total,
-                                translated: summary.translated + reused,
-                                failed: summary.failed,
-                            },
-                        );
-                    }
-                    while out.len() < chunk.len() {
-                        out.push(None);
-                    }
-                    out
+                        Some(provider.translate_batch(client, key, &single).await)
+                    });
                 }
-            };
+                let mut out: Vec<Option<String>> = Vec::with_capacity(chunk.len());
+                let mut singles = futures::stream::iter(singles).buffered(concurrency);
+                let mut j = 0usize;
+                while let Some(r) = singles.next().await {
+                    let text = match r {
+                        Some(Ok(mut v)) => v.pop(),
+                        Some(Err(e)) => {
+                            // Network down / HTTP 401 / 429 rate-limit, etc.
+                            // Surface the first one live so the user isn't left
+                            // watching a Run silently mark everything Failed.
+                            let msg = e.to_string();
+                            if last_error.is_none() {
+                                let _ = app.emit("translate://error", &msg);
+                            }
+                            last_error.get_or_insert(msg);
+                            None
+                        }
+                        None => None, // cancelled
+                    };
+                    out.push(text);
+                    done += chunk[j].ids.len();
+                    j += 1;
+                    let _ = app.emit(
+                        "translate://progress",
+                        Progress {
+                            done,
+                            total,
+                            translated: summary.translated + reused,
+                            failed: summary.failed,
+                        },
+                    );
+                }
+                while out.len() < chunk.len() {
+                    out.push(None);
+                }
+                out
+            }
+        };
 
         // Restore, then apply each translation to ALL units sharing that source.
         // Groups that produced no usable text are flagged Failed so they can be
@@ -1307,7 +1352,11 @@ async fn translate_units(
                 failed: summary.failed,
             },
         );
-        base += chunk.len();
+
+        if state.cancel.load(Ordering::SeqCst) {
+            summary.cancelled = true;
+            break;
+        }
 
         // Fold the WAL back periodically so a long Run's continuous writes don't
         // bloat the -wal file (which slows every read that must scan it). PASSIVE

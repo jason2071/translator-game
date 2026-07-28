@@ -161,6 +161,8 @@ export interface ProviderConfig {
   maxTokens?: number;
   batchSize?: number;
   rpm?: number;
+  /** Batches in flight at once during a Run. 1 = serial. */
+  concurrency?: number;
   tone?: string;
   systemPrompt?: string;
   thinking?: boolean;

@@ -75,6 +75,7 @@ fn local_cfg(model: &str, batch: usize) -> ProviderConfig {
         max_tokens: Some(4096),
         batch_size: Some(batch),
         rpm: None,
+        concurrency: None,
         tone: Some("casual".into()),
         system_prompt: None,
         thinking: Some(false),

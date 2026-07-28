@@ -612,7 +612,8 @@ fn parse_pointer(p: &str) -> Option<(usize, usize)> {
 enum SkipKind {
     Screen,
     Python,
-    /// style/transform/layeredimage/testcase — pure props/assets, harvest nothing.
+    /// image/style/transform/layeredimage/testcase — pure props/assets, harvest
+    /// nothing.
     Other,
 }
 
@@ -620,7 +621,7 @@ fn skip_kind_of(head: &str) -> Option<SkipKind> {
     match head {
         "python" => Some(SkipKind::Python),
         "screen" => Some(SkipKind::Screen),
-        "style" | "transform" | "layeredimage" | "testcase" => Some(SkipKind::Other),
+        "image" | "style" | "transform" | "layeredimage" | "testcase" => Some(SkipKind::Other),
         _ => None,
     }
 }
@@ -633,6 +634,13 @@ fn block_skip_kind(trimmed: &str) -> Option<SkipKind> {
         ("python", SkipKind::Python),
         ("screen ", SkipKind::Screen),
         ("screen:", SkipKind::Screen),
+        // An `image <name>:` ATL block. Its body is bare quoted strings that are
+        // *frame filenames* ("images/walk/walk_0007.png"), which read exactly like
+        // narration — so without this they became Dialogue units, went to the model,
+        // and came back as the same path, which the asset-path guard in
+        // `translate_units` then fails. `image` is in `is_line_skip` too, but that
+        // only covers the single-line `image bg = "x.png"` form, not the block body.
+        ("image ", SkipKind::Other),
         ("style ", SkipKind::Other),
         ("style:", SkipKind::Other),
         ("transform ", SkipKind::Other),
@@ -2728,6 +2736,45 @@ label start:
         assert!(texts.contains(&"Real dialogue."), "kept real dialogue");
         for junk in ["gui/frame.png", "input", "main_menu", "who"] {
             assert!(!texts.contains(&junk), "must skip screen/style junk: {junk}");
+        }
+    }
+
+    /// An `image <name>:` ATL block holds bare quoted frame filenames that parse
+    /// exactly like narration. Regression: a real game's walk-cycle animations gave
+    /// 58 Dialogue units of `images/walk/walk_0007.png`, every one of them stuck at
+    /// Failed (the model echoes the path, the asset-path guard rejects it).
+    #[test]
+    fn image_atl_blocks_are_skipped() {
+        let src = r#"
+image walk_anim:
+    "images/walk/walk_0007.png"
+    pause 0.12
+    "images/walk/walk_0009.png"
+    repeat
+
+image endingbg_scroll:
+    contains:
+        "images/endingbg.png"
+        xanchor 0 yanchor 0
+
+image bg room = "images/bg/room.png"
+
+label start:
+    e "Real dialogue."
+    "Narration too."
+"#;
+        let units = extract(src);
+        let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+
+        assert!(texts.contains(&"Real dialogue."), "kept real dialogue: {texts:?}");
+        assert!(texts.contains(&"Narration too."), "kept narration: {texts:?}");
+        for junk in [
+            "images/walk/walk_0007.png",
+            "images/walk/walk_0009.png",
+            "images/endingbg.png",
+            "images/bg/room.png",
+        ] {
+            assert!(!texts.contains(&junk), "ATL frame path must not be extracted: {junk}");
         }
     }
 
