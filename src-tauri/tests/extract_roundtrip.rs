@@ -125,3 +125,103 @@ fn inject_applies_only_target() {
     // A sibling node must be untouched.
     assert_eq!(patched.pointer("/currencyUnit").unwrap().as_str().unwrap(), "G");
 }
+
+/// Build a throwaway MZ game whose story is told through plugin commands (357),
+/// the way a notification/toast-plugin game does — its `data/CommonEvents.json`
+/// carries almost no Show Text.
+fn plugin_command_game() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        data.join("System.json"),
+        r#"{"gameTitle":"Notify Quest","currencyUnit":"G"}"#,
+    )
+    .unwrap();
+    let common = r#"[null,{"id":1,"name":"EV001","trigger":0,"switchId":1,"list":[
+{"code":357,"indent":0,"parameters":["TorigoyaMZ_NotifyMessage","notify","通知の表示",{"message":"「バレちゃったか……♡」","icon":"16","note":"\"\""}]},
+{"code":357,"indent":0,"parameters":["DTextPicture","dText","動的文字列ピクチャ",{"text":"所持金","fontSize":"28"}]},
+{"code":357,"indent":0,"parameters":["PictureGrouping","GROUPING_PICTURE","グループ化ピクチャ指定",{"pictureList":"[\"{\\\"FileName\\\":\\\"cg01\\\"}\"]"}]},
+{"code":101,"indent":0,"parameters":["",0,0,2,"凛"]},
+{"code":401,"indent":0,"parameters":["ふつうの本文。"]},
+{"code":0,"indent":0,"parameters":[]}]}]"#;
+    std::fs::write(data.join("CommonEvents.json"), common).unwrap();
+    tmp
+}
+
+#[test]
+fn plugin_command_text_is_extracted_and_config_args_are_not() {
+    let tmp = plugin_command_game();
+    let root = tmp.path();
+    let eng = engine::detect(root).unwrap();
+    let units = eng.extract(root, &ExtractOpts::default()).unwrap();
+
+    let by_ptr = |ptr: &str| units.iter().find(|u| u.pointer == ptr);
+    // The notification plugin's `message` IS the game's dialogue.
+    let notify = by_ptr("/1/list/0/parameters/3/message").expect("notify message extracted");
+    assert_eq!(notify.source, "「バレちゃったか……♡」");
+    assert_eq!(notify.kind, UnitKind::Dialogue);
+    assert_eq!(notify.context.as_deref(), Some("TorigoyaMZ_NotifyMessage notify"));
+    // Dynamic text pictures too.
+    assert_eq!(
+        by_ptr("/1/list/1/parameters/3/text").map(|u| u.source.as_str()),
+        Some("所持金")
+    );
+    // Config args of the same commands are not text.
+    assert!(by_ptr("/1/list/0/parameters/3/icon").is_none(), "icon is config");
+    assert!(by_ptr("/1/list/0/parameters/3/note").is_none(), "note is config");
+    assert!(by_ptr("/1/list/1/parameters/3/fontSize").is_none(), "font size is config");
+    // A wholly non-text plugin contributes nothing (serialized struct arg).
+    assert!(by_ptr("/1/list/2/parameters/3/pictureList").is_none(), "struct arg skipped");
+    // The ordinary Show Text line still comes through, with its speaker.
+    let say = by_ptr("/1/list/4/parameters/0").expect("401 still extracted");
+    assert_eq!(say.source, "ふつうの本文。");
+    assert_eq!(say.context.as_deref(), Some("凛"));
+}
+
+#[test]
+fn plugin_command_text_injects_and_round_trips() {
+    let tmp = plugin_command_game();
+    let root = tmp.path();
+    let eng = engine::detect(root).unwrap();
+    let mut units = eng.extract(root, &ExtractOpts::default()).unwrap();
+
+    // Round-trip identity: translate every unit to itself.
+    for u in &mut units {
+        u.translation = Some(u.source.clone());
+        u.status = Status::Draft;
+    }
+    let out = tempfile::tempdir().unwrap();
+    eng.inject(root, &units, out.path()).unwrap();
+    let orig: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("data/CommonEvents.json")).unwrap(),
+    )
+    .unwrap();
+    let same: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out.path().join("CommonEvents.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(orig, same, "round-trip altered CommonEvents.json");
+
+    // A real translation lands on the arg itself, siblings untouched.
+    let mut notify = units
+        .into_iter()
+        .find(|u| u.pointer == "/1/list/0/parameters/3/message")
+        .unwrap();
+    notify.translation = Some("「โดนจับได้แล้วสินะ♡」".to_string());
+    notify.status = Status::Translated;
+    let out2 = tempfile::tempdir().unwrap();
+    eng.inject(root, std::slice::from_ref(&notify), out2.path()).unwrap();
+    let patched: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out2.path().join("CommonEvents.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        patched.pointer("/1/list/0/parameters/3/message").unwrap().as_str().unwrap(),
+        "「โดนจับได้แล้วสินะ♡」"
+    );
+    assert_eq!(
+        patched.pointer("/1/list/0/parameters/3/icon").unwrap().as_str().unwrap(),
+        "16"
+    );
+}

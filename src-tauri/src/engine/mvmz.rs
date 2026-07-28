@@ -8,7 +8,9 @@
 //!
 //! Every string is located by an RFC-6901 JSON Pointer so injection is exact.
 
-use super::codes::{is_message_line, is_text_header, translatable_params, ExtractOpts, ParamText};
+use super::codes::{
+    is_message_line, is_text_header, plugin_arg_kind, translatable_params, ExtractOpts, ParamText,
+};
 use super::{DetectResult, GameEngine};
 use crate::model::{TransUnit, UnitKind};
 use anyhow::{anyhow, Context, Result};
@@ -739,6 +741,11 @@ fn walk_event_list(
             // Standalone translatable (choices, name changes) end a run.
             in_message = false;
             cur_group = None;
+            // A plugin command is not part of a Show Text run at all — it also drops
+            // the pending speaker, exactly as it did before 357 became translatable.
+            if code == 356 || code == 357 {
+                cur_ctx = None;
+            }
         }
 
         let params = cmd.get("parameters");
@@ -777,9 +784,39 @@ fn walk_event_list(
                         }
                     }
                 }
+                ParamText::ArgsAt(idx) => {
+                    // MZ plugin command: `parameters` = [plugin, command, label, args].
+                    let str_param = |i: usize| {
+                        params
+                            .and_then(|p| p.get(i))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                    };
+                    let (plugin, command) = (str_param(0), str_param(1));
+                    let Some(args) = params.and_then(|p| p.get(idx)).and_then(|v| v.as_object())
+                    else {
+                        continue;
+                    };
+                    for (key, val) in args {
+                        let Some(s) = val.as_str() else { continue };
+                        let Some(kind) = plugin_arg_kind(plugin, command, key, s, opts) else {
+                            continue;
+                        };
+                        let ptr = format!("{base}/{ci}/parameters/{idx}/{}", esc_ptr(key));
+                        out.push(
+                            TransUnit::new(file, ptr, kind, s)
+                                .with_context(Some(format!("{plugin} {command}"))),
+                        );
+                    }
+                }
             }
         }
     }
+}
+
+/// Escape a JSON object key for use as one RFC-6901 pointer token.
+fn esc_ptr(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
 }
 
 fn push_if(
