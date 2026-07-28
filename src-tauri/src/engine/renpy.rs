@@ -2312,6 +2312,11 @@ fn setup_language(
         s.push_str("    }\n");
         // Same pairs, longest first, for the substring pass below.
         s.push_str("    _tl_frags = sorted(_tl_text.items(), key=lambda kv: -len(kv[0]))\n");
+        // Entries the game fills in with `.format(...)`: `"{}を手に入れた！"` is
+        // formatted in python *before* any translation runs, so the finished text
+        // ("牛柄ビキニを手に入れた！") matches no key. Keep the single-placeholder ones
+        // so the hook can match around the value.
+        s.push_str("    _tl_fmts = [(_k.split(\"{}\"), _v) for _k, _v in _tl_frags if _k.count(\"{}\") == 1 and _v.count(\"{}\") == 1]\n");
         // Does the text still hold an untranslated CJK character? Cheap guard so a
         // fully-translated line skips the scan.
         s.push_str("    def _tl_has_src(_t):\n");
@@ -2336,6 +2341,14 @@ fn setup_language(
         // known source string *inside* the text, longest first.
         s.push_str("        if not _tl_has_src(_t):\n");
         s.push_str("            return _t\n");
+        // A filled template: match its literal halves, translate the value that
+        // sat between them, and rebuild with the translated template.
+        s.push_str("        for (_a, _b), _v in _tl_fmts:\n");
+        s.push_str("            if len(_t) >= len(_a) + len(_b) and _t.startswith(_a) and _t.endswith(_b):\n");
+        s.push_str("                _mid = _t[len(_a):len(_t) - len(_b)] if _b else _t[len(_a):]\n");
+        s.push_str("                _out = _v.replace(\"{}\", _tl_text.get(_mid, _mid))\n");
+        s.push_str("                if not _tl_has_src(_out):\n");
+        s.push_str("                    return _out\n");
         s.push_str("        _p = _t\n");
         s.push_str("        for _k, _v in _tl_frags:\n");
         s.push_str("            if _k and _k in _p:\n");
@@ -3383,6 +3396,10 @@ define g = Character(_(\"Gwen\"))
         assert!(zzz.contains("_p = _p.replace(_k, _v)"), "substring fallback: {zzz}");
         // …and only keeps the result when it resolved every source-language run.
         assert!(zzz.contains("return _p if not _tl_has_src(_p) else _t"), "all-or-nothing: {zzz}");
+        // …and knows a `.format()` template, whose text is filled in before any
+        // translation runs (`"{}を手に入れた！".format(item)`).
+        assert!(zzz.contains("_tl_fmts = ["), "format templates: {zzz}");
+        assert!(zzz.contains("_out = _v.replace(\"{}\", _tl_text.get(_mid, _mid))"), "format templates: {zzz}");
         assert!(
             zzz.contains("\"Go to University\": \"ไปมหาวิทยาลัย\","),
             "hook table carries the unescaped translation: {zzz}"
