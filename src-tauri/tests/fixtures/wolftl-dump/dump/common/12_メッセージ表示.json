@@ -1,0 +1,27 @@
+{
+    "id": 12,
+    "name": "メッセージ表示",
+    "description": "共通イベントの説明",
+    "commands": [
+        {
+            "code": 101,
+            "codeStr": "Message",
+            "stringArgs": [
+                "\\cself[5]"
+            ],
+            "index": 0
+        },
+        {
+            "code": 210,
+            "codeStr": "CommonEvent",
+            "stringArgs": [
+                "セーブしますか？",
+                "cself:5"
+            ],
+            "intArgs": [
+                12
+            ],
+            "index": 1
+        }
+    ]
+}

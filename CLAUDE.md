@@ -134,6 +134,18 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   PixelCrushers `[pic=N]`/`[var=…]` bracket markup to the `mask_unity` set. *(Lesson: a
   failed `read_typetree` / unresolved script class hides structure, not strings —
   grep the raw MB blob for the format's markers.)*
+  `wolfrpg.rs` is **Wolf RPG Editor** (ウディタ, id `wolfrpg`) and never opens a
+  `.wolf` archive: those are DXArchives whose crypt is per-Wolf-version (the sample
+  game is crypt **331**/v3.31, AES-encrypted header addresses), so decryption stays
+  external (**UberWolfCli**) as does the binary ↔ JSON step (**WolfTL**). The engine
+  works on WolfTL's **dump**: `dump/mps|common|db/*.json` + `dump/Game.json`, whose
+  commands are `{code, intArgs, stringArgs}` — RPGMaker's shape — so the pointer is a
+  **JSON Pointer** and inject is `pointer_mut` re-serialized with WolfTL's own
+  `dump(4)` layout. 101/102 are text by definition; other commands' strings pass
+  through `codes::looks_like_player_text` (shared with the MZ plugin-arg tier);
+  103/106 are dev-facing and skipped; DB rows give their `value`; `MainFont` is left
+  alone. Export patches the dump — the user runs `WolfTL … patch` after (import says
+  so in a warning). See `docs/games/wolf-rpg.md`.
 - **`project/`** — SQLite persistence (`db.rs`) and project lifecycle (`mod.rs`):
   open/create the sidecar store, backup, and export.
 - **`ai/`** — one `TranslationProvider` trait, providers behind it, plus prompt

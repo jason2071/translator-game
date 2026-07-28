@@ -27,7 +27,7 @@ and are much riskier.
 | **HTML** | `.html` / `.js` (Twine/SugarCube, custom) | text | 🟡 Medium |
 | **QSP** | `.qsps` source → `.qsp` compiled | text (source) | 🟡 Medium |
 | **TADS** | `.t` source → `.gam` / `.t3` compiled | text (source) | 🟡 Medium |
-| **Wolf RPG** | `Data.wolf` archive, `.mps` maps | binary, often encrypted | 🔴 Hard |
+| **Wolf RPG** | `Data.wolf` archive → `.mps` maps / `.dat` → **WolfTL JSON dump** | binary + encrypted archive; **text once dumped** | ✅ Supported (`wolfrpg`, via an external UberWolf + WolfTL run) — see [[wolf-rpg]] |
 | **ADRIFT** | `.taf` (compiled, obfuscated) | binary | 🔴 Hard |
 | **RAGS** | `.rag` (binary DB) | binary | 🔴 Hard |
 | **Flash** | `.swf` (compiled ActionScript) | binary | 🔴 Hard (legacy/EOL) |
@@ -80,6 +80,19 @@ and are much riskier.
   wraps a whole translatable line — or `%`). External steps: Delutto Forge/DATA
   tools + aclocexport/aclocimport. `src-tauri/src/engine/ac_loctext.rs`; deep-dive
   in `docs/games/anvilnext-locpackage-format.md`.
+- **Wolf RPG Editor** (ウディタ) — the game's own `.wolf` DXArchives are
+  encrypted per Wolf version and are **never touched**; this engine reads the JSON
+  that the community **WolfTL** tool writes from the unpacked `.mps`/`.dat`
+  (`dump/mps|common|db/*.json` + `dump/Game.json`). Wolf commands are
+  `{code, intArgs, stringArgs}` — RPGMaker's shape — so pointer = **JSON Pointer**
+  and inject is `pointer_mut`, re-serialized with WolfTL's own 4-space layout
+  (round-trip is semantic, and byte-identical in practice). Dialogue (101) and
+  choices (102) always; other commands' strings only when they read as prose, so
+  file names and variable keys stay out; comments (103) / debug (106) never.
+  `mask()` covers Wolf's `\c[1]`/`\v[3]`/`\cself[5]` codes (`<…>` is prose in Wolf).
+  External steps: **UberWolfCli** to decrypt/unpack, **WolfTL create** before and
+  **WolfTL patch** after. `src-tauri/src/engine/wolfrpg.rs`; deep-dive in
+  `docs/games/wolf-rpg.md`.
 
 ### Text-based candidates (fit the model — recommended path)
 - **Godot** — trivial when the game ships `.po`/`.csv` gettext catalogs; scene

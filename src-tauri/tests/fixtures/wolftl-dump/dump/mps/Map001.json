@@ -1,0 +1,65 @@
+{
+    "events": [
+        {
+            "id": 1,
+            "name": "村人A",
+            "pages": [
+                {
+                    "id": 0,
+                    "list": [
+                        {
+                            "code": 101,
+                            "codeStr": "Message",
+                            "stringArgs": [
+                                "\\c[2]村人\\c[0]「ようこそ、旅の人。"
+                            ],
+                            "index": 3
+                        },
+                        {
+                            "code": 102,
+                            "codeStr": "Choices",
+                            "stringArgs": [
+                                "話を聞く",
+                                "Leave"
+                            ],
+                            "intArgs": [
+                                2
+                            ],
+                            "index": 4
+                        },
+                        {
+                            "code": 103,
+                            "codeStr": "Comment",
+                            "stringArgs": [
+                                "ここでフラグ管理"
+                            ],
+                            "index": 5
+                        },
+                        {
+                            "code": 140,
+                            "codeStr": "Sound",
+                            "stringArgs": [
+                                "SE/decision.ogg"
+                            ],
+                            "intArgs": [
+                                1
+                            ],
+                            "index": 6
+                        },
+                        {
+                            "code": 122,
+                            "codeStr": "SetString",
+                            "stringArgs": [
+                                "宿屋にようこそ"
+                            ],
+                            "intArgs": [
+                                10
+                            ],
+                            "index": 7
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

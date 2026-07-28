@@ -28,6 +28,7 @@ pub mod unity;
 pub mod unity_csv;
 pub mod unity_textbl;
 pub mod unrpyc;
+pub mod wolfrpg;
 
 use crate::model::TransUnit;
 use std::path::Path;
@@ -217,6 +218,10 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // Assembly-CSharp.dll, so it never overlaps Naninovel or CSV-localization;
         // registered after both, which claim their more specific schemes first.
         Box::new(unity_textbl::UnityTextTableEngine),
+        // Wolf RPG via a WolfTL dump: a folder of JSON, fingerprinted by WolfTL's
+        // own `dump/{mps,common,db}` layout, so it can't be confused with a game
+        // (the `.wolf` archives themselves are never opened — see wolfrpg.rs).
+        Box::new(wolfrpg::WolfRpgEngine),
         // Forger `.acod` string tables (Assassin's Creed). Unique extension +
         // UTF-16LE BOM fingerprint, so it never overlaps the others; order is
         // immaterial. Kept last as the most specialized/niche target.

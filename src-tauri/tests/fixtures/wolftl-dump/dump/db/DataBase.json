@@ -1,0 +1,35 @@
+{
+    "types": [
+        {
+            "name": "アイテム",
+            "description": "",
+            "fields": [
+                {
+                    "name": "名前"
+                },
+                {
+                    "name": "値段"
+                }
+            ],
+            "data": [
+                {
+                    "name": "0",
+                    "data": [
+                        {
+                            "name": "名前",
+                            "value": "薬草"
+                        },
+                        {
+                            "name": "値段",
+                            "value": 10
+                        },
+                        {
+                            "name": "未使用",
+                            "value": "INVALID_IGNORE"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

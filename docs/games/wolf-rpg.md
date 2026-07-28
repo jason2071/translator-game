@@ -11,7 +11,7 @@ tags:
   - engine/candidate
   - engine/wolfrpg
   - game/sannoji
-status: proposed
+status: implemented
 feasibility: medium-with-external-tools
 created: 2026-07-28
 related:
@@ -139,7 +139,7 @@ Text-bearing codes (WolfTL's table):
 The binary + crypto is the cost; the text layer is cheap. Three shapes, in
 increasing order of work:
 
-### A. Consume a WolfTL dump (smallest)
+### A. Consume a WolfTL dump (smallest) — **shipped**
 
 The user runs **UberWolfCli** (unpack `.wolf`) then **WolfTL create** (binary →
 JSON), and points this app at the dump. Our engine reads `dump/mps/*.json`,
@@ -169,6 +169,43 @@ true byte-span engine with no external anything, and would also let us *repack*.
 in-game.** A is a few days' work and de-risks everything downstream; C is a
 standing maintenance burden (each new Wolf release changes the crypt).
 
+## What shipped (option A)
+
+`engine/wolfrpg.rs`, id **`wolfrpg`**. The user opens the WolfTL **output folder**
+(the one holding `dump/`); pointing straight at `dump/` works too.
+
+- **Detect** — WolfTL's own layout: a non-empty `dump/mps|common|db` or a
+  `dump/Game.json`. A random folder of JSON never matches. Import shows a warning
+  saying export writes the dump and `WolfTL … patch` is the last step.
+- **Extract** — pointer is a **JSON Pointer**; `file` is the dump-relative path
+  (`mps/Map001.json`). What counts as text:
+  - **101 Message → Dialogue**, **102 Choices → Choice** — always, unfiltered (so
+    an English one-word choice like `Yes` isn't mistaken for an identifier),
+  - **103 Comment / 106 DebugMessage** — never (dev-facing),
+  - **122 SetString → Message**, everything else → `Other` — only when the string
+    reads as prose (`codes::looks_like_player_text`, shared with the MZ
+    plugin-arg tier), so `SE/decision.ogg` and `cself:5` stay out,
+  - database rows → the field **`value`** (`Term`, context = the field name),
+    skipping ints and WolfTL's `INVALID_IGNORE`,
+  - `Game.json` → `Title`/`TitlePlus`/`StartUpMsg`/`TitleMsg`; **`MainFont` /
+    `SubFonts` are deliberately left alone** (a font swap is its own job — see
+    below).
+  - Editor-side labels (type / field / event / common-event names) are never taken.
+- **Inject** — `serde_json::Value::pointer_mut`, then re-serialize with a 4-space
+  pretty printer and unescaped UTF-8, i.e. `nlohmann::json::dump(4)` — so a
+  patched dump diffs cleanly against a freshly created one.
+- **Masking** — `mask_for("wolfrpg")` = the stock `mask()`: Wolf shares RPGMaker's
+  backslash grammar (`\c[1]`, `\v[3]`, `\cself[5]`, `\udb[1:2:3]`, `\E`, `\>`) but
+  **not** the MV/MZ angle-tag variant, since `<…>` is prose in Wolf. Mirrored in
+  `src/codes.ts` + `src/messageWidth.ts` as `WOLF_RE`.
+- **Tests** — `tests/wolfrpg_roundtrip.rs` over a committed dump fixture
+  (`tests/fixtures/wolftl-dump/`) plus unit tests in the module.
+
+The font path is **not** wired up yet: `Game.json`'s `MainFont` names the TTF the
+game loads from its root, so an `embed_font` impl would drop Sarabun beside it and
+repoint that field — but the font file lives outside the dump, so it needs the game
+root as well. Deferred until the text layer is validated in-game.
+
 ## Fonts
 
 The game loads `GenEiLateMin_v2.ttc` from the game root by name (declared in the
@@ -181,8 +218,13 @@ at — closer to the RPGMaker path than the Unity ones. Needs confirming against
 
 - [x] Archive family + version identified (DXA v8, Wolf crypt **331**).
 - [x] Text containers + command model identified (WolfTL).
-- [ ] Not yet decrypted locally — needs option A/B/C to be chosen first; running
-      third-party binaries is a user decision.
+- [x] Option **A implemented** — `wolfrpg` engine over a WolfTL dump, tests green
+      against a committed fixture.
+- [ ] Not yet run against a real dump: that needs UberWolfCli + WolfTL on the
+      user's machine (running third-party binaries is a user decision), so the
+      extraction rules are still only fixture-verified.
+- [ ] Font hook (`embed_font` → swap the root TTF + repoint `Game.json`'s
+      `MainFont`) — deferred, needs the game root alongside the dump.
 - [ ] Is this specific game **WolfPro**-protected on top of v3.31? (Marker says
       plain v3.31 crypt; Pro detection needs `Game.dat`, which is inside the
       archive.)

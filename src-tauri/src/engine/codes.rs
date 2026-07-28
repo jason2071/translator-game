@@ -127,10 +127,11 @@ pub fn plugin_arg_kind(
     None
 }
 
-/// Whether a plugin argument value reads as shown text rather than config.
-/// Plugin args are all JSON strings, so a number, a boolean, a filename, or a
-/// serialized struct all arrive as strings and must be filtered out by shape.
-fn looks_like_player_text(value: &str) -> bool {
+/// Whether a string value reads as shown text rather than config. Formats that
+/// store text and settings side by side in the same string slot (MZ plugin args,
+/// Wolf RPG command string args) have only shape to go on: a number, a boolean, a
+/// filename, or a serialized struct all arrive as plain strings.
+pub fn looks_like_player_text(value: &str) -> bool {
     let v = value.trim();
     if v.is_empty() {
         return false;
@@ -149,11 +150,13 @@ fn looks_like_player_text(value: &str) -> bool {
     if !v.is_ascii() {
         return true;
     }
-    // Bare ASCII identifier / path / filename: no spaces and nothing but the
-    // characters those use. Real English text has spaces or punctuation.
+    // Bare ASCII identifier / path / filename / variable key (`cself:5`,
+    // `img/pictures/cg01.png`): no spaces and nothing but the characters those
+    // use. Real English text has spaces or sentence punctuation.
     if !v.contains(' ')
-        && v.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '\\'))
+        && v.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '\\' | ':' | '@')
+        })
     {
         return false;
     }
