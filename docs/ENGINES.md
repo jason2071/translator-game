@@ -32,10 +32,7 @@ and are much riskier.
 | **RAGS** | `.rag` (binary DB) | binary | 🔴 Hard |
 | **Flash** | `.swf` (compiled ActionScript) | binary | 🔴 Hard (legacy/EOL) |
 | **Java** | `.jar` (`.properties` or hardcoded in `.class`) | mixed | 🟡 Medium if `.properties`, else 🔴 |
-| **Unity (Naninovel)** | Naninovel managed text + compiled dialogue in `.assets` (via UnityPy) | binary | ✅ Supported (`unity`) — see [[unity-naninovel]] |
-| **Unity (CSV localization)** | plaintext `StreamingAssets/Localization/<lang>/*.csv` (IL2CPP + Addressables, e.g. Milf Plaza) | text (+ font bundle swap) | ✅ Supported (`unity-csvloc`) — see [[unity-csv-localization]] |
-| **Unity (TextTable)** | custom `TextTable` MonoBehaviour string matrix in an Addressables bundle (Mono, e.g. NTR Soccer) | binary (typetree read/write via UnityPy) + font swap + `catalog.json` CRC | ✅ Supported (`unity-textbl`) — see [[unity-texttable]] |
-| **Unity** (other) | custom stripped-typetree MonoBehaviour, IL2CPP-hardcoded, TMP-only | binary | ⚫ Out of scope (use XUnity.AutoTranslator) |
+| **Unity** | managed `TextAsset`s / Addressables bundles / `.assets` (Naninovel, CSV localization, custom `TextTable`, TMPro) | binary | ⚫ Out of scope — engines for three Unity storage schemes shipped and were **removed** (the font path needed a 400 MB Python sidecar and still shipped broken); use XUnity.AutoTranslator |
 | **Unreal Engine** | `.locres` localization table | binary (documented) | 🟡 Medium |
 | **AnvilNext** (AC Origins/Odyssey/Valhalla) | `.forge` archive → Forger `.acod` (UTF-16LE `ID=text`) **or** `aclocexport` text (UTF-8 `Id: [0x…]`) | binary archive / **text once exported** | ✅ Supported: `.acod` + `ac-loctext` (needs external Forger or Delutto+aclocexport) |
 | **WebGL** | build target — usually Unity WebGL or HTML5 | — | see Unity / HTML |
@@ -121,10 +118,6 @@ and are much riskier.
   decompilation. Flash is end-of-life; low priority.
 
 ### Out of scope (different paradigm)
-- **Unity** — text is compiled into assemblies (IL2CPP native or Mono DLL) and
-  varied asset types (TextMeshPro, TextAsset, `resources.assets`). The established
-  approach is a **runtime translation hook** (XUnity.AutoTranslator), not static
-  file extraction — a fundamentally different model from this tool.
 - **WebGL** — not an engine; a build target (usually Unity WebGL or an HTML5
   export). Treat as Unity or HTML depending on the source.
 

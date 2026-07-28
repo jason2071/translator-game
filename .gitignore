@@ -25,15 +25,7 @@ graphify-out/
 src-tauri/target/
 src-tauri/gen/
 
-# Frozen Unity (Naninovel) helper — a large, platform-specific build artifact
-# produced by scripts/freeze-unity-sidecar.ps1 and embedded by build.rs. Not
-# committed; regenerate for a release build (absent → engine uses system Python).
-src-tauri/resources/unity/rpgtl-unity.exe
-# Which profile that exe was frozen with ("full"/"lean") — build.rs reads it to warn
-# when a release build would embed a sidecar that can't bake fonts. Local, like the exe.
-src-tauri/resources/unity/rpgtl-unity.profile
-
-# Python bytecode cache (from running the Unity sidecar / PyInstaller)
+# Python bytecode cache
 __pycache__/
 *.pyc
 

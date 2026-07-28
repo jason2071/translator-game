@@ -27,9 +27,6 @@ const FORGER_CODE_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|
 // AC Origins aclocexport text: shape-based angle tags + [cue] brackets only
 // (no {…}, no %). Mirrors mask_ac_loctext.
 const AC_LOCTEXT_CODE_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\[[^[\]]+\]|⟦\d+⟧/g;
-// Unity/Naninovel: TMPro rich-text tags, {n} format args, backslash escapes (no
-// `[…]`/`%`). Mirrors mask_unity.
-const UNITY_CODE_RE = /\\.|<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\{[^{}]+\}|⟦\d+⟧/g;
 // Wolf RPG: RPGMaker's backslash codes (\c[1], \v[3], \cself[5], \udb[1:2:3], \E)
 // without the angle-tag variant — `<…>` is prose in Wolf. Mirrors mask().
 const WOLF_CODE_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|%\d+|⟦\d+⟧/g;
@@ -40,7 +37,6 @@ function codeRe(engineId?: string | null): RegExp {
   if (engineId === "godot") return GODOT_CODE_RE;
   if (engineId === "forger-acod") return FORGER_CODE_RE;
   if (engineId === "ac-loctext") return AC_LOCTEXT_CODE_RE;
-  if (engineId === "unity" || engineId === "unity-csvloc" || engineId === "unity-textbl") return UNITY_CODE_RE;
   if (engineId === "wolfrpg") return WOLF_CODE_RE;
   return CODE_RE;
 }

@@ -2,10 +2,6 @@
 
 Desktop app to translate RPG / visual-novel games — **RPGMaker MV/MZ**,
 **Ren'Py**, **TyranoScript**, **KiriKiri**, **Godot** (`.po`/`.csv`),
-**Unity (Naninovel)** (managed text + compiled dialogue), and
-**Unity (CSV localization)** (IL2CPP + Addressables games whose text lives in
-`StreamingAssets/Localization/<lang>/*.csv`, translated into a new locale folder
-with an automatic Thai-font swap) — with an
 engine-plugin architecture ready for more (VX Ace, 2000/2003, HTML/Twine, …).
 Translate by hand or with AI (Local / Claude / OpenAI / Gemini / OpenRouter / any
 OpenAI-compatible endpoint).
@@ -57,7 +53,7 @@ and API keys stored in the OS keychain (never on disk).
 ```
 src-tauri/src/
   engine/        GameEngine trait + registry; mvmz / renpy / tyrano / kirikiri /
-                 godot / unity (Naninovel, bundled UnityPy helper), codes.rs,
+                 godot / wolfrpg (WolfTL dump), codes.rs,
                  protect.rs, encoding.rs (KiriKiri Shift-JIS/UTF-16)
   project/       SQLite store (db.rs), open/create + backup/export (mod.rs)
   ai/            TranslationProvider trait; openai/anthropic/gemini; prompt + retry

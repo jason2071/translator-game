@@ -107,7 +107,8 @@ see below).
 - **HTML** (Twine/SugarCube) — `:: PassageName` passages are line-based text; the
   byte-span locator applies directly. Low effort, niche audience.
 - **Others** (later): RPGMaker 2000/2003 (liblcf, C++), Wolf RPG (`.mps`, often
-  encrypted), Unity (IL2CPP/Mono/TextMeshPro — XUnity's domain), Unreal (`.locres`).
+  encrypted), Unity (IL2CPP/Mono/TextMeshPro — XUnity's domain, and the engines this
+  app shipped for it were removed), Unreal (`.locres`).
 
 ## Small backlog (independent, quick — do alongside or between engines)
 - **Engine-aware overflow default**: `displayWidth`/`overflowLines` now strip each

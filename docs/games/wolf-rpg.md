@@ -42,7 +42,7 @@ inspecting a real shipped game on disk:
   share of untranslated JP indie/H-games ship on it.
 - The game keeps its font **outside** the archives (`GenEiLateMin_v2.ttc` at the
   game root, referenced by name), so the `embed_font` story is a plain file swap —
-  far easier than the Unity engines.
+  far easier than a Unity-style asset swap.
 - Text is Shift-JIS-ish `tString` inside the binaries; WolfTL already emits UTF-8.
 
 ## What a shipped game looks like
@@ -150,10 +150,10 @@ and injection is `serde_json::Value::pointer_mut` — the exact MvMz path we alr
 have. Export writes the patched dump and the user runs `WolfTL patch`.
 *Cost: ~an engine file + tests. Downside: two manual tool runs per game.*
 
-### B. Bundle the tools as sidecars (the unrpyc / UnityPy pattern)
+### B. Bundle the tools as sidecars (the unrpyc pattern)
 
 Same as A, but the app drives `UberWolfCli.exe` + `WolfTL.exe` itself, the way
-[[unity-naninovel]] drives the frozen UnityPy helper and Ren'Py drives `unrpyc`.
+Ren'Py drives the vendored `unrpyc`.
 Both tools are **MIT** (Sinflower), C++/MSVC, and would have to be **built from
 source by us** rather than shipping someone's release binary.
 *Cost: A + a build script + bundling. Downside: another vendored toolchain.*
@@ -234,7 +234,7 @@ dump, so a zip of it would be a folder of JSON no player can install.
 The game loads `GenEiLateMin_v2.ttc` from the game root by name (declared in the
 readme, OFL-licensed). Thai support is therefore a **file-level swap** to the
 bundled Sarabun (`engine::TARGET_FONT`) plus whatever name the game config points
-at — closer to the RPGMaker path than the Unity ones. Needs confirming against
+at — closer to the RPGMaker path than an asset-swap. Needs confirming against
 `Game.dat` / `Config.exe` once we can read them.
 
 ## Status / open questions
@@ -257,7 +257,7 @@ at — closer to the RPGMaker path than the Unity ones. Needs confirming against
 - [ ] Does `WolfTL patch` output load in an unmodified Wolf runtime when the
       original archives were encrypted? (WolfTL's README says patched files are
       written **unencrypted**, and Wolf loads loose files over archives — needs a
-      real in-game check, the same way [[unity-csv-localization]] was validated.)
+      real in-game check.)
 
 ## Sources
 
@@ -274,4 +274,3 @@ at — closer to the RPGMaker path than the Unity ones. Needs confirming against
 
 - [[games]] — research index
 - [[anvilnext-locpackage-format]] — the same "external tool owns the binary" shape
-- [[unity-naninovel]] — the bundled-sidecar pattern option B would follow

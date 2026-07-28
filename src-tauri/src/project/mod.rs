@@ -248,52 +248,6 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
     let units = drop_names_when_off(&project.conn, all_units)?;
     let applied: Vec<_> = units.iter().filter(|u| u.status.is_applied()).collect();
 
-    // Unity (CSV localization): additive like Ren'Py — write a new
-    // `Localization/<lang>/` locale folder (source locales untouched) that the game
-    // picks up as a selectable language, and (when embedding the font) swap the Thai
-    // font into the game's font bundle(s) and clear their Addressables CRC.
-    if eng.id() == "unity-csvloc" {
-        let lang = db::get_meta(&project.conn, "target_lang")?
-            .unwrap_or_else(|| "translated".to_string());
-        let ex = engine::unity_csv::export_locale(
-            &project.root,
-            &project.data_dir,
-            &units,
-            &lang,
-            make_backup,
-            embed_font,
-            None, // in-place export into the game
-        )?;
-        return Ok(ExportResult {
-            files_written: ex.files,
-            units_applied: applied.len(),
-            backup_dir: ex.backup_dir,
-            note: Some(ex.note),
-            warning: ex.warning,
-        });
-    }
-
-    // Unity (TextTable): text lives in custom TextTable MonoBehaviours inside
-    // gigabyte-scale Addressables bundles, so export repacks each edited bundle in
-    // place (snapshotting originals under .rpgtl/source/), clears the bundle CRC, and
-    // optionally swaps the Thai font. In-place only (no mod staging — the bundles are
-    // too large to mirror), like Ren'Py/Hendrix.
-    if eng.id() == "unity-textbl" {
-        let ex = engine::unity_textbl::export_bundles(
-            &project.root,
-            &project.data_dir,
-            &units,
-            embed_font,
-        )?;
-        return Ok(ExportResult {
-            files_written: ex.bundles,
-            units_applied: applied.len(),
-            backup_dir: ex.backup_dir,
-            note: Some(ex.note),
-            warning: ex.warning,
-        });
-    }
-
     // Hendrix Localization: like Ren'Py, export is additive and not a plain
     // in-place splice. Append a Thai column to `game_messages.csv`, register the
     // language in the plugin (so it appears in the in-game menu), and embed the
@@ -455,10 +409,9 @@ pub struct RestoreResult {
 /// This is the standalone version of the `copy(snapshot → live)` reset that
 /// [`export`] does momentarily before re-injecting. It covers every engine that
 /// snapshots to `.rpgtl/source/` (RPGMaker MV/MZ, Godot, Tyrano, KiriKiri,
-/// Forger, ac-loctext, Unity-textbl, Hendrix). Purely-additive exports (Ren'Py
-/// `tl/<lang>/`, Unity-csvloc's new locale folder) write no snapshot, so restore
-/// is a no-op for them — their output is a separate overlay the user simply
-/// doesn't select in-game.
+/// Forger, ac-loctext, Hendrix). Purely-additive exports (Ren'Py's `tl/<lang>/`)
+/// write no snapshot, so restore is a no-op for them — their output is a separate
+/// overlay the user simply doesn't select in-game.
 pub fn restore_original(project: &Project) -> Result<RestoreResult> {
     let mut files_restored = 0usize;
 
@@ -549,11 +502,10 @@ pub struct ModResult {
 /// the translation with **no in-game language switch** (locale games overwrite every
 /// shipped locale; single-locale games are translated directly).
 ///
-/// Supported engines: `unity-csvloc` (overwrite-all-locales, safe because in-place
-/// export is additive so the source locales stay pristine) and `rpgmaker-mvmz`
-/// (structural JSON pointers, so reading a possibly-already-exported game is
-/// idempotent). Other engines return an actionable error until their pristine-read
-/// path is added.
+/// Supported engines: the single-locale text/JSON ones — `rpgmaker-mvmz` (structural
+/// JSON pointers, so reading a possibly-already-exported game is idempotent), Godot,
+/// TyranoScript, KiriKiri, Forger and ac-loctext. Other engines return an actionable
+/// error until their pristine-read path is added.
 pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
     let eng = engine::detect(&project.root)
         .ok_or_else(|| anyhow!("engine no longer detected for this project"))?;
@@ -576,21 +528,6 @@ pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
     // Build the mod tree under `staging`, per engine.
     let build = (|| -> Result<(usize, String, Option<String>)> {
         match eng.id() {
-            // Locale-folder engine: overwrite every shipped locale by key (see
-            // unity_csv::export_locale's mod branch). Additive in-place → source
-            // locales are pristine, so it reads them directly.
-            "unity-csvloc" => {
-                let ex = engine::unity_csv::export_locale(
-                    &project.root,
-                    &project.data_dir,
-                    &units,
-                    &lang,
-                    false,
-                    embed_font,
-                    Some(&staging),
-                )?;
-                Ok((ex.files, ex.note, ex.warning))
-            }
             // Ren'Py and Hendrix build their translation additively into the game
             // (Ren'Py runs the game's own Ren'Py to generate tl/<lang>/; Hendrix
             // appends a language column + registers it in the plugin). Their outputs

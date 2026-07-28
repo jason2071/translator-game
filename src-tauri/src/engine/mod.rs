@@ -24,9 +24,6 @@ pub mod renpy;
 pub mod rpa;
 pub mod renpy_tl;
 pub mod tyrano;
-pub mod unity;
-pub mod unity_csv;
-pub mod unity_textbl;
 pub mod unrpyc;
 pub mod wolfrpg;
 
@@ -203,21 +200,6 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // Godot needs its own `project.godot` fingerprint, so it never overlaps
         // the others; order is immaterial.
         Box::new(godot::GodotEngine),
-        // Unity (Naninovel): a `<name>_Data/` dir with `resources.assets` + a
-        // Naninovel runtime assembly — a fingerprint no other engine shares, so
-        // order is immaterial. Plain (non-Naninovel) Unity games are declined.
-        Box::new(unity::UnityEngine),
-        // Unity (CSV localization): a different Unity storage method — text in
-        // `StreamingAssets/Localization/<lang>/*.csv`. Its fingerprint (a locale
-        // folder with meta.txt + CSVs) is unique, so it never overlaps Naninovel
-        // or plain Unity; registered after Naninovel for tidiness.
-        Box::new(unity_csv::UnityCsvEngine),
-        // Unity (TextTable): a third Unity storage method — all text in custom
-        // `TextTable` MonoBehaviours inside an Addressables bundle (Mono backend).
-        // Fingerprinted by an `aa/catalog.json` + a `TextTable`-referencing
-        // Assembly-CSharp.dll, so it never overlaps Naninovel or CSV-localization;
-        // registered after both, which claim their more specific schemes first.
-        Box::new(unity_textbl::UnityTextTableEngine),
         // Wolf RPG via a WolfTL dump: a folder of JSON, fingerprinted by WolfTL's
         // own `dump/{mps,common,db}` layout, so it can't be confused with a game
         // (the `.wolf` archives themselves are never opened — see wolfrpg.rs).

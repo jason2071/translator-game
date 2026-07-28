@@ -4,14 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Desktop app to translate RPG / visual-novel games by hand or via AI. Seven engines
-ship: **RPGMaker MV/MZ** (JSON), **Ren'Py** (`.rpy`), **TyranoScript** (`.ks`,
-UTF-8), **KiriKiri** (`.ks`, Shift-JIS/UTF-16), **Godot** (gettext `.po` /
-translation `.csv`), **Unity (Naninovel)** (managed text — UI / names / gallery
-— **and** the compiled story dialogue, both via a bundled UnityPy helper), and
-**Unity (CSV localization)** (a different Unity storage method — plaintext
-`StreamingAssets/Localization/<lang>/*.csv` catalogs in IL2CPP + Addressables games,
-translated into a new locale folder + a Thai-font swap into the game's font bundle).
+Desktop app to translate RPG / visual-novel games by hand or via AI. The shipped
+engines are **RPGMaker MV/MZ** (JSON), **Hendrix** (an MV/MZ localization plugin),
+**Ren'Py** (`.rpy`), **TyranoScript** (`.ks`, UTF-8), **KiriKiri** (`.ks`,
+Shift-JIS/UTF-16), **Godot** (gettext `.po` / translation `.csv`), **Wolf RPG**
+(via a WolfTL dump) and two **AnvilNext** text bridges (Assassin's Creed).
 Tauri v2 (Rust core) + React/Vite/TypeScript. The Rust side owns all heavy logic (parse, extract, inject,
 DB, AI orchestration, keychain); the frontend is a thin view over Tauri `invoke`
 commands + events.
@@ -70,77 +67,7 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   unrpyc dir + a relative `unrpyc.py` so its sibling `import decompiler` resolves
   (the bundled Ren'Py Python doesn't add an absolute script's dir to `sys.path`). If
   no Python is found or unrpyc fails, import degrades to the original actionable
-  "decompile with unrpyc" error — never a silent empty project. `unity.rs` is the
-  **Unity (Naninovel)** engine, via a **UnityPy helper** (`resources/unity/rpgtl_unity.py`)
-  driven like unrpyc; two tiers. **Tier 1 — managed text** (UI, names, gallery):
-  `TextAsset` `Key: Value` docs, pointer `"<file>#<pathId>#<key>"`. **Tier 2 —
-  compiled story dialogue**: the `Naninovel.Script` MonoBehaviours are
-  stripped-typetree with `[SerializeReference]` script-lines UnityPy can't read
-  structurally, but the spoken text is plain length-prefixed UTF-8 in the raw blob, so
-  the helper enumerates it at 4-byte-aligned offsets and **splices on the bytes** (no
-  typetree), pointer `"dlg#<file>#<pathId>#<idx>"` (idx into a deterministic
-  enumeration). Both tiers are **locale-aware**: they target the game's `en`
-  localization (Naninovel `translate` docs / per-script `zh→en` localization MBs), so
-  a Thai user translates the existing **English → Thai**. Round-trip relaxed to
-  **load-faithful** (like KiriKiri's UTF-16 exception, since UnityPy re-serializes the
-  whole `SerializedFile`). Detects a `<name>_Data/` dir with `resources.assets` + a
-  `*Naninovel*.dll`, declining plain Unity games. Unity games ship no Python, so the release build embeds a **frozen exe**
-  (`rpgtl-unity.exe`, PyInstaller via `scripts/freeze-unity-sidecar.ps1`,
-  `include_bytes!`d through `build.rs` — a git-ignored artifact, `cargo build`
-  succeeds without it); a build lacking the exe falls back to the system `python` +
-  the plain script. The default freeze is **full** — it bundles numpy/scipy/PIL/freetype
-  so `unity-textbl`'s SDF `bake-font` works in a shipped release (~80 MB); `-Lean` opts
-  out (text tiers only, UnityPy's texture deps + scipy stubbed at load) and is dev-only,
-  because shipping it means `bake-font` fails → Thai renders as tofu. The freeze records
-  its profile in `rpgtl-unity.profile` and **`build.rs` warns on a release build** whose
-  sidecar is lean/missing — that exact mismatch shipped once. Keep the script's
-  `--exclude-module` list: scipy/numpy statically `import torch` (and cupy/jax/dask) in
-  their array-API shims, which silently dragged torch + cv2 + pyarrow + transformers into
-  the exe and made it **405 MB** — excluding them cut it to 80 MB with byte-identical
-  bake output.
-  `unity_csv.rs` is a **second, unrelated Unity engine** —
-  **Unity (CSV localization)** (id `unity-csvloc`) — for IL2CPP + Addressables games
-  (e.g. Milfarion/Texic's Milf Plaza) that keep all text in plaintext
-  `StreamingAssets/Localization/<lang>/*.csv` catalogs (`;`-delimited `key;value`,
-  values never quoted / never containing `;`, each locale folder with a `meta.txt`
-  `{"_visibleName":…}`). The game **folder-scans** `Localization/` to build its
-  language menu, so export is **additive** (like Ren'Py's `tl/`): `export_locale`
-  writes a new `<lang>/` locale folder (source locales untouched) that becomes an
-  in-game selectable language. Pointer is the value's **byte span** `"start:len"`
-  into the source-locale CSV (Godot-style splice) → true byte-identity round-trip.
-  **Fonts** are the hard part: the stock TMPro fonts have no Thai, but every font
-  chains to a **Dynamic-atlas** TMP_FontAsset (`m_AtlasPopulationMode == 1`) that
-  rasterizes glyphs at runtime from an in-bundle source `Font`, so `embed_font` swaps
-  that Font's TTF for the bundled Sarabun via the shared `rpgtl_unity.py`
-  **`swap-font`** command (no SDF atlas baking) and then zeroes the bundle's CRC in
-  `catalog.bin` — a pure-Rust byte patch (locate the 16-byte content hash from the
-  bundle filename → `Crc u32` at hash offset **+60** → `0`), without which
-  Addressables' CRC check rejects the modified bundle and hangs the game at load.
-  `unity_textbl.rs` is a **third Unity engine** — **Unity (TextTable)** (id
-  `unity-textbl`) — for **Mono**-backend Addressables games (e.g. NTR Soccer) that keep
-  all text in custom `TextTable` MonoBehaviours (a per-language string matrix:
-  `m_languageKeys` + `m_fieldValues[i].m_values[<lang>]`). Mono ⇒ UnityPy reads **and
-  writes** the typetree, so it sets `m_values[0]` (the `Default`/`en` base column) to
-  the translation via the shared `rpgtl_unity.py` (`texttable-export`/`texttable-import`),
-  pointer `"tbl#<bundle>#<pathId>#<idx>"`, round-trip **load-faithful** (whole-bundle
-  re-serialize, like Naninovel). Fonts reuse **`swap-font`** (the Default TMP fonts are
-  Dynamic-atlas); CRC differs from csvloc — a **`catalog.json`** whose per-bundle
-  `AssetBundleRequestOptions` are **UTF-16LE JSON** in `m_ExtraDataString`, so the helper
-  **`catalog-crc`** decodes it and sets each `m_Crc` to 0 (fixing the length prefix).
-  **In-place export only** (bundles are gigabytes; no mod staging), snapshotting
-  originals to `.rpgtl/source/`. Detects a `<name>_Data/` with `aa/catalog.json` + an
-  `Assembly-CSharp.dll` referencing `TextTable`. **Tier 2 — story dialogue:** the same
-  games drive their narrative through a **PixelCrushers Dialogue System**
-  `DialogueDatabase` — one large **stripped-typetree** MonoBehaviour in a plain
-  `.assets` (not a bundle). Its `DialogueEntry` fields serialize as
-  `[title][value][CustomFieldType_…]`, so the helper (`dsdb-export`/`dsdb-import`)
-  raw-string-enumerates and splices the value after each **base** `Dialogue Text` /
-  `Menu Text` title (locale-suffixed variants left alone), pointer
-  `"ds#<file>#<pathId>#<idx>"`, `.assets` need no CRC. `mask_unity_textbl` adds
-  PixelCrushers `[pic=N]`/`[var=…]` bracket markup to the `mask_unity` set. *(Lesson: a
-  failed `read_typetree` / unresolved script class hides structure, not strings —
-  grep the raw MB blob for the format's markers.)*
-  `wolfrpg.rs` is **Wolf RPG Editor** (ウディタ, id `wolfrpg`) and never opens a
+  "decompile with unrpyc" error — never a silent empty project. `wolfrpg.rs` is **Wolf RPG Editor** (ウディタ, id `wolfrpg`) and never opens a
   `.wolf` archive: those are DXArchives whose crypt is per-Wolf-version (the sample
   game is crypt **331**/v3.31, AES-encrypted header addresses), so decryption stays
   external (**UberWolfCli**) as does the binary ↔ JSON step (**WolfTL**). The engine
@@ -235,13 +162,11 @@ projects.
   **game never modified**. The redirect rides the existing `inject(root, units,
   out_dir)` seam plus an `out_dir`/`out_base` on the font + additive-export paths
   (`GameEngine::embed_font` gained an `out_dir` where patched/new files land — reads
-  come from `data_dir`, or from `out_dir` if a file was already injected there;
-  `unity_csv::export_locale` gained an `out_base`). A mod is built to be the target
-  language **without an in-game language switch**: `unity-csvloc` overwrites *every*
-  shipped source locale by key (keys are shared across locales), single-locale
-  engines are inherently the target. Coverage: `unity-csvloc` (overwrite-all-locales)
-  and every single-locale text/JSON engine (`rpgmaker-mvmz`, `godot`, `tyrano`,
-  `kirikiri`, `forger-acod`, `ac-loctext`) via `build_mod_via_inject` — which injects
+  come from `data_dir`, or from `out_dir` if a file was already injected there). A mod
+  is built to be the target language **without an in-game language switch**, which the
+  single-locale engines are inherently. Coverage: every single-locale text/JSON engine
+  (`rpgmaker-mvmz`, `godot`, `tyrano`, `kirikiri`, `forger-acod`, `ac-loctext`) via
+  `build_mod_via_inject` — which injects
   from a **pristine read-root** (`pristine_read_root`: per touched file, the
   `.rpgtl/source/` snapshot if present, else the live game) so a byte-span splice stays
   valid even after a prior in-place export. **Ren'Py** and **Hendrix** are export-to-game

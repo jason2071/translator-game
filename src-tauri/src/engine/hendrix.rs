@@ -147,7 +147,9 @@ const TARGET_NAME: &str = "ไทย";
 pub struct SheetExport {
     pub backup_dir: Option<String>,
     pub note: String,
-    /// Set when the font could not be embedded — see [`super::unity_textbl::BundleExport`].
+    /// Set when the font could not be embedded: the text export succeeded, but the
+    /// game renders the translation as tofu, so this must reach the user as a warning
+    /// rather than as part of the success note.
     pub warning: Option<String>,
 }
 

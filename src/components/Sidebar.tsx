@@ -45,9 +45,6 @@ export function Sidebar({
   // `embed_font` does something (Ren'Py embeds its own font inside its tl/ path).
   const FONT_ENGINES = [
     "rpgmaker-mvmz",
-    "unity-csvloc",
-    "unity-textbl",
-    "unity",
     "rpgmaker-hendrix",
     // Wolf: copies the TTF beside Game.exe and sets Game.dat's font name via the dump.
     "wolfrpg",
@@ -55,7 +52,6 @@ export function Sidebar({
   // Engines whose translation can be packaged as a non-destructive overlay .zip.
   // Ren'Py + Hendrix build additively into the game, so they're export-to-game only.
   const MOD_ENGINES = [
-    "unity-csvloc",
     "rpgmaker-mvmz",
     "godot",
     "tyrano",
