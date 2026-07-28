@@ -2336,12 +2336,17 @@ fn setup_language(
         // known source string *inside* the text, longest first.
         s.push_str("        if not _tl_has_src(_t):\n");
         s.push_str("            return _t\n");
+        s.push_str("        _p = _t\n");
         s.push_str("        for _k, _v in _tl_frags:\n");
-        s.push_str("            if _k and _k in _t:\n");
-        s.push_str("                _t = _t.replace(_k, _v)\n");
-        s.push_str("                if not _tl_has_src(_t):\n");
+        s.push_str("            if _k and _k in _p:\n");
+        s.push_str("                _p = _p.replace(_k, _v)\n");
+        s.push_str("                if not _tl_has_src(_p):\n");
         s.push_str("                    break\n");
-        s.push_str("        return _t\n");
+        // All or nothing: a partial pass leaves half-translated text — the
+        // one-character key 「僕」 turns 「僕の部屋」 into "ผมの部屋", which reads worse
+        // than the untouched original. Keep the rewrite only when nothing
+        // source-language is left.
+        s.push_str("        return _p if not _tl_has_src(_p) else _t\n");
         s.push_str("    config.replace_text = _tl_replace_text\n\n");
     }
 
@@ -3375,7 +3380,9 @@ define g = Character(_(\"Gwen\"))
         // screen's `text "目的: [objective]"` — translated literal, python value —
         // still ends up fully translated.
         assert!(zzz.contains("_tl_frags = sorted("), "substring fallback: {zzz}");
-        assert!(zzz.contains("_t = _t.replace(_k, _v)"), "substring fallback: {zzz}");
+        assert!(zzz.contains("_p = _p.replace(_k, _v)"), "substring fallback: {zzz}");
+        // …and only keeps the result when it resolved every source-language run.
+        assert!(zzz.contains("return _p if not _tl_has_src(_p) else _t"), "all-or-nothing: {zzz}");
         assert!(
             zzz.contains("\"Go to University\": \"ไปมหาวิทยาลัย\","),
             "hook table carries the unescaped translation: {zzz}"
