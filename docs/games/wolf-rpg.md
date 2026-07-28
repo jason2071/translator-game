@@ -178,22 +178,45 @@ standing maintenance burden (each new Wolf release changes the crypt).
   `dump/Game.json`. A random folder of JSON never matches. Import shows a warning
   saying export writes the dump and `WolfTL … patch` is the last step.
 - **Extract** — pointer is a **JSON Pointer**; `file` is the dump-relative path
-  (`mps/Map001.json`). What counts as text:
-  - **101 Message → Dialogue**, **102 Choices → Choice** — always, unfiltered (so
-    an English one-word choice like `Yes` isn't mistaken for an identifier),
-  - **103 Comment / 106 DebugMessage** — never (dev-facing),
-  - **122 SetString → Message**, everything else → `Other` — only when the string
-    reads as prose (`codes::looks_like_player_text`, shared with the MZ
-    plugin-arg tier), so `SE/decision.ogg` and `cself:5` stay out,
-  - database rows → the field **`value`** (`Term`, context = the field name),
-    skipping ints and WolfTL's `INVALID_IGNORE`,
-  - `Game.json` → `Title`/`TitlePlus`/`StartUpMsg`/`TitleMsg`; **`MainFont` /
-    `SubFonts` are deliberately left alone** (a font swap is its own job — see
-    below).
+  (`mps/Map001.json`). What counts as text was **rewritten against a real dump**
+  (山王寺家の人々, 330 files) — the first pass produced 47 848 units, of which ~37 000
+  were noise:
+  - **A multi-language DB table is the whole script.** That game keeps its narrative
+    in a `翻訳テキスト` DB type: 10 000 rows × `言語_1..言語_10`
+    (JP/EN/ZH-S/ZH-T/KO/ES/FR/DE/PT/RU). Translating every column meant translating
+    nine languages nobody asked for. Now `language_columns` recognises such a type,
+    `pick_source_column` picks the best **source** by sniffing each column's script
+    (English > Japanese > Chinese, via `engine::source_lang_rank`), and the unit's
+    pointer targets **column 1** — the language the game shows by default — so the
+    player sees Thai without touching the language menu. 9 584 units, English source.
+  - **Wolf passes lookup keys as Japanese prose.** `250 Database` is
+    `[_, type, row, field]`: four names locating a DB cell, one of which can read
+    exactly like a line of dialogue (a row named `一度付けたら外せない？`).
+    Translating one breaks the lookup, so the command is excluded whole — 4 376
+    strings gone. `300 CommonEventByName` is `[event name, arg, …]`, so it starts at
+    slot **1**: the name is a key, the args are what that event shows.
+  - **Commands are an allowlist** (`arg_rule`), not a catch-all: 101 → Dialogue and
+    102 → Choice unconditionally (so a one-word English choice isn't mistaken for an
+    identifier), 122/210/211/300 → Message through
+    `codes::looks_like_player_text`. Everything else — comments (103), debug (106),
+    labels (212/213), picture/sound (150/140) — is dev- or engine-facing. The old
+    catch-all tier alone was ~6 000 units of internal names.
+  - **Code-only strings are skipped**: `[\cself[21]]\cself[7]` prints a variable
+    and holds no prose (`is_only_codes`, via `protect::strip_codes`).
+  - Database rows otherwise give their **`value`** (`Term`, context = the field name),
+    skipping ints and WolfTL's `INVALID_IGNORE`; `Game.json` gives
+    `Title`/`TitlePlus`/`StartUpMsg`/`TitleMsg` but never `MainFont`/`SubFonts`.
   - Editor-side labels (type / field / event / common-event names) are never taken.
+
+  Result on that game: **47 848 → 10 633 units** (9 825 dialogue, 586 database terms,
+  187 UI messages, 34 choices).
 - **Inject** — `serde_json::Value::pointer_mut`, then re-serialize with a 4-space
   pretty printer and unescaped UTF-8, i.e. `nlohmann::json::dump(4)` — so a
   patched dump diffs cleanly against a freshly created one.
+- **Round-trip identity has one exception**: a language-table unit *reads* one column
+  and *writes* another, so injecting `translation == source` deliberately copies the
+  English text into the default-language column. Every other file round-trips
+  byte-identically.
 - **Masking** — `mask_for("wolfrpg")` = the stock `mask()`: Wolf shares RPGMaker's
   backslash grammar (`\c[1]`, `\v[3]`, `\cself[5]`, `\udb[1:2:3]`, `\E`, `\>`) but
   **not** the MV/MZ angle-tag variant, since `<…>` is prose in Wolf. Mirrored in
@@ -243,9 +266,13 @@ at — closer to the RPGMaker path than an asset-swap. Needs confirming against
 - [x] Text containers + command model identified (WolfTL).
 - [x] Option **A implemented** — `wolfrpg` engine over a WolfTL dump, tests green
       against a committed fixture.
-- [ ] Not yet run against a real dump: that needs UberWolfCli + WolfTL on the
-      user's machine (running third-party binaries is a user decision), so the
-      extraction rules are still only fixture-verified.
+- [x] Run against a real dump: UberWolfCli + WolfTL were built from source (MSVC
+      toolset **v145**; UberWolfCli needs its SelfUpdater include patched out, as
+      that pulls ATL) and unpacked the sample game's crypt-331 archives, then dumped
+      330 JSON files. The extraction rules above were rewritten from what that dump
+      actually contains.
+- [ ] Still unverified **in-game**: nothing has been patched back with
+      `WolfTL … patch` and launched yet.
 - [x] Font hook shipped — TTF into the game folder (when the dump sits in one) +
       `MainFont`/`SubFonts` → `Sarabun` in `Game.json`.
 - [ ] Font not yet confirmed in-game: Wolf's family-name lookup is documented but

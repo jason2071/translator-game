@@ -56,6 +56,40 @@
                                 10
                             ],
                             "index": 7
+                        },
+                        {
+                            "code": 250,
+                            "codeStr": "Database",
+                            "stringArgs": [
+                                "x ",
+                                "アイテム",
+                                "一度付けたら外せない？",
+                                "アイテム名"
+                            ],
+                            "intArgs": [
+                                1100000
+                            ],
+                            "index": 8
+                        },
+                        {
+                            "code": 300,
+                            "codeStr": "CommonEventByName",
+                            "stringArgs": [
+                                "X[共]システムSE再生",
+                                "使用しますか？"
+                            ],
+                            "intArgs": [
+                                0
+                            ],
+                            "index": 9
+                        },
+                        {
+                            "code": 101,
+                            "codeStr": "Message",
+                            "stringArgs": [
+                                "\\f[\\cself[21]]\\cself[7]"
+                            ],
+                            "index": 10
                         }
                     ]
                 }

@@ -74,10 +74,22 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   works on WolfTL's **dump**: `dump/mps|common|db/*.json` + `dump/Game.json`, whose
   commands are `{code, intArgs, stringArgs}` — RPGMaker's shape — so the pointer is a
   **JSON Pointer** and inject is `pointer_mut` re-serialized with WolfTL's own
-  `dump(4)` layout. 101/102 are text by definition; other commands' strings pass
-  through `codes::looks_like_player_text` (shared with the MZ plugin-arg tier);
-  103/106 are dev-facing and skipped; DB rows give their `value`; `MainFont` is left
-  alone by extraction. Export patches the dump — the user runs `WolfTL … patch` after
+  `dump(4)` layout. Which strings count is an **allowlist keyed by command code and
+  arg slot** (`arg_rule`), because Wolf passes *lookup keys* as Japanese prose right
+  beside the text: `250 Database` is `[_, type, row, field]` — all names, translating
+  one breaks the lookup, so it's excluded whole — and `300 CommonEventByName` starts
+  at slot 1 because slot 0 is the event's name. Allowed: 101 (Dialogue) and 102
+  (Choice) unconditionally, 122/210/211/300 through `codes::looks_like_player_text`;
+  everything else (comments, debug, labels, picture/sound, event calls by id) is out.
+  Strings that are only control codes (`[\cself[21]]\cself[7]` — print a variable)
+  are skipped too. A game may keep its whole script in a **multi-language DB table**
+  (`言語_1..n` columns; the sample game's `翻訳テキスト` type holds 10 000 rows × 10
+  languages): `language_columns` detects it, `pick_source_column` reads the best source
+  (English > Japanese > Chinese, by sniffing each column's script) and the unit's
+  pointer targets **column 1** — the language the game shows by default — so a player
+  needs no language switch and the other columns stay untouched. That split source/
+  target is a deliberate exception to round-trip identity. Other DB rows give their
+  `value`; `MainFont` is left alone by extraction. Export patches the dump — the user runs `WolfTL … patch` after
   (import says so in a warning), and **mod export is refused** (a dump isn't
   installable). `embed_font` uses Wolf's family-name font lookup: copy Sarabun beside
   `Game.exe` (Wolf registers font files sitting there) and set `Game.json`'s

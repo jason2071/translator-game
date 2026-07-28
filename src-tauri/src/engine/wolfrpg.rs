@@ -333,17 +333,34 @@ fn to_wolftl_json(value: &Value) -> Result<String> {
     Ok(String::from_utf8(buf)?)
 }
 
-/// What a Wolf command code means for translation. `None` = never translate
-/// (dev-facing); the bool says whether the code's strings are text *by
-/// definition* (so they bypass the prose filter — an English "Yes" choice must
-/// not be mistaken for an identifier).
-fn kind_for_code(code: i64) -> Option<(UnitKind, bool)> {
+/// How a Wolf command's `stringArgs` translate: `(kind, text-by-definition, first
+/// translatable slot)`. `None` = never translate.
+///
+/// This is an **allowlist**, and slot-aware, because Wolf passes *identifiers* as
+/// strings right next to the text. Two rules learned from a real game:
+///
+///   - **250 `Database`** is `[_, type, row, field]` — four names used to look a DB
+///     cell up. They read exactly like dialogue (they're Japanese prose: a row can be
+///     named `一度付けたら外せない？`) but translating one **breaks the lookup**, so the
+///     whole command is off-limits.
+///   - **300 `CommonEventByName`** is `[event name, arg, arg, …]`: slot 0 is the
+///     event's name — another lookup key — while the later slots carry the text that
+///     event will show (`使用対象を`, `選択して下さい`). So it starts at slot 1.
+///
+/// Everything not listed — comments (103), debug (106), labels (212/213), picture
+/// and sound commands (150/140), event calls by id (210/211) — is dev- or
+/// engine-facing. A catch-all tier produced ~6 000 units of label noise on that game.
+fn arg_rule(code: i64) -> Option<(UnitKind, bool, usize)> {
     match code {
-        101 => Some((UnitKind::Dialogue, true)),  // Message
-        102 => Some((UnitKind::Choice, true)),    // Choices
-        103 | 106 => None,                        // Comment / DebugMessage — dev only
-        122 => Some((UnitKind::Message, false)),  // SetString — text or an internal key
-        _ => Some((UnitKind::Other, false)),      // everything else: filtered
+        101 => Some((UnitKind::Dialogue, true, 0)), // Message
+        102 => Some((UnitKind::Choice, true, 0)),   // Choices
+        122 => Some((UnitKind::Message, false, 0)), // SetString — text or an internal key
+        300 => Some((UnitKind::Message, false, 1)), // CommonEventByName — skip the name
+        // CommonEvent / CommonEventReserve: the event is chosen by *id* (an intArg),
+        // so every string here is an argument — often the line the event will show
+        // (「いらっしゃいませ。」). No name slot to skip.
+        210 | 211 => Some((UnitKind::Message, false, 0)),
+        _ => None,
     }
 }
 
@@ -359,13 +376,18 @@ fn walk(v: &Value, ptr: &str, file: &str, out: &mut Vec<TransUnit>) {
         Value::Object(map) => {
             if let Some(code) = map.get("code").and_then(Value::as_i64) {
                 if let Some(args) = map.get("stringArgs").and_then(Value::as_array) {
-                    let Some((kind, always)) = kind_for_code(code) else {
-                        return; // dev-facing command: skip it whole
+                    let Some((kind, always, first)) = arg_rule(code) else {
+                        return; // dev-facing command, or one whose strings are lookup keys
                     };
                     let ctx = map.get("codeStr").and_then(Value::as_str).map(str::to_string);
-                    for (i, arg) in args.iter().enumerate() {
+                    for (i, arg) in args.iter().enumerate().skip(first) {
                         let Some(s) = arg.as_str() else { continue };
                         if s.is_empty() || (!always && !looks_like_player_text(s)) {
+                            continue;
+                        }
+                        // A message that is nothing but control codes (`[\cself[21]]\cself[7]`
+                        // — print whatever that variable holds) has no prose to translate.
+                        if is_only_codes(s) {
                             continue;
                         }
                         out.push(
@@ -373,6 +395,17 @@ fn walk(v: &Value, ptr: &str, file: &str, out: &mut Vec<TransUnit>) {
                                 .with_context(ctx.clone()),
                         );
                     }
+                    return;
+                }
+            }
+            // A DB **type** (`{"name", "fields", "data"}`): a game may keep its whole
+            // script in a multi-language table here, which needs its own rule.
+            if let (Some(fields), Some(rows)) = (
+                map.get("fields").and_then(Value::as_array),
+                map.get("data").and_then(Value::as_array),
+            ) {
+                if let Some(cols) = language_columns(fields) {
+                    extract_language_table(&cols, rows, ptr, file, out);
                     return;
                 }
             }
@@ -421,6 +454,178 @@ fn walk(v: &Value, ptr: &str, file: &str, out: &mut Vec<TransUnit>) {
         }
         _ => {}
     }
+}
+
+/// True when a string carries no prose at all — only Wolf control codes and
+/// punctuation, e.g. `\cself[8]` or `[\cself[21]]\cself[7]`. Such a "message"
+/// prints the contents of a variable, so there is nothing to translate.
+fn is_only_codes(s: &str) -> bool {
+    !super::protect::strip_codes("wolfrpg", s)
+        .chars()
+        .any(char::is_alphanumeric)
+}
+
+/// The `言語_<n>`-style columns of a DB type, as `(field name, index within the row)`,
+/// or `None` when this type isn't a language table. Wolf games that ship several
+/// languages keep them as sibling fields of one table — the sample game holds its
+/// entire script in a `翻訳テキスト` type with ten of them — so translating every
+/// column would mean translating nine languages nobody asked for.
+///
+/// Recognized by name: `言語_1`, `Language_2`, `lang3`, … Needs at least two to be a
+/// language table (a lone column is just an ordinary field).
+fn language_columns(fields: &[Value]) -> Option<Vec<(String, usize)>> {
+    let cols: Vec<(String, usize)> = fields
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| {
+            let name = f.get("name").and_then(Value::as_str)?;
+            is_language_field(name).then(|| (name.to_string(), i))
+        })
+        .collect();
+    (cols.len() >= 2).then_some(cols)
+}
+
+/// Is this field name one of a language table's columns? `言語_2`, `Language_2`,
+/// `lang 2` — a language word plus a number, nothing else.
+fn is_language_field(name: &str) -> bool {
+    let rest = name
+        .strip_prefix("言語")
+        .or_else(|| name.strip_prefix("Language"))
+        .or_else(|| name.strip_prefix("language"))
+        .or_else(|| name.strip_prefix("Lang"))
+        .or_else(|| name.strip_prefix("lang"));
+    let Some(rest) = rest else { return false };
+    let digits = rest.trim_start_matches([' ', '_', '-']);
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Emit one unit per row of a multi-language table: **read** the best source column
+/// (English if the game has it, else Japanese/Chinese — see
+/// [`super::source_lang_rank`]) and **write** the translation into the game's *first*
+/// column, the one it shows by default. So a player sees Thai without touching the
+/// language menu, and the source language stays intact in its own column.
+///
+/// That split source/target is why a language-table unit does **not** round-trip
+/// byte-identically: injecting `translation == source` writes the source column's
+/// text into the target column, on purpose.
+fn extract_language_table(
+    cols: &[(String, usize)],
+    rows: &[Value],
+    ptr: &str,
+    file: &str,
+    out: &mut Vec<TransUnit>,
+) {
+    let Some(src) = pick_source_column(cols, rows) else {
+        return;
+    };
+    let (target_name, target_idx) = &cols[0];
+    for (r, row) in rows.iter().enumerate() {
+        let Some(cells) = row.get("data").and_then(Value::as_array) else {
+            continue;
+        };
+        let text = cells
+            .get(src.1)
+            .and_then(|c| c.get("value"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if text.is_empty() || text == "INVALID_IGNORE" {
+            continue;
+        }
+        // The row must actually have the target cell to write into.
+        if cells.get(*target_idx).and_then(|c| c.get("value")).is_none() {
+            continue;
+        }
+        out.push(
+            TransUnit::new(
+                file,
+                format!("{ptr}/data/{r}/data/{target_idx}/value"),
+                UnitKind::Dialogue,
+                text,
+            )
+            .with_context(Some(format!("{} → {target_name}", src.0))),
+        );
+    }
+}
+
+/// Which language column to translate *from*: score each column by the script its
+/// text is written in, then take the app's preferred source language (English >
+/// Japanese > Chinese). Falls back to the first column with any text, so a table
+/// whose scripts we can't identify still works.
+fn pick_source_column<'a>(
+    cols: &'a [(String, usize)],
+    rows: &[Value],
+) -> Option<&'a (String, usize)> {
+    let mut best: Option<(u8, &(String, usize))> = None;
+    let mut fallback = None;
+    for col in cols {
+        let Some(lang) = sniff_language(cols_text(rows, col.1)) else {
+            continue;
+        };
+        if fallback.is_none() {
+            fallback = Some(col);
+        }
+        if let Some(rank) = super::source_lang_rank(lang) {
+            if best.is_none_or(|(b, _)| rank < b) {
+                best = Some((rank, col));
+            }
+        }
+    }
+    best.map(|(_, c)| c).or(fallback)
+}
+
+/// A sample of one column's text, for [`sniff_language`] — enough rows to be sure,
+/// few enough to stay cheap on a 10 000-row table.
+fn cols_text(rows: &[Value], idx: usize) -> String {
+    let mut sample = String::new();
+    for row in rows {
+        let Some(cells) = row.get("data").and_then(Value::as_array) else {
+            continue;
+        };
+        if let Some(s) = cells.get(idx).and_then(|c| c.get("value")).and_then(Value::as_str) {
+            if !s.is_empty() && s != "INVALID_IGNORE" {
+                sample.push_str(s);
+                sample.push(' ');
+                if sample.chars().count() > 2000 {
+                    break;
+                }
+            }
+        }
+    }
+    sample
+}
+
+/// Guess a language tag from the scripts a sample is written in. Only distinguishes
+/// what a Wolf language table realistically holds; `None` for an empty sample.
+fn sniff_language(sample: String) -> Option<&'static str> {
+    let (mut latin, mut kana, mut han, mut hangul, mut cyrillic) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    for c in sample.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' => latin += 1,
+            '\u{3040}'..='\u{30ff}' => kana += 1,
+            '\u{4e00}'..='\u{9fff}' => han += 1,
+            '\u{ac00}'..='\u{d7a3}' => hangul += 1,
+            '\u{0400}'..='\u{04ff}' => cyrillic += 1,
+            _ => {}
+        }
+    }
+    let total = latin + kana + han + hangul + cyrillic;
+    if total == 0 {
+        return None;
+    }
+    // Kana is the giveaway for Japanese even in a kanji-heavy line; Han without kana
+    // is Chinese. Latin covers English and the European languages alike, so it is
+    // only claimed as "en" when nothing else dominates.
+    Some(if kana * 20 > han {
+        "ja"
+    } else if hangul * 4 > total {
+        "ko"
+    } else if cyrillic * 4 > total {
+        "ru"
+    } else if han * 4 > total {
+        "zh"
+    } else {
+        "en"
+    })
 }
 
 /// Escape a JSON object key for use as one RFC-6901 pointer token.
