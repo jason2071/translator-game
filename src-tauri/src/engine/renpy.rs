@@ -2310,13 +2310,38 @@ fn setup_language(
             ));
         }
         s.push_str("    }\n");
+        // Same pairs, longest first, for the substring pass below.
+        s.push_str("    _tl_frags = sorted(_tl_text.items(), key=lambda kv: -len(kv[0]))\n");
+        // Does the text still hold an untranslated CJK character? Cheap guard so a
+        // fully-translated line skips the scan.
+        s.push_str("    def _tl_has_src(_t):\n");
+        s.push_str("        for _c in _t:\n");
+        s.push_str("            _o = ord(_c)\n");
+        s.push_str("            if 0x3040 <= _o <= 0x30ff or 0x4e00 <= _o <= 0x9fff:\n");
+        s.push_str("                return True\n");
+        s.push_str("        return False\n");
         s.push_str("    _tl_prev_replace_text = config.replace_text\n");
         s.push_str("    def _tl_replace_text(_t):\n");
         s.push_str("        if _tl_prev_replace_text is not None:\n");
         s.push_str("            _t = _tl_prev_replace_text(_t)\n");
         s.push_str(&format!("        if config.language != \"{lang}\":\n"));
         s.push_str("            return _t\n");
-        s.push_str("        return _tl_text.get(_t, _t)\n");
+        s.push_str("        _r = _tl_text.get(_t)\n");
+        s.push_str("        if _r is not None:\n");
+        s.push_str("            return _r\n");
+        // A screen builds one Text from a translated literal plus an interpolated
+        // value: `text "\u76ee\u7684: [objective]"` renders as "\u0e40\u0e1b\u0e49\u0e32\u0e2b\u0e21\u0e32\u0e22: \u5bb6\u306e\u4e2d\u3092\u63a2\u7d22\u3059\u308b",
+        // which matches no key whole \u2014 the literal was translated before `[…]` was
+        // substituted, and the value came from python. So fall back to replacing each
+        // known source string *inside* the text, longest first.
+        s.push_str("        if not _tl_has_src(_t):\n");
+        s.push_str("            return _t\n");
+        s.push_str("        for _k, _v in _tl_frags:\n");
+        s.push_str("            if _k and _k in _t:\n");
+        s.push_str("                _t = _t.replace(_k, _v)\n");
+        s.push_str("                if not _tl_has_src(_t):\n");
+        s.push_str("                    break\n");
+        s.push_str("        return _t\n");
         s.push_str("    config.replace_text = _tl_replace_text\n\n");
     }
 
@@ -3346,6 +3371,11 @@ define g = Character(_(\"Gwen\"))
         // Same table as a post-interpolation hook, so a line whose text is picked at
         // runtime (`m "[renpy.random.choice(hesitation)]"`) still translates.
         assert!(zzz.contains("config.replace_text = _tl_replace_text"), "{zzz}");
+        // The hook also replaces a known source string *inside* a longer text, so a
+        // screen's `text "目的: [objective]"` — translated literal, python value —
+        // still ends up fully translated.
+        assert!(zzz.contains("_tl_frags = sorted("), "substring fallback: {zzz}");
+        assert!(zzz.contains("_t = _t.replace(_k, _v)"), "substring fallback: {zzz}");
         assert!(
             zzz.contains("\"Go to University\": \"ไปมหาวิทยาลัย\","),
             "hook table carries the unescaped translation: {zzz}"
