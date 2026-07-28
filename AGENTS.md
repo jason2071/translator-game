@@ -8,13 +8,12 @@ Guidance for AI coding agents working in this repo. Keep it lean; `CLAUDE.md` an
 Desktop app to translate RPG / visual-novel games by hand or via AI. **Tauri v2**
 (Rust core) + **React / Vite / TypeScript**. The Rust side owns all heavy logic
 (parse, extract, inject, DB, AI orchestration, keychain); the frontend is a thin
-view over Tauri `invoke` commands + events. Eleven engines ship: **RPGMaker MV/MZ**
-(JSON), **Ren'Py** (`.rpy`), **TyranoScript** (`.ks`), **KiriKiri** (`.ks`,
-Shift-JIS/UTF-16), **Godot** (`.po`/`.csv`), **Unity Naninovel** (managed text +
-compiled dialogue via bundled UnityPy helper), **Unity CSV localization**
-(`StreamingAssets/Localization/<lang>/*.csv`), **Unity TextTable** (Mono
-Addressables), **Hendrix** (MV/MZ with `game_messages.csv`), **Forger acod**
-(Assassin's Creed Odyssey/Valhalla), and **ac-loctext** (Assassin's Creed Origins).
+view over Tauri `invoke` commands + events. Eight engines ship: **RPGMaker MV/MZ**
+(JSON), **Hendrix** (MV/MZ with `game_messages.csv`), **Ren'Py** (`.rpy`),
+**TyranoScript** (`.ks`), **KiriKiri** (`.ks`, Shift-JIS/UTF-16), **Godot**
+(`.po`/`.csv`), **Forger acod** (Assassin's Creed Odyssey/Valhalla), and
+**ac-loctext** (Assassin's Creed Origins). Unity and Wolf RPG were built and then
+removed — see `docs/ENGINES.md` before proposing either again.
 
 ## Setup & commands
 
@@ -49,10 +48,10 @@ debug builds; release builds ignore `.env` and read the OS keychain.
 ```
 src-tauri/src/
   engine/    GameEngine trait + registry in mod.rs (engines() = detection order);
-             hendrix, mvmz, renpy, kirikiri, tyrano, godot, unity (Naninovel),
-             unity_csv, unity_textbl, forger_acod, ac_loctext; plus codes.rs,
-             protect.rs, encoding.rs, rpa.rs (Ren'Py archive unpack),
-             renpy_tl.rs (Ren'Py tl/<lang>/ fill), unrpyc.rs (decompile .rpyc)
+             hendrix, mvmz, renpy, kirikiri, tyrano, godot, forger_acod,
+             ac_loctext; plus codes.rs, protect.rs, encoding.rs,
+             rpa.rs (Ren'Py archive unpack), renpy_tl.rs (Ren'Py tl/<lang>/ fill),
+             unrpyc.rs (decompile .rpyc)
   project/   SQLite store (db.rs), open/create + backup/export + export_mod (mod.rs)
   ai/        TranslationProvider trait; openai/anthropic/gemini; prompt + retry
   keys.rs    OS keychain (keyring) + .env fallback in debug builds

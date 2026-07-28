@@ -3183,7 +3183,6 @@ version = "0.13.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
  "dotenvy",
  "encoding_rs",
  "flate2",
