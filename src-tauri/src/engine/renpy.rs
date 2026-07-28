@@ -2199,9 +2199,15 @@ fn setup_language(
     let mut s = String::new();
     s.push_str("# Added by RPGMaker Translator — makes the translation selectable + readable.\n");
     s.push_str("# Delete this file (and fonts/tl_font.ttf) to remove it.\n\n");
-    // Default to the translation only if the game defines no language of its own.
+    // Select the translation, unconditionally. This used to fire only when
+    // `config.language` was still None — but a game that ships its own localization
+    // *defines* one (`define config.language = "japanese"`), and that is exactly the
+    // kind of game someone wants translated. The guard meant export wrote a complete,
+    // correct `tl/<lang>/` that the game then never read. `init 1000` runs after the
+    // game's own `define`s, and a language the player picks in-game is applied from
+    // `persistent` after init, so the in-game switcher still wins.
     s.push_str(&format!(
-        "init 1000 python:\n    if config.language is None:\n        config.language = \"{lang}\"\n\n"
+        "init 1000 python:\n    config.language = \"{lang}\"\n\n"
     ));
 
     // Display strings with no skeleton entry, plus the character names (a say-name
