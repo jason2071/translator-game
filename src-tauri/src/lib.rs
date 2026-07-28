@@ -70,13 +70,19 @@ fn ping(name: &str) -> String {
 
 // --- detection & project lifecycle ---------------------------------------
 
-/// Fingerprint a folder; `None` if no known engine recognizes it.
+/// Fingerprint a folder; `None` if no known engine recognizes it. A folder that
+/// only needs an external tool run on it first (a Wolf RPG game → a WolfTL dump)
+/// comes back as an error carrying those steps, so import says something more
+/// useful than "no supported game engine".
 #[tauri::command]
 fn detect_game(path: String) -> Result<Option<DetectResult>, String> {
     let root = PathBuf::from(path);
     match engine::detect(&root) {
         Some(eng) => eng.describe(&root).map(Some).map_err(|e| e.to_string()),
-        None => Ok(None),
+        None => match engine::detect_hint(&root) {
+            Some(hint) => Err(hint),
+            None => Ok(None),
+        },
     }
 }
 

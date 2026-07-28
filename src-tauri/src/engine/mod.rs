@@ -239,6 +239,14 @@ pub fn detect(root: &Path) -> Option<Box<dyn GameEngine>> {
     engines().into_iter().find(|e| e.detect(root))
 }
 
+/// When [`detect`] finds nothing, a folder may still be a format we *do* support
+/// once an external tool has been run on it (a Wolf RPG game needs a WolfTL dump).
+/// Returns the steps to get there, so import can say something better than "no
+/// supported game engine". `None` when the folder is simply unsupported.
+pub fn detect_hint(root: &Path) -> Option<String> {
+    wolfrpg::game_folder_hint(root)
+}
+
 /// Rank a locale label by the app's source-language preference **English > Japanese >
 /// Chinese** (0 = most preferred). Recognizes common code and full-name forms
 /// (`en`/`english`/`en-US`, `ja`/`jp`/`japanese`, `zh`/`chinese`/`zh-CN`/`zh-TW`, …).

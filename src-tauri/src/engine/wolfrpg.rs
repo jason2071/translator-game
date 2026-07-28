@@ -236,6 +236,35 @@ impl GameEngine for WolfRpgEngine {
     }
 }
 
+/// A Wolf **game** folder has no dump to translate, so [`detect`](WolfRpgEngine::detect)
+/// declines it — but "no supported engine" is a dead end for a user holding a Wolf
+/// game. Recognize it and hand back the two commands that produce a dump, tailored
+/// to how far along the folder already is. `None` for anything that isn't Wolf.
+pub fn game_folder_hint(root: &Path) -> Option<String> {
+    let game_root = wolf_game_root(root)?;
+    let data = game_root.join("Data");
+    let packed = std::fs::read_dir(&data).ok()?.flatten().any(|e| {
+        e.path().extension().and_then(|x| x.to_str()) == Some("wolf")
+    });
+    // Already unpacked (or shipped unencrypted): only the dump step is missing.
+    let unpacked = data.join("BasicData").join("CommonEvent.dat").is_file();
+    if !packed && !unpacked {
+        return None;
+    }
+    let g = game_root.display();
+    let mut steps = String::new();
+    if packed && !unpacked {
+        steps.push_str(&format!("  UberWolfCli.exe \"{g}\\Game.exe\"\n"));
+    }
+    steps.push_str(&format!("  WolfTL.exe \"{g}\\Data\" \"{g}\" create\n"));
+    Some(format!(
+        "This is a Wolf RPG game. Its text lives in binary .mps/.dat files{}, which \
+         this app translates through a WolfTL dump rather than editing directly. Run:\n\n\
+         {steps}\nthen import this folder again — the dump lands in it.",
+        if packed { " inside encrypted .wolf archives" } else { "" }
+    ))
+}
+
 /// The Wolf game folder, when the dump happens to sit inside one: `Game.exe`
 /// (Wolf's fixed runtime name — `GamePro.exe` for the Pro editor) beside a `Data`
 /// folder. `root` itself, else its parent, so both `<game>/dump` and a dump one
@@ -508,6 +537,35 @@ mod tests {
         let text = std::fs::read_to_string(out.path().join("mps/Map001.json")).unwrap();
         assert!(text.contains("\n    \"events\""), "4-space indent: {text}");
         assert!(text.contains("朝だ。"), "UTF-8 not escaped");
+    }
+
+    #[test]
+    fn a_wolf_game_folder_is_declined_but_gets_actionable_steps() {
+        // What a user actually drops on the app first: the game itself. No dump, so
+        // detection must decline — but the hint has to name both tools.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("Data")).unwrap();
+        std::fs::write(root.join("Game.exe"), b"MZ").unwrap();
+        std::fs::write(root.join("Data/BasicData.wolf"), b"DX\x08\x00").unwrap();
+
+        assert!(!WolfRpgEngine.detect(root), "a packed game is not a dump");
+        let hint = game_folder_hint(root).expect("a hint for a Wolf game");
+        assert!(hint.contains("UberWolfCli"), "{hint}");
+        assert!(hint.contains("WolfTL"), "{hint}");
+        assert!(hint.contains("encrypted"), "{hint}");
+
+        // Already unpacked: the decrypt step is done, only the dump is missing.
+        std::fs::create_dir_all(root.join("Data/BasicData")).unwrap();
+        std::fs::write(root.join("Data/BasicData/CommonEvent.dat").as_path(), b"\0").unwrap();
+        let hint = game_folder_hint(root).unwrap();
+        assert!(!hint.contains("UberWolfCli"), "no need to unpack twice: {hint}");
+        assert!(hint.contains("WolfTL"), "{hint}");
+
+        // Anything that isn't a Wolf game gets no hint (the generic message stands).
+        let other = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(other.path().join("Data")).unwrap();
+        assert!(game_folder_hint(other.path()).is_none());
     }
 
     #[test]
