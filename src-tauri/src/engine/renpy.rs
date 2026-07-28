@@ -892,6 +892,16 @@ fn python_display_ok(s: &str, allow_single: bool) -> bool {
     if stripped.trim().contains(char::is_whitespace) {
         return true;
     }
+    // Japanese/Chinese/Korean/Thai don't put spaces between words, so the rule above
+    // reads a whole JP sentence as "one word" and drops it. That silently lost every
+    // python-side display string in a JP game — the room name behind the HUD
+    // (`$ place = "キッチン"`), the day counter (`'[day_count]日目'`), a menu label
+    // (`return "家の中を探索する"`). A non-ASCII letter is the tell: identifiers, dict
+    // keys, style names and flags are ASCII by convention, so a string carrying one
+    // is text meant for the player.
+    if stripped.chars().any(|c| c.is_alphabetic() && !c.is_ascii()) {
+        return true;
+    }
     allow_single && !s.contains('_') && !s.contains('.')
 }
 
@@ -1283,9 +1293,14 @@ fn extract_rpy(
         }
         let first = first_token(trimmed);
         if is_line_skip(first) {
-            // Inline python (`$ …`) and define/default values can hold display
-            // strings (quest names, notify messages) — harvest before skipping.
-            if trimmed.starts_with('$') || first == "define" || first == "default" {
+            // Inline python (`$ …`), define/default values and a screen invoked
+            // with arguments can hold display strings (quest names, notify
+            // messages, a dialog's body + title) — harvest before skipping.
+            // `call screen notify_dialog("…", title="…")` is a `call`, so without
+            // this the whole popup stays in the source language.
+            let screen_call = (first == "call" || first == "show")
+                && first_token(trimmed[first.len()..].trim_start()) == "screen";
+            if trimmed.starts_with('$') || first == "define" || first == "default" || screen_call {
                 // A list of display words (weekdays, times of day) is reached only by
                 // replacing the store value — `pylist#<var>#<index>`, applied by the
                 // zzz `translate <lang> python:` block, never spliced.
@@ -2781,6 +2796,45 @@ label start:
             "images/bg/room.png",
         ] {
             assert!(!texts.contains(&junk), "ATL frame path must not be extracted: {junk}");
+        }
+    }
+
+    /// The python-string harvest keyed "is this display text?" off a space between
+    /// words, which Japanese/Chinese/Korean/Thai don't write — so a whole JP
+    /// sentence looked like one identifier and was dropped. Regression from a real
+    /// game: the HUD room name, the day counter and a `call screen` popup all
+    /// stayed Japanese with no unit to translate.
+    #[test]
+    fn japanese_python_strings_are_harvested_without_spaces() {
+        let src = r#"
+init python:
+    HUD_LAYOUT = {
+        "day_label": {"content": '[day_count]日目', "x": 20},
+        "place_label": {"content": '[place]', "x": 20},
+    }
+
+label start:
+    $ place = "キッチン"
+    $ chosen_room = "kitchen"
+    $ style_name = "input_prompt"
+    call screen notify_dialog("家の中を探索して、気になるものを調べる。", title="システム説明")
+    e "Real dialogue."
+"#;
+        let units = extract(src);
+        let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+
+        for want in [
+            "キッチン",
+            "[day_count]日目",
+            "家の中を探索して、気になるものを調べる。",
+            "システム説明",
+        ] {
+            assert!(texts.contains(&want), "JP display string must be harvested: {want} in {texts:?}");
+        }
+        // ASCII single-word identifiers/keys stay out — the whitespace rule still
+        // governs Latin text.
+        for junk in ["kitchen", "input_prompt", "day_label", "content"] {
+            assert!(!texts.contains(&junk), "ASCII identifier must stay out: {junk}");
         }
     }
 
