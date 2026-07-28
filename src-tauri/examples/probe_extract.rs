@@ -25,8 +25,21 @@ fn main() {
     for (f, n) in files.iter().take(15) {
         println!("{n:>6}  {f}");
     }
-    println!("--- samples ---");
-    for u in units.iter().take(8) {
-        println!("[{:?}] {}", u.kind, u.source.chars().take(60).collect::<String>());
+    // `probe_extract <root> [needle …]` — after the summary, report whether each
+    // needle was extracted. Answers "did my rule change pick this string up?".
+    let needles: Vec<String> = std::env::args().skip(2).collect();
+    if needles.is_empty() {
+        println!("--- samples ---");
+        for u in units.iter().take(8) {
+            println!("[{:?}] {}", u.kind, u.source.chars().take(60).collect::<String>());
+        }
+    } else {
+        println!("--- lookups ---");
+        for n in &needles {
+            match units.iter().find(|u| u.source.contains(n.as_str())) {
+                Some(u) => println!("FOUND   {n}  [{:?}] {} {}", u.kind, u.file, u.pointer),
+                None => println!("MISSING {n}"),
+            }
+        }
     }
 }

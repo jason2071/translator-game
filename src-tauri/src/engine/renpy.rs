@@ -880,6 +880,37 @@ fn display_text_ok(s: &str) -> bool {
     strip_markup(s).chars().any(|c| c.is_alphabetic())
 }
 
+/// Does this line's string argument belong to a logging/diagnostic call
+/// (`print(…)`, `renpy.log(…)`, `_runtime_voice_log(…)`, `debug_print(…)`)? Looks at
+/// the identifier immediately before `(`, so prose that happens to contain "log"
+/// is untouched.
+fn is_log_call(raw: &str) -> bool {
+    let b = raw.as_bytes();
+    for (i, _) in raw.match_indices('(') {
+        let name_end = i;
+        let mut start = name_end;
+        while start > 0 {
+            let c = b[start - 1];
+            if c.is_ascii_alphanumeric() || c == b'_' || c == b'.' {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        let name = raw[start..name_end].to_ascii_lowercase();
+        let name = name.rsplit('.').next().unwrap_or(&name).to_string();
+        // Match whole `_`-separated words, not a substring: `notify_dialog(` carries
+        // "log" inside "dialog" and shows its argument to the player.
+        if name
+            .split('_')
+            .any(|w| matches!(w, "print" | "log" | "logger" | "logging" | "debug" | "trace"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Python-string filter: multi-word text is display-worthy; a single word is
 /// accepted only from a `renpy.notify(…)` line (`allow_single`) and only when it
 /// doesn't look like an identifier/attribute (`_`/`.`) — dict keys, flags and
@@ -990,6 +1021,12 @@ fn harvest_python_line(
     // Character names have their own pass (`extract_character_names`); docstrings
     // are code commentary, not UI.
     if raw.contains("Character(") || raw.contains("\"\"\"") || raw.contains("'''") {
+        return;
+    }
+    // A logging call's argument is developer output, never shown to a player —
+    // `_runtime_voice_log("voice manifest lookup directives={} …")`. Matching the
+    // *callee* keeps a real line that merely mentions the word ("Log Book") safe.
+    if is_log_call(raw) {
         return;
     }
     // A notify message or a tooltip is often one word ("Map", "2nd Floor") — still
@@ -1220,6 +1257,11 @@ fn extract_rpy(
 ) {
     let mut skip_indent: Option<(usize, SkipKind)> = None;
     let mut skip_expr_depth: i32 = 0; // open brackets of a multi-line define/default/$
+    // Open brackets inside the *current* skipped block. A python block's dict or list
+    // may close its brace back at column 0 (hand-formatted code does this), and
+    // indent alone would then read that line as the end of the block — silently
+    // dropping every display string in the rest of it.
+    let mut block_expr_depth: i32 = 0;
     let mut seen: HashSet<usize> = HashSet::new(); // inner-start offsets already taken
     let mut offset = 0usize; // byte offset of the current line within the file
 
@@ -1266,7 +1308,11 @@ fn extract_rpy(
         // then processed normally for bare say/menu strings. Inside the block,
         // screen/python bodies still yield display strings.
         if let Some((si, kind)) = skip_indent {
-            if indent > si {
+            // A line at or below the block's indent still belongs to it while an
+            // expression opened inside is unclosed — the stray `}` at column 0 that
+            // ends a hand-indented dict is a continuation, not the block's end.
+            if indent > si || block_expr_depth > 0 {
+                block_expr_depth = (block_expr_depth + delta).max(0);
                 match kind {
                     SkipKind::Python => {
                         harvest_python_line(file, raw, line_start, &mut seen, py_seen, out)
@@ -1286,9 +1332,11 @@ fn extract_rpy(
                 continue;
             }
             skip_indent = None;
+            block_expr_depth = 0;
         }
         if let Some(kind) = block_skip_kind(trimmed) {
             skip_indent = Some((indent, kind));
+            block_expr_depth = 0;
             continue;
         }
         let first = first_token(trimmed);
@@ -2524,6 +2572,53 @@ mod tests {
         let mut py_seen = HashSet::new();
         extract_rpy("script.rpy", src, &mut out, &mut py_seen);
         out
+    }
+
+    #[test]
+    fn a_dict_closing_at_column_zero_does_not_end_the_python_block() {
+        // Hand-formatted game code indents a dict's body but puts its closing brace
+        // back at column 0. Indent alone reads that as the end of `init python:`, so
+        // everything after it — here the objective text the HUD shows — was silently
+        // dropped. Seen on a real game (mnovel00: `story/adv_house.rpy`).
+        let src = "init python:
+                   
+    ADV_HOUSE_NAMES = {
+                   
+    \"home_room\": \"僕の部屋\",
+                   }
+                   
+    def adv_house_objective_text():
+                   
+        return \"家の中を探索する\"
+";
+        let units = extract(src);
+        let sources: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+        assert!(
+            sources.contains(&"家の中を探索する"),
+            "the block continues past the column-0 brace: {sources:?}"
+        );
+        assert!(sources.contains(&"僕の部屋"), "the dict value itself: {sources:?}");
+    }
+
+    #[test]
+    fn logging_calls_are_not_display_text() {
+        // A voice-runtime plugin logs with format placeholders; that is developer
+        // output, not a line anyone reads in game.
+        let src = "init python:
+                   
+    def f():
+                   
+        _runtime_voice_log(\"voice manifest lookup file={} line={}\")
+                   
+        print(\"reloading config\")
+                   
+        renpy.notify(\"ボイス生成完了\")
+";
+        let units = extract(src);
+        let sources: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+        assert!(!sources.iter().any(|s| s.contains("voice manifest")), "{sources:?}");
+        assert!(!sources.contains(&"reloading config"), "{sources:?}");
+        assert!(sources.contains(&"ボイス生成完了"), "a notify IS shown: {sources:?}");
     }
 
     #[test]
