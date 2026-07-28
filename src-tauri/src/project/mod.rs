@@ -158,6 +158,11 @@ pub struct ExportResult {
     /// A human-readable note about how the export was done (e.g. the Ren'Py
     /// `tl/<lang>/` path). `None` for a plain in-place export.
     pub note: Option<String>,
+    /// Something the export could NOT do, even though the translations were
+    /// written — in practice a failed font embed, which leaves the game showing
+    /// tofu boxes. Kept apart from `note` so the UI can show it as a warning
+    /// instead of burying it in a success message.
+    pub warning: Option<String>,
 }
 
 /// Is the project's **Translate character names** toggle on? Default on.
@@ -233,6 +238,7 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
                 units_applied: applied,
                 backup_dir: None,
                 note: Some(note),
+                warning: None,
             });
         }
     }
@@ -263,6 +269,7 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
             units_applied: applied.len(),
             backup_dir: ex.backup_dir,
             note: Some(ex.note),
+            warning: ex.warning,
         });
     }
 
@@ -283,6 +290,7 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
             units_applied: applied.len(),
             backup_dir: ex.backup_dir,
             note: Some(ex.note),
+            warning: ex.warning,
         });
     }
 
@@ -305,6 +313,7 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
             units_applied: applied.len(),
             backup_dir: ex.backup_dir,
             note: Some(ex.note),
+            warning: ex.warning,
         });
     }
 
@@ -399,8 +408,11 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
     // Optionally embed the bundled Thai font and repoint the game's fonts at it,
     // so translated text renders. Runs after inject so it patches injected data
     // files (e.g. MZ's System.json). Best-effort: a font error must not fail the
-    // export, which already wrote the translations.
-    let note = if embed_font {
+    // export, which already wrote the translations — but it IS reported as a
+    // warning, since the game will otherwise show tofu boxes.
+    let mut note = None;
+    let mut warning = None;
+    if embed_font {
         // In-place: read from and write to the same live data dir.
         match eng.embed_font(
             &project.root,
@@ -409,18 +421,22 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
             engine::TARGET_FONT,
             backup_dir.as_deref().map(Path::new),
         ) {
-            Ok(n) => n,
-            Err(e) => Some(format!("Translations exported, but embedding the font failed: {e}")),
+            Ok(n) => note = n,
+            Err(e) => {
+                warning = Some(format!(
+                    "Translations exported, but embedding the font failed: {e}. Text the game \
+                     draws with its own font may show as boxes."
+                ))
+            }
         }
-    } else {
-        None
-    };
+    }
 
     Ok(ExportResult {
         files_written: touched.len(),
         units_applied: applied.len(),
         backup_dir,
         note,
+        warning,
     })
 }
 
@@ -522,6 +538,9 @@ pub struct ModResult {
     pub files_written: usize,
     pub units_applied: usize,
     pub note: Option<String>,
+    /// Something the mod could NOT do although its files were written — in practice a
+    /// failed font embed, which leaves the overlay showing boxes in-game.
+    pub warning: Option<String>,
 }
 
 /// Export the translation as a distributable **mod `.zip`** that mirrors the game
@@ -555,7 +574,7 @@ pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
     std::fs::create_dir_all(&staging)?;
 
     // Build the mod tree under `staging`, per engine.
-    let build = (|| -> Result<(usize, String)> {
+    let build = (|| -> Result<(usize, String, Option<String>)> {
         match eng.id() {
             // Locale-folder engine: overwrite every shipped locale by key (see
             // unity_csv::export_locale's mod branch). Additive in-place → source
@@ -570,7 +589,7 @@ pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
                     embed_font,
                     Some(&staging),
                 )?;
-                Ok((ex.files, ex.note))
+                Ok((ex.files, ex.note, ex.warning))
             }
             // Ren'Py and Hendrix build their translation additively into the game
             // (Ren'Py runs the game's own Ren'Py to generate tl/<lang>/; Hendrix
@@ -600,7 +619,7 @@ pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
         }
     })();
 
-    let (files_written, note) = match build {
+    let (files_written, note, warning) = match build {
         Ok(v) => v,
         Err(e) => {
             let _ = std::fs::remove_dir_all(&staging);
@@ -619,6 +638,7 @@ pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
         files_written,
         units_applied: applied.len(),
         note: Some(note),
+        warning,
     })
 }
 
@@ -632,7 +652,7 @@ fn build_mod_via_inject(
     units: &[crate::model::TransUnit],
     applied: &[&crate::model::TransUnit],
     embed_font: bool,
-) -> Result<(usize, String)> {
+) -> Result<(usize, String, Option<String>)> {
     let mut touched: Vec<String> = applied.iter().map(|u| u.file.clone()).collect();
     touched.sort();
     touched.dedup();
@@ -651,6 +671,7 @@ fn build_mod_via_inject(
     inject_res?;
 
     let mut note = format!("Injected {} translated file(s) into the mod.", touched.len());
+    let mut warning = None;
     if embed_font {
         match eng.embed_font(
             &project.root,
@@ -661,10 +682,14 @@ fn build_mod_via_inject(
         ) {
             Ok(Some(fnote)) => note.push_str(&format!(" {fnote}")),
             Ok(None) => {}
-            Err(e) => note.push_str(&format!(" (font embed failed: {e})")),
+            Err(e) => {
+                warning = Some(format!(
+                    "The mod's text was written, but embedding the font failed: {e}. Text the                      game draws with its own font may show as boxes."
+                ))
+            }
         }
     }
-    Ok((touched.len(), note))
+    Ok((touched.len(), note, warning))
 }
 
 /// A temp mirror of the game root holding **pristine** copies of `files` (each relative

@@ -13,10 +13,10 @@ cleanly.
 > free space, and transplants the blob into the stripped-typetree copy. It auto-calibrates
 > the SDF slope + point size per font. The standalone scripts below remain the annotated
 > reference (and work when the app doesn't). **Packaging:** the SDF deps
-> (freetype/numpy/scipy/PIL) run under system Python (dev), and a **`-WithFontBake`**
-> frozen build bundles them so `bake-font` works in the shipped app too
-> (`scripts/freeze-unity-sidecar.ps1 -WithFontBake`; the default lean freeze omits them and
-> `bake-font` exits with an actionable message).
+> (freetype/numpy/scipy/PIL) run under system Python (dev), and the frozen build's
+> **default (full)** profile bundles them so `bake-font` works in the shipped app too
+> (`scripts/freeze-unity-sidecar.ps1`; `-Lean` omits them, `bake-font` then exits with an
+> actionable message, and `build.rs` warns if a release build would embed it).
 
 ## Why the simple swap-font (Milf Plaza) approach fails here
 

@@ -95,6 +95,10 @@ export function Sidebar({
       const r = await api.exportProject(true, fontCapable && embedFont);
       setResult(r);
       setMsg(r.note ?? `Exported ${r.unitsApplied} units → ${r.filesWritten} files`);
+      // The text landed, but something the export promised didn't (a failed font
+      // embed → the game renders boxes). Show it where failures go, not as part of
+      // the success line.
+      if (r.warning) setErr(r.warning);
       await refreshMeta();
     } catch (e) {
       setErr(String(e));
@@ -112,6 +116,7 @@ export function Sidebar({
     try {
       const r = await api.exportMod(fontCapable && embedFont);
       setMsg((r.note ?? `Mod: ${r.unitsApplied} units → ${r.filesWritten} files`) + " (.zip)");
+      if (r.warning) setErr(r.warning);
       await revealItemInDir(r.zipPath).catch(() => {});
     } catch (e) {
       setErr(String(e));

@@ -78,6 +78,12 @@ export interface ExportResult {
   backupDir: string | null;
   /** How the export was done (e.g. the Ren'Py tl/<lang>/ path); null for in-place. */
   note?: string | null;
+  /**
+   * Something the export could NOT do although the text was written — in practice a
+   * failed font embed, which leaves the game showing boxes. Must be surfaced as a
+   * warning, never folded into the success message.
+   */
+  warning?: string | null;
 }
 
 export interface ModResult {
@@ -86,6 +92,8 @@ export interface ModResult {
   filesWritten: number;
   unitsApplied: number;
   note?: string | null;
+  /** See ExportResult.warning — the mod was written, but its font embed failed. */
+  warning?: string | null;
 }
 
 export interface RestoreResult {

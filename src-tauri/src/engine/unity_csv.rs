@@ -313,6 +313,8 @@ pub struct LocaleExport {
     pub files: usize,
     pub backup_dir: Option<String>,
     pub note: String,
+    /// Set when the font could not be embedded — see [`super::unity_textbl::BundleExport`].
+    pub warning: Option<String>,
 }
 
 /// Export the translated locale.
@@ -390,6 +392,7 @@ pub fn export_locale(
     let meta = format!("{{\"_visibleName\":\"{}\",\"_author\":\"RPGTL\"}}", json_escape(target_lang));
     std::fs::write(target_dir.join("meta.txt"), meta).context("writing locale meta.txt")?;
 
+    let mut warning: Option<String> = None;
     let mut note = format!(
         "Wrote {files} CSV catalog(s) to Localization/{folder}/ (source “{src_name}” untouched). \
          Pick “{target_lang}” as the language in-game."
@@ -406,7 +409,11 @@ pub fn export_locale(
         };
         match embed_thai_font(root, data_dir, data_dir, super::TARGET_FONT, backup.as_deref()) {
             Ok(n) => note.push_str(&format!(" {n}")),
-            Err(e) => note.push_str(&format!(" Font embedding failed: {e}")),
+            Err(e) => {
+                warning = Some(format!(
+                    "Text exported, but the Thai font could not be swapped in: {e}. The                      translation will show as boxes until this succeeds."
+                ))
+            }
         }
         backup_dir = backup.map(|p| p.to_string_lossy().to_string());
     }
@@ -415,6 +422,7 @@ pub fn export_locale(
         files,
         backup_dir,
         note,
+        warning,
     })
 }
 
@@ -463,6 +471,7 @@ fn export_mod_locale(
         locales += 1;
     }
 
+    let mut warning: Option<String> = None;
     let mut note = format!(
         "Wrote Thai into {files} catalog(s) across {locales} locale folder(s) (every language \
          overwritten, so the game is Thai without switching)."
@@ -470,7 +479,11 @@ fn export_mod_locale(
     if embed_font {
         match embed_thai_font(root, data_dir, &out_data, super::TARGET_FONT, None) {
             Ok(n) => note.push_str(&format!(" {n}")),
-            Err(e) => note.push_str(&format!(" Font embedding failed: {e}")),
+            Err(e) => {
+                warning = Some(format!(
+                    "Text exported, but the Thai font could not be swapped into the mod: {e}.                      The translation will show as boxes until this succeeds."
+                ))
+            }
         }
     }
 
@@ -478,6 +491,7 @@ fn export_mod_locale(
         files,
         backup_dir: None,
         note,
+        warning,
     })
 }
 

@@ -492,6 +492,10 @@ pub struct BundleExport {
     pub bundles: usize,
     pub backup_dir: Option<String>,
     pub note: String,
+    /// Set when the font could not be embedded: the text export succeeded, but the
+    /// game will render the translation as tofu boxes, so this must reach the user
+    /// as a warning rather than as part of the success note.
+    pub warning: Option<String>,
 }
 
 /// Export the translation **in place** into the game's Addressables bundles.
@@ -533,6 +537,7 @@ pub fn export_bundles(
             bundles: 0,
             backup_dir: None,
             note: "No applied translations to export.".to_string(),
+            warning: None,
         });
     }
 
@@ -569,6 +574,7 @@ pub fn export_bundles(
     inject_assets(&source_data, data_dir, units)?; // Dialogue System + I2 UI table `.assets`
 
     let files = edited_bundles.len() + edited_assets.len();
+    let mut warning: Option<String> = None;
     let mut note = format!(
         "Translated {} string(s) in place ({} bundle(s) + {} .assets file(s)); cleared the \
          Addressables CRC.",
@@ -602,7 +608,13 @@ pub fn export_bundles(
                     let _ = std::fs::write(&marker, &want); // mark done; failure just re-bakes next time
                     note.push_str(&format!(" {n}"));
                 }
-                Err(e) => note.push_str(&format!(" Font embedding failed: {e}")),
+                // Not part of the note: a failed bake leaves the game rendering the
+                // translation as tofu, which must not read as a successful export.
+                Err(e) => {
+                    warning = Some(format!(
+                        "Text exported, but the Thai font could not be baked into the game's                          fonts: {e}. The translation will show as boxes until this succeeds."
+                    ))
+                }
             }
         }
     }
@@ -611,6 +623,7 @@ pub fn export_bundles(
         bundles: files,
         backup_dir: Some(source_data.to_string_lossy().to_string()),
         note,
+        warning,
     })
 }
 

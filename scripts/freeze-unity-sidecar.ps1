@@ -12,32 +12,37 @@
 
   Two profiles:
 
-    * **Lean (default)** — text tiers only. UnityPy's texture deps (PIL, numpy,
-      astc_encoder, texture2ddecoder, etcpak) + scipy are excluded to trim ~60 MB;
-      `rpgtl_unity.py` stubs the ones UnityPy imports at load so `import UnityPy` still
-      succeeds. `bake-font` (SDF font baking, `unity-textbl`) exits with an actionable
-      message under this build — text translates but Thai renders as tofu without a font.
+    * **Full (default)** — bundles numpy + scipy + PIL + freetype-py so `bake-font`
+      (SDF font baking, `unity-textbl`) works in the shipped app. This is the default
+      because a release frozen without it translates the text but renders Thai as tofu
+      in pre-baked-SDF games (e.g. NTR Soccer) — a silent-looking failure. ~60 MB larger.
 
-    * **-WithFontBake** — also bundles numpy + scipy + PIL + freetype-py so `bake-font`
-      works in the shipped app. Needed to release support for pre-baked-SDF Unity games
-      (e.g. NTR Soccer / `unity-textbl`); the exe is ~60 MB larger.
+    * **-Lean** — text tiers only. UnityPy's texture deps (PIL, numpy, astc_encoder,
+      texture2ddecoder, etcpak) + scipy are excluded to trim ~60 MB; `rpgtl_unity.py`
+      stubs the ones UnityPy imports at load so `import UnityPy` still succeeds.
+      `bake-font` then exits with an actionable message. Dev-only — do NOT ship it.
+
+  Either way the chosen profile is recorded in `rpgtl-unity.profile` beside the exe,
+  and `build.rs` warns when a release build would embed a lean (or missing) sidecar.
 
   Requirements (build machine only, not end users):
     - Python 3.x on PATH
     - pip install UnityPy pyinstaller
-    - for -WithFontBake also: pip install numpy scipy pillow freetype-py
+    - for the default (full) profile also: pip install numpy scipy pillow freetype-py
 
   `--collect-data UnityPy` bundles UnityPy's own data (typetree DB), without which the
   exe fails at load.
 
   Run from the repo root:
-    pwsh scripts/freeze-unity-sidecar.ps1                 # lean
-    pwsh scripts/freeze-unity-sidecar.ps1 -WithFontBake   # fat (SDF baking works)
+    pwsh scripts/freeze-unity-sidecar.ps1          # full — SDF baking works (ship this)
+    pwsh scripts/freeze-unity-sidecar.ps1 -Lean    # dev-only, ~60 MB smaller
 #>
 [CmdletBinding()]
 param(
     [string]$Python = "python",
-    [switch]$WithFontBake
+    # Opt OUT of the font-bake deps. Shipping a lean sidecar means `bake-font` fails and
+    # Thai renders as tofu in pre-baked-SDF games, so this is for local iteration only.
+    [switch]$Lean
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,8 +65,8 @@ $pyi = @(
     "--exclude-module", "IPython", "--exclude-module", "pytest"
 )
 
-if ($WithFontBake) {
-    Write-Host "Profile: WithFontBake (bundles numpy/scipy/PIL/freetype for bake-font)" -ForegroundColor Cyan
+if (-not $Lean) {
+    Write-Host "Profile: full (bundles numpy/scipy/PIL/freetype for bake-font)" -ForegroundColor Cyan
     # Verify the SDF deps are importable in the build interpreter before a long freeze.
     $probe = "import numpy, scipy.ndimage, PIL.Image, freetype"
     & $Python -c $probe
@@ -81,7 +86,7 @@ if ($WithFontBake) {
         "--hidden-import", "freetype"
     )
 } else {
-    Write-Host "Profile: lean (text tiers only; bake-font disabled)" -ForegroundColor Cyan
+    Write-Host "Profile: lean (text tiers only; bake-font disabled — DO NOT SHIP)" -ForegroundColor Yellow
     $pyi += @(
         "--exclude-module", "PIL", "--exclude-module", "numpy",
         "--exclude-module", "astc_encoder", "--exclude-module", "texture2ddecoder",
@@ -104,6 +109,10 @@ if ($code -ne 0) { throw "PyInstaller failed (exit $code)" }
 $exe = Join-Path $outDir "rpgtl-unity.exe"
 if (-not (Test-Path $exe)) { throw "PyInstaller did not produce $exe" }
 
+# Record which profile this exe is, so build.rs can refuse to ship a lean one silently.
+$profileName = if ($Lean) { "lean" } else { "full" }
+Set-Content -Path (Join-Path $outDir "rpgtl-unity.profile") -Value $profileName -Encoding ascii -NoNewline
+
 $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
-Write-Host "Built rpgtl-unity.exe ($mb MB)." -ForegroundColor Green
+Write-Host "Built rpgtl-unity.exe ($mb MB, profile: $profileName)." -ForegroundColor Green
 Write-Host "Now run 'cargo build' (or 'pnpm tauri build') to embed it." -ForegroundColor Green

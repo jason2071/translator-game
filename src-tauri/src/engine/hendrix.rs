@@ -147,6 +147,8 @@ const TARGET_NAME: &str = "ไทย";
 pub struct SheetExport {
     pub backup_dir: Option<String>,
     pub note: String,
+    /// Set when the font could not be embedded — see [`super::unity_textbl::BundleExport`].
+    pub warning: Option<String>,
 }
 
 /// Export a Hendrix-localized game: append the target-language column to the sheet,
@@ -222,6 +224,7 @@ pub fn export_sheet(
     // 5. Embed the Thai font (and thin the text outline) via the shared RPGMaker
     //    path — the new column uses the game's default font, so repointing that at
     //    Sarabun (System.json mainFontFilename) is what makes Thai render.
+    let mut warning: Option<String> = None;
     let mut note = format!(
         "Added a “{TARGET_NAME}” column to {SHEET}. Pick “{TARGET_NAME}” in the in-game \
          language menu to see the translation."
@@ -235,7 +238,9 @@ pub fn export_sheet(
                 super::TARGET_FONT,
                 backup_dir.as_deref().map(Path::new),
             ) {
-                note.push_str(&format!(" (font embed failed: {e})"));
+                warning = Some(format!(
+                    "Text exported, but embedding the Thai font failed: {e}. The translation                      will show as boxes until this succeeds."
+                ));
             }
         }
     }
@@ -243,7 +248,7 @@ pub fn export_sheet(
         note.push_str(" (the language was already registered)");
     }
 
-    Ok(SheetExport { backup_dir, note })
+    Ok(SheetExport { backup_dir, note, warning })
 }
 
 /// Add a `{Name, Symbol, Font, FontSize}` entry for our target language to the

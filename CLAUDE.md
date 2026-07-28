@@ -88,10 +88,12 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   (`rpgtl-unity.exe`, PyInstaller via `scripts/freeze-unity-sidecar.ps1`,
   `include_bytes!`d through `build.rs` — a git-ignored artifact, `cargo build`
   succeeds without it); a build lacking the exe falls back to the system `python` +
-  the plain script. The default freeze is **lean** (text tiers only; UnityPy's
-  texture deps + scipy excluded, stubbed at load); pass **`-WithFontBake`** to also
-  bundle numpy/scipy/PIL/freetype so `unity-textbl`'s SDF `bake-font` works in a
-  shipped release (else `bake-font` exits with a message → Thai renders as tofu).
+  the plain script. The default freeze is **full** — it bundles numpy/scipy/PIL/freetype
+  so `unity-textbl`'s SDF `bake-font` works in a shipped release; `-Lean` opts out
+  (text tiers only, UnityPy's texture deps + scipy stubbed at load) and is dev-only,
+  because shipping it means `bake-font` fails → Thai renders as tofu. The freeze records
+  its profile in `rpgtl-unity.profile` and **`build.rs` warns on a release build** whose
+  sidecar is lean/missing — that exact mismatch shipped once.
   `unity_csv.rs` is a **second, unrelated Unity engine** —
   **Unity (CSV localization)** (id `unity-csvloc`) — for IL2CPP + Addressables games
   (e.g. Milfarion/Texic's Milf Plaza) that keep all text in plaintext
