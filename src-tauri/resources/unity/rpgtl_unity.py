@@ -1198,6 +1198,7 @@ def cmd_bake_font(data_dir, ttf_path, out_dir, uni="0E00-0E7F"):
         sys.exit("bake-font: no readable TMP_FontAsset found to source the typetree from")
 
     baked_total = 0
+    skipped = []
     for p in bundles + assets:
         try: env = UnityPy.load(p)
         except Exception: continue
@@ -1238,6 +1239,7 @@ def cmd_bake_font(data_dir, ttf_path, out_dir, uni="0E00-0E7F"):
                 _apply_tables(t, placed, keep_gidx)
                 fobj.save_typetree(t, nodes)
             except Exception as e:
+                skipped.append(f"{t.get('m_Name')!r}: {e}")
                 print(f"bake-font: {os.path.basename(p)}: skipped {t.get('m_Name')!r} ({e})", file=sys.stderr)
                 continue
             changed = True; baked_total += len(placed)
@@ -1247,6 +1249,14 @@ def cmd_bake_font(data_dir, ttf_path, out_dir, uni="0E00-0E7F"):
             with open(os.path.join(out_dir, os.path.basename(p)), "wb") as f:
                 f.write(env.file.save(packer=packer))
     print(f"bake-font: baked {baked_total} glyph(s) total")
+    # Baking nothing is a failure, not a quiet success: every font was skipped, so the
+    # game still has no Thai glyphs and would render the translation as boxes. Exiting
+    # non-zero (with the first reason) is what makes that reach the user — a frozen
+    # build missing a dependency's data files failed exactly this way while the app
+    # reported a clean export.
+    if baked_total == 0:
+        why = f" First failure: {skipped[0]}" if skipped else ""
+        sys.exit(f"bake-font: baked no glyphs — {len(skipped)} font(s) skipped.{why}")
 
 
 # Keep baked glyphs below this codepoint (Latin, Latin-ext, punctuation, symbols) so

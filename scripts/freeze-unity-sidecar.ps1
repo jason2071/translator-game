@@ -73,20 +73,28 @@ if (-not $Lean) {
     if ($LASTEXITCODE -ne 0) {
         throw "Font-bake deps missing in '$Python'. Run: $Python -m pip install numpy scipy pillow freetype-py"
     }
-    # scipy/numpy pull in data + many submodules PyInstaller misses via static analysis;
-    # collect-all is the robust way. freetype-py ships a native DLL — collect-all grabs it.
+    # numpy needs collect-all (its DLLs + data aren't all caught by static analysis) and
+    # freetype-py ships a native DLL, so it does too. scipy and PIL do NOT: only
+    # `scipy.ndimage.distance_transform_edt` and `PIL.Image` are used, and collect-all
+    # dragged in all of scipy (117 MB on disk) + all of Pillow, which is what made the
+    # frozen exe 405 MB. Naming the imports lets PyInstaller's own hooks pull just those
+    # subpackages and their binaries.
     # Decoding the atlas Texture2D pulls in UnityPy's native texture/audio deps (their DLLs
     # aren't caught by --collect-submodules), so collect-all them too or the read fails
-    # (e.g. "Failed to load fmod.dll") and every font is skipped → no baking.
+    # (e.g. "Failed to load fmod.dll") and every font is skipped -> no baking.
     $pyi += @(
-        "--collect-all", "numpy", "--collect-all", "scipy",
-        "--collect-all", "PIL", "--collect-all", "freetype",
+        "--collect-all", "numpy", "--collect-all", "freetype",
+        "--hidden-import", "scipy.ndimage", "--hidden-import", "PIL.Image",
         "--collect-all", "fmod_toolkit", "--collect-all", "astc_encoder",
         "--collect-all", "texture2ddecoder", "--collect-all", "etcpak",
+        # astc-encoder-py + etcpak depend on archspec, whose CPU database is a JSON
+        # data file. Without it every font read raises FileNotFoundError mid-bake and
+        # bake-font silently baked 0 glyphs -> Thai stayed tofu in a "successful" export.
+        "--collect-all", "archspec",
         "--hidden-import", "freetype"
     )
 } else {
-    Write-Host "Profile: lean (text tiers only; bake-font disabled — DO NOT SHIP)" -ForegroundColor Yellow
+    Write-Host "Profile: lean (text tiers only; bake-font disabled - DO NOT SHIP)" -ForegroundColor Yellow
     $pyi += @(
         "--exclude-module", "PIL", "--exclude-module", "numpy",
         "--exclude-module", "astc_encoder", "--exclude-module", "texture2ddecoder",
