@@ -1983,12 +1983,27 @@ pub fn export_tl(
 /// `str#`/`name#`/`pylist#` pointer are display-matched, and
 /// [`harvest_tl_untranslated`] gives engine-UI units a `tl/<lang>/common.rpy` file —
 /// they must NOT flip export into tl-source mode.
+///
+/// A `tl/` tree also has to **outweigh the base scripts** to win. Plenty of games
+/// keep all their dialogue in base `.rpy` and still ship a stray `tl/<lang>/
+/// common.rpy` (the SDK's own UI strings, a handful of units). Picking tl-source
+/// mode off that handful would retag that one file and skip every line of the
+/// game — an export that reports success and translates nothing.
 fn tl_source_lang(units: &[TransUnit]) -> Option<String> {
-    units.iter().find_map(|u| {
-        parse_pointer(&u.pointer)?; // spliceable byte span only
-        let rest = u.file.strip_prefix("tl/")?;
-        rest.split('/').next().map(str::to_string)
-    })
+    let mut base = 0usize;
+    let mut by_lang: BTreeMap<&str, usize> = BTreeMap::new();
+    for u in units {
+        if parse_pointer(&u.pointer).is_none() {
+            continue; // spliceable byte span only
+        }
+        match u.file.strip_prefix("tl/").and_then(|r| r.split('/').next()) {
+            Some(l) => *by_lang.entry(l).or_default() += 1,
+            None => base += 1,
+        }
+    }
+    // Largest tl/ tree wins ties by name, so the choice is deterministic.
+    let (lang, n) = by_lang.into_iter().max_by_key(|&(l, n)| (n, std::cmp::Reverse(l)))?;
+    (n > base).then(|| lang.to_string())
 }
 
 /// Produce `tl/<target>/` from the `tl/<src>/` tree the units were read from: for each
@@ -2537,6 +2552,42 @@ mod tests {
         assert!(!thai.contains("translate english"), "no source tag left");
         // The source tree is never modified (idempotent re-export).
         assert_eq!(std::fs::read_to_string(ten.join("script.rpy")).unwrap(), src);
+    }
+
+    /// A game whose dialogue lives in base `.rpy` but that also ships a stray
+    /// `tl/<lang>/common.rpy` (the SDK UI strings) must stay on the normal
+    /// `renpy translate` path. Picking tl-source mode off those few units retagged
+    /// that one file and skipped every line of the game, while export still
+    /// reported success ("Wrote 1 Ren'Py translation file(s)").
+    #[test]
+    fn a_stray_tl_tree_does_not_outweigh_the_base_scripts() {
+        let mut units = Vec::new();
+        // The game's own dialogue: base scripts, spliceable pointers.
+        let script = "label a:\n    e \"Hello\"\n    e \"There\"\n    e \"Friend\"\n";
+        let mut py_seen = HashSet::new();
+        extract_rpy("story.rpy", script, &mut units, &mut py_seen);
+        assert!(units.len() >= 3, "base units extracted: {}", units.len());
+        // Plus a shipped tl/japanese/common.rpy — a handful of UI strings.
+        let common = "translate japanese strings:\n    old \"Quit?\"\n    new \"\u{7d42}\u{4e86}?\"\n";
+        extract_from_tl("tl/japanese/common.rpy", "japanese", common, &mut units);
+        assert!(
+            units.iter().any(|u| u.file.starts_with("tl/")),
+            "the stray tl/ unit is in the list"
+        );
+
+        assert_eq!(
+            tl_source_lang(&units),
+            None,
+            "base scripts outnumber the tl/ tree ⇒ normal `renpy translate` path"
+        );
+
+        // The real tl-source case still wins: strip the base units and the tl/ tree
+        // is all that's left.
+        let only_tl: Vec<_> = units
+            .into_iter()
+            .filter(|u| u.file.starts_with("tl/"))
+            .collect();
+        assert_eq!(tl_source_lang(&only_tl), Some("japanese".to_string()));
     }
 
     #[test]
