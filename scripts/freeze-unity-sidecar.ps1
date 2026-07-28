@@ -62,7 +62,20 @@ $pyi = @(
     "--specpath", $work,
     "--collect-data", "UnityPy", "--collect-submodules", "UnityPy",
     "--exclude-module", "matplotlib", "--exclude-module", "tkinter",
-    "--exclude-module", "IPython", "--exclude-module", "pytest"
+    "--exclude-module", "IPython", "--exclude-module", "pytest",
+    # scipy/numpy ship array-API shims that statically `import torch` (and cupy, dask,
+    # jax, ...) for backends they would only ever use at runtime if installed. Static
+    # analysis follows those imports, which is how a text-and-fonts helper ended up
+    # bundling torch (317 MB), cv2, pyarrow, transformers and onnxruntime. Nothing on
+    # our code path imports them, so cut them at the root.
+    "--exclude-module", "torch", "--exclude-module", "torchvision",
+    "--exclude-module", "transformers", "--exclude-module", "cv2",
+    "--exclude-module", "pyarrow", "--exclude-module", "onnxruntime",
+    "--exclude-module", "llvmlite", "--exclude-module", "numba",
+    "--exclude-module", "jax", "--exclude-module", "cupy",
+    "--exclude-module", "dask", "--exclude-module", "sparse",
+    "--exclude-module", "pandas", "--exclude-module", "sympy",
+    "--exclude-module", "sklearn", "--exclude-module", "lief"
 )
 
 if (-not $Lean) {

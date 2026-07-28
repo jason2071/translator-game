@@ -89,11 +89,15 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   `include_bytes!`d through `build.rs` — a git-ignored artifact, `cargo build`
   succeeds without it); a build lacking the exe falls back to the system `python` +
   the plain script. The default freeze is **full** — it bundles numpy/scipy/PIL/freetype
-  so `unity-textbl`'s SDF `bake-font` works in a shipped release; `-Lean` opts out
-  (text tiers only, UnityPy's texture deps + scipy stubbed at load) and is dev-only,
+  so `unity-textbl`'s SDF `bake-font` works in a shipped release (~80 MB); `-Lean` opts
+  out (text tiers only, UnityPy's texture deps + scipy stubbed at load) and is dev-only,
   because shipping it means `bake-font` fails → Thai renders as tofu. The freeze records
   its profile in `rpgtl-unity.profile` and **`build.rs` warns on a release build** whose
-  sidecar is lean/missing — that exact mismatch shipped once.
+  sidecar is lean/missing — that exact mismatch shipped once. Keep the script's
+  `--exclude-module` list: scipy/numpy statically `import torch` (and cupy/jax/dask) in
+  their array-API shims, which silently dragged torch + cv2 + pyarrow + transformers into
+  the exe and made it **405 MB** — excluding them cut it to 80 MB with byte-identical
+  bake output.
   `unity_csv.rs` is a **second, unrelated Unity engine** —
   **Unity (CSV localization)** (id `unity-csvloc`) — for IL2CPP + Addressables games
   (e.g. Milfarion/Texic's Milf Plaza) that keep all text in plaintext
