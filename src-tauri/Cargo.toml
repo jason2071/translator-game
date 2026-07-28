@@ -64,6 +64,17 @@ encoding_rs = "0.8"
 # Default off; enable to keep the console window on Windows release builds.
 custom-protocol = ["tauri/custom-protocol"]
 
+[profile.dev]
+# Debug builds were eating ~80 GB of `target/` on a dev machine, nearly all of it
+# debuginfo. Line tables keep backtraces (file + line) — what we actually read —
+# at a fraction of the size of full DWARF.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+# Dependencies are never stepped through, so they need no debuginfo at all. This is
+# where most of the bulk lived (tauri + reqwest + rusqlite pull in a lot of crates).
+debug = false
+
 [profile.release]
 # Size + speed tuning for the shipped binary. LTO + a single codegen unit let
 # the optimizer inline across crates; `opt-level = "s"` favors small code
