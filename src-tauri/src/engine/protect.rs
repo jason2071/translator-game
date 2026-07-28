@@ -121,11 +121,6 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         // + `%N` masking plus VisuMZ/Yanfly `<…>` text codes (`<Show Switch: 24>`,
         // `<center>`, font tags) — else a model translates the words inside a tag.
         "rpgmaker-mvmz" | "rpgmaker-hendrix" => mask_mvmz(input),
-        // Wolf RPG's message codes share RPGMaker's backslash grammar — `\c[1]`
-        // (color), `\v[3]` / `\cself[5]` / `\udb[1:2:3]` (variable + database
-        // refs), `\E`, `\>` — which the stock `mask` already covers. `<…>` is
-        // prose in Wolf, so it must NOT take the MV/MZ angle-tag variant.
-        "wolfrpg" => mask(input),
         _ => mask(input),
     }
 }

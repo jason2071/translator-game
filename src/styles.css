@@ -244,8 +244,8 @@ code {
   color: var(--fg);
   font-size: var(--fs-sm);
   text-align: left;
-  /* Some detect failures answer with the commands to run (a Wolf RPG game needs a
-     WolfTL dump first), so keep their line breaks and let long paths wrap. */
+  /* Some failures answer with commands to run, so keep their line breaks and let
+     long paths wrap. */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

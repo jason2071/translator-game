@@ -26,10 +26,6 @@ const FORGER_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\{[^{
 // audio brackets only. Unlike Forger, {…} (a whole-line wrap) and % (prose) are
 // NOT codes here. Mirrors mask_ac_loctext.
 const AC_LOCTEXT_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\[[^[\]]+\]/g;
-// Wolf RPG: the same backslash grammar as RPGMaker — \c[1], \v[3], \cself[5],
-// \udb[1:2:3], \E, \> — but `<…>` is prose here, not a text code. Mirrors the
-// stock mask() the backend uses for "wolfrpg".
-const WOLF_RE = /\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|%\d+/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_RE;
@@ -37,7 +33,6 @@ function codeRe(engineId?: string | null): RegExp {
   if (engineId === "godot") return GODOT_RE;
   if (engineId === "forger-acod") return FORGER_RE;
   if (engineId === "ac-loctext") return AC_LOCTEXT_RE;
-  if (engineId === "wolfrpg") return WOLF_RE;
   return RPGMAKER_RE;
 }
 

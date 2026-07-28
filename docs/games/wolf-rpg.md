@@ -11,7 +11,7 @@ tags:
   - engine/candidate
   - engine/wolfrpg
   - game/sannoji
-status: implemented
+status: removed
 feasibility: medium-with-external-tools
 created: 2026-07-28
 related:
@@ -21,6 +21,13 @@ related:
 ---
 
 # Wolf RPG Editor — `.wolf` archives + `.mps`/`.dat` text
+
+> [!warning] The engine was removed
+> A `wolfrpg` engine over a WolfTL dump was built, validated against a real
+> 330-file dump (47 848 → 10 633 units after the rules below) and then **removed at
+> the user's call** before it was ever patched back into a game. Everything here
+> stays as the format record — the crypt analysis, the dump layout and the
+> extraction rules are what a second attempt would start from.
 
 Research notes for adding a **Wolf RPG Editor** (ウディタ) engine. Written after
 inspecting a real shipped game on disk:

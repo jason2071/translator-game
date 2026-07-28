@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Desktop app to translate RPG / visual-novel games by hand or via AI. The shipped
 engines are **RPGMaker MV/MZ** (JSON), **Hendrix** (an MV/MZ localization plugin),
 **Ren'Py** (`.rpy`), **TyranoScript** (`.ks`, UTF-8), **KiriKiri** (`.ks`,
-Shift-JIS/UTF-16), **Godot** (gettext `.po` / translation `.csv`), **Wolf RPG**
-(via a WolfTL dump) and two **AnvilNext** text bridges (Assassin's Creed).
+Shift-JIS/UTF-16), **Godot** (gettext `.po` / translation `.csv`) and two
+**AnvilNext** text bridges (Assassin's Creed).
 Tauri v2 (Rust core) + React/Vite/TypeScript. The Rust side owns all heavy logic (parse, extract, inject,
 DB, AI orchestration, keychain); the frontend is a thin view over Tauri `invoke`
 commands + events.
@@ -67,35 +67,7 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   unrpyc dir + a relative `unrpyc.py` so its sibling `import decompiler` resolves
   (the bundled Ren'Py Python doesn't add an absolute script's dir to `sys.path`). If
   no Python is found or unrpyc fails, import degrades to the original actionable
-  "decompile with unrpyc" error — never a silent empty project. `wolfrpg.rs` is **Wolf RPG Editor** (ウディタ, id `wolfrpg`) and never opens a
-  `.wolf` archive: those are DXArchives whose crypt is per-Wolf-version (the sample
-  game is crypt **331**/v3.31, AES-encrypted header addresses), so decryption stays
-  external (**UberWolfCli**) as does the binary ↔ JSON step (**WolfTL**). The engine
-  works on WolfTL's **dump**: `dump/mps|common|db/*.json` + `dump/Game.json`, whose
-  commands are `{code, intArgs, stringArgs}` — RPGMaker's shape — so the pointer is a
-  **JSON Pointer** and inject is `pointer_mut` re-serialized with WolfTL's own
-  `dump(4)` layout. Which strings count is an **allowlist keyed by command code and
-  arg slot** (`arg_rule`), because Wolf passes *lookup keys* as Japanese prose right
-  beside the text: `250 Database` is `[_, type, row, field]` — all names, translating
-  one breaks the lookup, so it's excluded whole — and `300 CommonEventByName` starts
-  at slot 1 because slot 0 is the event's name. Allowed: 101 (Dialogue) and 102
-  (Choice) unconditionally, 122/210/211/300 through `codes::looks_like_player_text`;
-  everything else (comments, debug, labels, picture/sound, event calls by id) is out.
-  Strings that are only control codes (`[\cself[21]]\cself[7]` — print a variable)
-  are skipped too. A game may keep its whole script in a **multi-language DB table**
-  (`言語_1..n` columns; the sample game's `翻訳テキスト` type holds 10 000 rows × 10
-  languages): `language_columns` detects it, `pick_source_column` reads the best source
-  (English > Japanese > Chinese, by sniffing each column's script) and the unit's
-  pointer targets **column 1** — the language the game shows by default — so a player
-  needs no language switch and the other columns stay untouched. That split source/
-  target is a deliberate exception to round-trip identity. Other DB rows give their
-  `value`; `MainFont` is left alone by extraction. Export patches the dump — the user runs `WolfTL … patch` after
-  (import says so in a warning), and **mod export is refused** (a dump isn't
-  installable). `embed_font` uses Wolf's family-name font lookup: copy Sarabun beside
-  `Game.exe` (Wolf registers font files sitting there) and set `Game.json`'s
-  `MainFont` + non-empty `SubFonts` to `Sarabun` — the game folder is found by
-  fingerprint (`Data/` + `Game.exe`) at the project root or its parent, else the TTF
-  lands beside the dump with a note to copy it. See `docs/games/wolf-rpg.md`.
+  "decompile with unrpyc" error — never a silent empty project.
 - **`project/`** — SQLite persistence (`db.rs`) and project lifecycle (`mod.rs`):
   open/create the sidecar store, backup, and export.
 - **`ai/`** — one `TranslationProvider` trait, providers behind it, plus prompt

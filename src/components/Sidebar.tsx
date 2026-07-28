@@ -46,8 +46,6 @@ export function Sidebar({
   const FONT_ENGINES = [
     "rpgmaker-mvmz",
     "rpgmaker-hendrix",
-    // Wolf: copies the TTF beside Game.exe and sets Game.dat's font name via the dump.
-    "wolfrpg",
   ];
   // Engines whose translation can be packaged as a non-destructive overlay .zip.
   // Ren'Py + Hendrix build additively into the game, so they're export-to-game only.

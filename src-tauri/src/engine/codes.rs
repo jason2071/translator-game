@@ -128,9 +128,9 @@ pub fn plugin_arg_kind(
 }
 
 /// Whether a string value reads as shown text rather than config. Formats that
-/// store text and settings side by side in the same string slot (MZ plugin args,
-/// Wolf RPG command string args) have only shape to go on: a number, a boolean, a
-/// filename, or a serialized struct all arrive as plain strings.
+/// store text and settings side by side in the same string slot (MZ plugin args)
+/// have only shape to go on: a number, a boolean, a filename, or a serialized
+/// struct all arrive as plain strings.
 pub fn looks_like_player_text(value: &str) -> bool {
     let v = value.trim();
     if v.is_empty() {
@@ -150,7 +150,7 @@ pub fn looks_like_player_text(value: &str) -> bool {
     if !v.is_ascii() {
         return true;
     }
-    // Bare ASCII identifier / path / filename / variable key (`cself:5`,
+    // Bare ASCII identifier / path / filename / variable key (`self:5`,
     // `img/pictures/cg01.png`): no spaces and nothing but the characters those
     // use. Real English text has spaces or sentence punctuation.
     if !v.contains(' ')

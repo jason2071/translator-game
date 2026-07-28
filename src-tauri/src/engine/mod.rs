@@ -25,7 +25,6 @@ pub mod rpa;
 pub mod renpy_tl;
 pub mod tyrano;
 pub mod unrpyc;
-pub mod wolfrpg;
 
 use crate::model::TransUnit;
 use std::path::Path;
@@ -200,10 +199,6 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // Godot needs its own `project.godot` fingerprint, so it never overlaps
         // the others; order is immaterial.
         Box::new(godot::GodotEngine),
-        // Wolf RPG via a WolfTL dump: a folder of JSON, fingerprinted by WolfTL's
-        // own `dump/{mps,common,db}` layout, so it can't be confused with a game
-        // (the `.wolf` archives themselves are never opened — see wolfrpg.rs).
-        Box::new(wolfrpg::WolfRpgEngine),
         // Forger `.acod` string tables (Assassin's Creed). Unique extension +
         // UTF-16LE BOM fingerprint, so it never overlaps the others; order is
         // immaterial. Kept last as the most specialized/niche target.
@@ -219,14 +214,6 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
 /// Return the first engine that recognizes `root`, if any.
 pub fn detect(root: &Path) -> Option<Box<dyn GameEngine>> {
     engines().into_iter().find(|e| e.detect(root))
-}
-
-/// When [`detect`] finds nothing, a folder may still be a format we *do* support
-/// once an external tool has been run on it (a Wolf RPG game needs a WolfTL dump).
-/// Returns the steps to get there, so import can say something better than "no
-/// supported game engine". `None` when the folder is simply unsupported.
-pub fn detect_hint(root: &Path) -> Option<String> {
-    wolfrpg::game_folder_hint(root)
 }
 
 /// Rank a locale label by the app's source-language preference **English > Japanese >

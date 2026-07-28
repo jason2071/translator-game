@@ -53,7 +53,7 @@ and API keys stored in the OS keychain (never on disk).
 ```
 src-tauri/src/
   engine/        GameEngine trait + registry; mvmz / renpy / tyrano / kirikiri /
-                 godot / wolfrpg (WolfTL dump), codes.rs,
+                 godot, codes.rs,
                  protect.rs, encoding.rs (KiriKiri Shift-JIS/UTF-16)
   project/       SQLite store (db.rs), open/create + backup/export (mod.rs)
   ai/            TranslationProvider trait; openai/anthropic/gemini; prompt + retry

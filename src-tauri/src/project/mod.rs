@@ -540,15 +540,6 @@ pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
                  additive overlay you can copy or zip.",
                 eng.name()
             )),
-            // Wolf RPG: the project is a WolfTL *dump*, not the game, so a zip of it
-            // would be a folder of JSON no player can install — the game files only
-            // come out of a `WolfTL … patch` run afterwards.
-            "wolfrpg" => Err(anyhow!(
-                "Mod export isn't available for the {} engine — this project is a WolfTL dump, \
-                 not the game. Use “Export → game” to write the translated dump, then run \
-                 `WolfTL <Data> <this folder> patch` to rebuild the game's data files.",
-                eng.name()
-            )),
             // Everything else (RPGMaker MV/MZ, Godot, TyranoScript, KiriKiri, Forger,
             // AC loctext) is a single-locale text/JSON engine whose `inject` writes a
             // mirrored tree — build the mod by injecting pristine originals into staging.
