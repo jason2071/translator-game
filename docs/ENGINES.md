@@ -90,9 +90,11 @@ and are much riskier.
   choices (102) always; other commands' strings only when they read as prose, so
   file names and variable keys stay out; comments (103) / debug (106) never.
   `mask()` covers Wolf's `\c[1]`/`\v[3]`/`\cself[5]` codes (`<…>` is prose in Wolf).
-  External steps: **UberWolfCli** to decrypt/unpack, **WolfTL create** before and
-  **WolfTL patch** after. `src-tauri/src/engine/wolfrpg.rs`; deep-dive in
-  `docs/games/wolf-rpg.md`.
+  `embed_font` copies Sarabun into the game folder (Wolf registers font files beside
+  `Game.exe`) and sets `Game.json`'s `MainFont` + used `SubFonts` to the family name
+  `Sarabun`; mod export is refused (a dump isn't installable). External steps:
+  **UberWolfCli** to decrypt/unpack, **WolfTL create** before and **WolfTL patch**
+  after. `src-tauri/src/engine/wolfrpg.rs`; deep-dive in `docs/games/wolf-rpg.md`.
 
 ### Text-based candidates (fit the model — recommended path)
 - **Godot** — trivial when the game ships `.po`/`.csv` gettext catalogs; scene

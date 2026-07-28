@@ -201,10 +201,33 @@ standing maintenance burden (each new Wolf release changes the crypt).
 - **Tests** — `tests/wolfrpg_roundtrip.rs` over a committed dump fixture
   (`tests/fixtures/wolftl-dump/`) plus unit tests in the module.
 
-The font path is **not** wired up yet: `Game.json`'s `MainFont` names the TTF the
-game loads from its root, so an `embed_font` impl would drop Sarabun beside it and
-repoint that field — but the font file lives outside the dump, so it needs the game
-root as well. Deferred until the text layer is validated in-game.
+### The font hook
+
+Wolf resolves fonts **by family name**, not by path. Per the official help, a game
+may ship `.ttf`/`.ttc`/`.otf` files **beside `Game.exe`** (or inside an unencrypted
+`Data/`); Wolf registers them at startup and `Game.dat` stores the *name* to use,
+falling back to ＭＳ ゴシック when that name isn't available. Our sample game does
+exactly this — `GenEiLateMin_v2.ttc` sits loose at the root.
+
+So `embed_font` is two halves:
+
+1. copy `Sarabun-Regular.ttf` into the game folder, and
+2. set `MainFont` — and every **non-empty** `SubFonts` slot, since an empty slot is
+   an unused alternate — to `Sarabun` in the dump's `Game.json`.
+
+Half 2 only reaches the game through `WolfTL … patch`, exactly like the
+translation; the note says so. Both halves are idempotent (constant font name, and
+re-writing the same TTF), so a re-export reproduces the same output.
+
+Finding the game is the wrinkle: the dump normally lives outside it and nothing in
+the dump records where it came from. If the project root (or its parent) looks like
+a Wolf game — a `Data/` folder next to `Game.exe`/`GamePro.exe` — the TTF goes
+straight there; otherwise it is written beside the dump and the note asks the user
+to copy that one file. Running WolfTL with the game folder as its output
+(`WolfTL <game>\Data <game> create`) makes the automatic path the normal one.
+
+Mod export is refused for this engine with an actionable message: the project is a
+dump, so a zip of it would be a folder of JSON no player can install.
 
 ## Fonts
 
@@ -223,8 +246,11 @@ at — closer to the RPGMaker path than the Unity ones. Needs confirming against
 - [ ] Not yet run against a real dump: that needs UberWolfCli + WolfTL on the
       user's machine (running third-party binaries is a user decision), so the
       extraction rules are still only fixture-verified.
-- [ ] Font hook (`embed_font` → swap the root TTF + repoint `Game.json`'s
-      `MainFont`) — deferred, needs the game root alongside the dump.
+- [x] Font hook shipped — TTF into the game folder (when the dump sits in one) +
+      `MainFont`/`SubFonts` → `Sarabun` in `Game.json`.
+- [ ] Font not yet confirmed in-game: Wolf's family-name lookup is documented but
+      untested here, and a `.ttc`-shipping game may need its own family removed
+      first if Wolf prefers it.
 - [ ] Is this specific game **WolfPro**-protected on top of v3.31? (Marker says
       plain v3.31 crypt; Pro detection needs `Game.dat`, which is inside the
       archive.)

@@ -144,8 +144,13 @@ Three Rust subsystems, each a module under `src-tauri/src/`, wired together by t
   `dump(4)` layout. 101/102 are text by definition; other commands' strings pass
   through `codes::looks_like_player_text` (shared with the MZ plugin-arg tier);
   103/106 are dev-facing and skipped; DB rows give their `value`; `MainFont` is left
-  alone. Export patches the dump — the user runs `WolfTL … patch` after (import says
-  so in a warning). See `docs/games/wolf-rpg.md`.
+  alone by extraction. Export patches the dump — the user runs `WolfTL … patch` after
+  (import says so in a warning), and **mod export is refused** (a dump isn't
+  installable). `embed_font` uses Wolf's family-name font lookup: copy Sarabun beside
+  `Game.exe` (Wolf registers font files sitting there) and set `Game.json`'s
+  `MainFont` + non-empty `SubFonts` to `Sarabun` — the game folder is found by
+  fingerprint (`Data/` + `Game.exe`) at the project root or its parent, else the TTF
+  lands beside the dump with a note to copy it. See `docs/games/wolf-rpg.md`.
 - **`project/`** — SQLite persistence (`db.rs`) and project lifecycle (`mod.rs`):
   open/create the sidecar store, backup, and export.
 - **`ai/`** — one `TranslationProvider` trait, providers behind it, plus prompt

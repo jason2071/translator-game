@@ -126,6 +126,129 @@ impl GameEngine for WolfRpgEngine {
         }
         Ok(())
     }
+
+    /// Drop the bundled Thai font into the game and point Wolf's font settings at
+    /// it. Wolf resolves fonts **by family name**, not by path: it registers every
+    /// `.ttf`/`.ttc`/`.otf` sitting beside `Game.exe` (or in an unencrypted `Data/`)
+    /// at startup, and `Game.dat` stores the *name* to use — falling back to MS
+    /// Gothic when that name isn't available. So the hook is two halves:
+    ///
+    ///  1. copy `Sarabun-Regular.ttf` next to `Game.exe`, and
+    ///  2. set `MainFont` (and every non-empty `SubFonts` entry) in the dump's
+    ///     `Game.json` to `Sarabun`.
+    ///
+    /// Half 2 only reaches the game once the user runs `WolfTL … patch`, the same
+    /// as the translation itself — the note says so.
+    ///
+    /// The dump usually sits *outside* the game, and then this engine has no way to
+    /// know where the game is: the font is written beside the dump instead and the
+    /// note asks the user to copy that one file. Running WolfTL with the game folder
+    /// as its output (`WolfTL <game>\Data <game> create`) makes the project root the
+    /// game root and the copy automatic.
+    fn embed_font(
+        &self,
+        root: &Path,
+        data_dir: &Path,
+        out_dir: &Path,
+        font: &[u8],
+        backup_dir: Option<&Path>,
+    ) -> Result<Option<String>> {
+        const FONT_FILE: &str = "Sarabun-Regular.ttf";
+        /// The TTF's family name — what Wolf stores in `Game.dat` and looks up.
+        const FONT_NAME: &str = "Sarabun";
+
+        // Only an in-place export can put a file outside the dump (a mod export
+        // stages a mirror of the dump, which the game never reads).
+        let in_place = out_dir == data_dir;
+        let game_root = in_place.then(|| wolf_game_root(root)).flatten();
+        let font_dir = game_root.clone().unwrap_or_else(|| root.to_path_buf());
+        let font_path = font_dir.join(FONT_FILE);
+        let font_is_new = !font_path.exists();
+        std::fs::write(&font_path, font).with_context(|| format!("writing {FONT_FILE}"))?;
+        if in_place && font_is_new {
+            crate::engine::font_restore::mark_added(root, &font_path);
+        }
+
+        // Repoint Game.dat's font names, via the dump. Prefer the copy `inject`
+        // may have just written under out_dir over the one in the dump.
+        let game_in = data_dir.join("Game.json");
+        let game_out = out_dir.join("Game.json");
+        if !game_in.is_file() && !game_out.is_file() {
+            return Ok(Some(format!(
+                "Copied {FONT_FILE} to {}. This dump has no Game.json (WolfTL was run with \
+                 `no_gd`), so the font name could not be set — set the game's font to \
+                 “{FONT_NAME}” yourself, or re-dump without `no_gd`.",
+                font_dir.display()
+            )));
+        }
+        let read_from = if game_out.is_file() { &game_out } else { &game_in };
+        let text = std::fs::read_to_string(read_from).context("reading Game.json")?;
+        let mut value: Value = serde_json::from_str(&text).context("parsing Game.json")?;
+
+        if let Some(bdir) = backup_dir {
+            let dst = bdir.join("Game.json");
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let _ = std::fs::copy(read_from, &dst);
+        }
+        if in_place {
+            crate::engine::font_restore::snapshot_unless_sourced(root, data_dir, &game_in);
+        }
+
+        let mut swapped = Vec::new();
+        if let Some(main) = value.get_mut("MainFont") {
+            if main.as_str() != Some(FONT_NAME) {
+                swapped.push("MainFont".to_string());
+            }
+            *main = Value::String(FONT_NAME.to_string());
+        }
+        // Sub-fonts are per-message alternates; an empty slot is unused, so leave it
+        // empty rather than inventing a font the game never asked for.
+        if let Some(subs) = value.get_mut("SubFonts").and_then(Value::as_array_mut) {
+            for (i, sub) in subs.iter_mut().enumerate() {
+                if sub.as_str().is_some_and(|s| !s.is_empty() && s != FONT_NAME) {
+                    swapped.push(format!("SubFonts[{i}]"));
+                }
+                if sub.as_str().is_some_and(|s| !s.is_empty()) {
+                    *sub = Value::String(FONT_NAME.to_string());
+                }
+            }
+        }
+        std::fs::write(&game_out, to_wolftl_json(&value)?).context("writing Game.json")?;
+
+        let where_note = match &game_root {
+            Some(g) => format!("into the game folder ({})", g.display()),
+            None => format!(
+                "next to the dump ({}) — copy it beside the game's Game.exe",
+                font_dir.display()
+            ),
+        };
+        let fields = if swapped.is_empty() {
+            "font names already pointed at it".to_string()
+        } else {
+            format!("pointed {} at it", swapped.join(" + "))
+        };
+        Ok(Some(format!(
+            "Embedded {FONT_FILE} {where_note}, {fields} in Game.json. \
+             Run `WolfTL <Data> <this folder> patch` to write the new font name into Game.dat."
+        )))
+    }
+}
+
+/// The Wolf game folder, when the dump happens to sit inside one: `Game.exe`
+/// (Wolf's fixed runtime name — `GamePro.exe` for the Pro editor) beside a `Data`
+/// folder. `root` itself, else its parent, so both `<game>/dump` and a dump one
+/// level down are recognized. `None` when the dump lives elsewhere entirely.
+fn wolf_game_root(root: &Path) -> Option<PathBuf> {
+    let mut cands = vec![root.to_path_buf()];
+    if let Some(parent) = root.parent() {
+        cands.push(parent.to_path_buf());
+    }
+    cands.into_iter().find(|dir| {
+        dir.join("Data").is_dir()
+            && (dir.join("Game.exe").is_file() || dir.join("GamePro.exe").is_file())
+    })
 }
 
 /// The `dump/` folder of a WolfTL run: either `<root>/dump` or `<root>` itself
@@ -385,6 +508,66 @@ mod tests {
         let text = std::fs::read_to_string(out.path().join("mps/Map001.json")).unwrap();
         assert!(text.contains("\n    \"events\""), "4-space indent: {text}");
         assert!(text.contains("朝だ。"), "UTF-8 not escaped");
+    }
+
+    #[test]
+    fn embed_font_into_a_dump_that_sits_in_the_game_folder() {
+        // `WolfTL <game>\Data <game> create` puts the dump in the game folder, so the
+        // font can be dropped where Wolf actually looks for it: beside Game.exe.
+        let tmp = dump_fixture();
+        std::fs::create_dir_all(tmp.path().join("Data")).unwrap();
+        std::fs::write(tmp.path().join("Game.exe"), b"MZ").unwrap();
+        std::fs::write(tmp.path().join("Data/BasicData.wolf"), b"DX").unwrap();
+
+        let dump = tmp.path().join("dump");
+        let note = WolfRpgEngine
+            .embed_font(tmp.path(), &dump, &dump, super::super::TARGET_FONT, None)
+            .unwrap()
+            .expect("a note");
+        assert!(tmp.path().join("Sarabun-Regular.ttf").is_file(), "font beside Game.exe");
+        assert!(note.contains("game folder"), "{note}");
+        assert!(note.contains("patch"), "tells the user WolfTL patch is still needed: {note}");
+
+        let game: Value =
+            serde_json::from_str(&std::fs::read_to_string(dump.join("Game.json")).unwrap())
+                .unwrap();
+        assert_eq!(game.pointer("/MainFont").unwrap(), "Sarabun");
+        // Empty sub-font slots are unused — they stay empty.
+        assert_eq!(game.pointer("/SubFonts/0").unwrap(), "");
+        // The rest of Game.json is untouched.
+        assert_eq!(game.pointer("/Title").unwrap(), "山王寺家の人々");
+
+        // Idempotent: a second embed changes nothing and says so.
+        let again = WolfRpgEngine
+            .embed_font(tmp.path(), &dump, &dump, super::super::TARGET_FONT, None)
+            .unwrap()
+            .unwrap();
+        assert!(again.contains("already"), "{again}");
+    }
+
+    #[test]
+    fn embed_font_outside_the_game_leaves_the_ttf_next_to_the_dump() {
+        let tmp = dump_fixture(); // no Game.exe / Data — a standalone WolfTL output
+        let dump = tmp.path().join("dump");
+        // A used sub-font is repointed too, an empty one is not.
+        let game_json = dump.join("Game.json");
+        let mut game: Value =
+            serde_json::from_str(&std::fs::read_to_string(&game_json).unwrap()).unwrap();
+        game["SubFonts"] = serde_json::json!(["ＭＳ ゴシック", ""]);
+        std::fs::write(&game_json, to_wolftl_json(&game).unwrap()).unwrap();
+
+        let note = WolfRpgEngine
+            .embed_font(tmp.path(), &dump, &dump, super::super::TARGET_FONT, None)
+            .unwrap()
+            .expect("a note");
+        assert!(tmp.path().join("Sarabun-Regular.ttf").is_file(), "font beside the dump");
+        assert!(note.contains("Game.exe"), "asks the user to copy it: {note}");
+
+        let game: Value =
+            serde_json::from_str(&std::fs::read_to_string(&game_json).unwrap()).unwrap();
+        assert_eq!(game.pointer("/MainFont").unwrap(), "Sarabun");
+        assert_eq!(game.pointer("/SubFonts/0").unwrap(), "Sarabun");
+        assert_eq!(game.pointer("/SubFonts/1").unwrap(), "");
     }
 
     #[test]
