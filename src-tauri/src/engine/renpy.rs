@@ -88,17 +88,18 @@ impl GameEngine for RenpyEngine {
         // than the base language, which may be Russian/etc.) and it already carries the
         // game's real translation ids, so export just retags it to the target locale.
         // Falls through to the base scripts when there is no such tree.
+        let mut tl_units = Vec::new();
         if let Some((src_lang, src_dir)) = preferred_tl_source(&dir) {
-            let mut units = Vec::new();
             for path in rpy_files_under(&src_dir) {
                 let rel = rel_path(&dir, &path);
                 let content =
                     std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
-                extract_from_tl(&rel, &src_lang, &content, &mut units);
+                extract_from_tl(&rel, &src_lang, &content, &mut tl_units);
             }
-            if !units.is_empty() {
-                return Ok(units);
-            }
+        }
+        // No base scripts at all: the `tl/` tree is all there is.
+        if rpys.is_empty() && !tl_units.is_empty() {
+            return Ok(tl_units);
         }
         // Still nothing translatable. Fail the import with an actionable message
         // instead of silently producing an empty project (or, worse, importing the
@@ -133,6 +134,14 @@ impl GameEngine for RenpyEngine {
         // Character names — a cross-file pass, since `define c = Character(name_var)`
         // and `name_var = "…"` can live in different files.
         extract_character_names(&files, &mut units);
+        // A shipped `tl/<lang>/` is only the better source when it actually covers the
+        // game. Some games ship a token tree (a handful of UI strings) next to a full
+        // base script — preferring it blindly would drop the entire story — so take
+        // whichever side yields more units, tie going to `tl/` for its better source
+        // language + real translation ids.
+        if !tl_units.is_empty() && tl_units.len() >= units.len() {
+            return Ok(tl_units);
+        }
         Ok(units)
     }
 
@@ -1063,8 +1072,16 @@ fn preferred_tl_source(dir: &Path) -> Option<(String, PathBuf)> {
         .filter_map(|p| {
             let name = p.file_name()?.to_str()?.to_string();
             let rank = super::source_lang_rank(&name)?; // only en/ja/zh
-            if rpy_files_under(&p).is_empty() {
+            let rpys = rpy_files_under(&p);
+            if rpys.is_empty() {
                 return None; // needs loose .rpy to read from
+            }
+            // A tree that is *only* `common.rpy` is the Ren'Py SDK's own UI strings
+            // ("Are you sure you want to quit?", …), not the game's text — a game
+            // whose base language is this one ships it as a matter of course. Never
+            // a source tree.
+            if rpys.iter().all(|f| f.file_name() == Some("common.rpy".as_ref())) {
+                return None;
             }
             Some((rank, name, p))
         })

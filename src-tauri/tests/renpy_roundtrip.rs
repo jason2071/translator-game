@@ -265,6 +265,63 @@ fn packed_game_with_source_rpy_auto_unpacks() {
 }
 
 #[test]
+fn token_tl_tree_does_not_mask_the_base_script() {
+    // A Japanese game ships `tl/japanese/common.rpy` — the Ren'Py SDK's own UI strings
+    // ("Are you sure you want to quit?"), which a game gets for free in its own base
+    // language. Preferring that tree blindly dropped the entire story (7 units instead
+    // of thousands), so the base script must win.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let game = root.join("game");
+    std::fs::create_dir_all(game.join("tl/japanese")).unwrap();
+    std::fs::write(game.join("script_version.txt"), b"8.4.0").unwrap();
+    std::fs::write(
+        game.join("story.rpy"),
+        "label start:\n    m \"朝。\"\n    m \"目覚まし時計の音で、僕は目を覚ました。\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        game.join("tl/japanese/common.rpy"),
+        "translate japanese strings:\n\n    old \"Are you sure you want to quit?\"\n    new \"ゲームを終了しますか？\"\n",
+    )
+    .unwrap();
+
+    let eng = engine::detect(root).unwrap();
+    let units = eng.extract(root, &ExtractOpts::default()).unwrap();
+    let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+    assert!(texts.contains(&"朝。"), "base story extracted: {texts:?}");
+    assert!(texts.contains(&"目覚まし時計の音で、僕は目を覚ました。"));
+    assert!(
+        !texts.contains(&"ゲームを終了しますか？"),
+        "the SDK common.rpy tree must not be the source: {texts:?}"
+    );
+    assert!(units.iter().all(|u| u.file == "story.rpy"), "all from the base script");
+}
+
+#[test]
+fn richer_tl_tree_still_wins_over_a_thin_base_script() {
+    // The other side of the same rule: a game whose `tl/english/` genuinely covers the
+    // story is still the better source (easier language + real translation ids).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let game = root.join("game");
+    std::fs::create_dir_all(game.join("tl/english")).unwrap();
+    std::fs::write(game.join("script_version.txt"), b"8.4.0").unwrap();
+    std::fs::write(game.join("story.rpy"), "label start:\n    m \"Привет.\"\n").unwrap();
+    std::fs::write(
+        game.join("tl/english/story.rpy"),
+        "translate english a1:\n    m \"Hello.\"\n\ntranslate english a2:\n    m \"Goodbye.\"\n",
+    )
+    .unwrap();
+
+    let eng = engine::detect(root).unwrap();
+    let units = eng.extract(root, &ExtractOpts::default()).unwrap();
+    let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+    assert!(texts.contains(&"Hello.") && texts.contains(&"Goodbye."), "{texts:?}");
+    assert!(!texts.contains(&"Привет."), "base script not used: {texts:?}");
+}
+
+#[test]
 fn compiled_only_game_without_bundled_python_reports_actionable_error() {
     // Scripts packed as `.rpyc` inside the `.rpa` (no `.rpy` anywhere) and NO bundled
     // Python under `lib/`. Auto-decompile stages the `.rpyc` out of the archive but
