@@ -160,6 +160,29 @@ pub struct ExportResult {
     pub note: Option<String>,
 }
 
+/// Is the project's **Translate character names** toggle on? Default on.
+fn translate_names_on(conn: &Connection) -> Result<bool> {
+    Ok(db::get_meta(conn, "translate_names")?
+        .map(|v| v != "0")
+        .unwrap_or(true))
+}
+
+/// Drop `Name` units from an export when that toggle is off, so the game keeps
+/// the original character name even if a prior Run (made while the toggle was on)
+/// already translated it. A Run skips those units at selection time
+/// (`lib.rs::translate_units`); this is the export-side half of the same rule.
+/// Ren'Py doesn't use this — `renpy::export_tl` applies the filter itself and its
+/// caller needs the unfiltered list to dedupe `harvest_tl_untranslated`.
+fn drop_names_when_off(conn: &Connection, units: Vec<crate::model::TransUnit>) -> Result<Vec<crate::model::TransUnit>> {
+    if translate_names_on(conn)? {
+        return Ok(units);
+    }
+    Ok(units
+        .into_iter()
+        .filter(|u| u.kind != crate::model::UnitKind::Name)
+        .collect())
+}
+
 /// Back up the game files that are about to change, then patch translations
 /// straight into the game's data directory. When `embed_font` is set, also drop
 /// the bundled Thai font into the game and repoint its fonts at it (RPGMaker
@@ -167,8 +190,7 @@ pub struct ExportResult {
 pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Result<ExportResult> {
     let eng = engine::detect(&project.root)
         .ok_or_else(|| anyhow!("engine no longer detected for this project"))?;
-    let units = db::all_units(&project.conn)?;
-    let applied: Vec<_> = units.iter().filter(|u| u.status.is_applied()).collect();
+    let all_units = db::all_units(&project.conn)?;
 
     // Ren'Py: prefer the native `tl/<lang>/` export. The game's own bundled Ren'Py
     // generates the translation skeleton (identifiers exactly as Ren'Py expects),
@@ -178,16 +200,14 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
     if eng.id() == "renpy" {
         let lang = db::get_meta(&project.conn, "target_lang")?
             .unwrap_or_else(|| "translated".to_string());
-        let translate_names = db::get_meta(&project.conn, "translate_names")?
-            .map(|v| v != "0")
-            .unwrap_or(true);
-        if let Some(tl) = engine::renpy::export_tl(&project.root, &project.data_dir, &units, &lang, translate_names)? {
+        let translate_names = translate_names_on(&project.conn)?;
+        if let Some(tl) = engine::renpy::export_tl(&project.root, &project.data_dir, &all_units, &lang, translate_names)? {
             // The generated skeleton also lists Ren'Py's built-in UI strings (quit /
             // main-menu confirmations, save-load prompts) — from `renpy/common`, which
             // extraction skips, so they had no unit and stayed English. Harvest the
             // still-untranslated ones into the DB now; a subsequent Run translates them
             // and the next export fills them.
-            let harvested = engine::renpy::harvest_tl_untranslated(&tl.dir, &units);
+            let harvested = engine::renpy::harvest_tl_untranslated(&tl.dir, &all_units);
             let added = if harvested.is_empty() {
                 0
             } else {
@@ -204,14 +224,23 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
                     " Found {added} untranslated in-game UI string(s) (menus/prompts) — Run again, then re-export to translate them."
                 ));
             }
+            let applied = all_units
+                .iter()
+                .filter(|u| u.status.is_applied() && (translate_names || u.kind != crate::model::UnitKind::Name))
+                .count();
             return Ok(ExportResult {
                 files_written: tl.files,
-                units_applied: applied.len(),
+                units_applied: applied,
                 backup_dir: None,
                 note: Some(note),
             });
         }
     }
+
+    // Every other engine injects straight from this list (including Ren'Py's
+    // in-place fallback above), so apply the name toggle here.
+    let units = drop_names_when_off(&project.conn, all_units)?;
+    let applied: Vec<_> = units.iter().filter(|u| u.status.is_applied()).collect();
 
     // Unity (CSV localization): additive like Ren'Py — write a new
     // `Localization/<lang>/` locale folder (source locales untouched) that the game
@@ -509,7 +538,9 @@ pub struct ModResult {
 pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
     let eng = engine::detect(&project.root)
         .ok_or_else(|| anyhow!("engine no longer detected for this project"))?;
-    let units = db::all_units(&project.conn)?;
+    // Same name-toggle rule as the in-place export: off ⇒ the mod keeps the
+    // original character names, even ones a prior Run translated.
+    let units = drop_names_when_off(&project.conn, db::all_units(&project.conn)?)?;
     let applied: Vec<_> = units.iter().filter(|u| u.status.is_applied()).collect();
     let lang = db::get_meta(&project.conn, "target_lang")?
         .unwrap_or_else(|| "translated".to_string());
