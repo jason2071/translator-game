@@ -25,6 +25,7 @@ pub mod rpa;
 pub mod renpy_tl;
 pub mod tyrano;
 pub mod unrpyc;
+pub mod xunity;
 
 use crate::model::TransUnit;
 use std::path::Path;
@@ -180,6 +181,12 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // first line) and is registered LAST — every engine with a distinctive
         // extension/marker is tried first, so a stray `.txt` never shadows them.
         Box::new(ac_loctext::AcLocTextEngine),
+        // XUnity.AutoTranslator translation files — the runtime-hook route for games
+        // this app can't open (Unity above all). Content-fingerprinted `.txt` under a
+        // `Translation/` folder, and registered last for the same reason as
+        // ac-loctext: a game we translate natively must never be claimed by the
+        // sidecar it happens to also have installed.
+        Box::new(xunity::XUnityEngine),
     ]
 }
 

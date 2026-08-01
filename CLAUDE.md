@@ -7,8 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Desktop app to translate RPG / visual-novel games by hand or via AI. The shipped
 engines are **RPGMaker MV/MZ** (JSON), **Hendrix** (an MV/MZ localization plugin),
 **Ren'Py** (`.rpy`), **TyranoScript** (`.ks`, UTF-8), **KiriKiri** (`.ks`,
-Shift-JIS/UTF-16), **Godot** (gettext `.po` / translation `.csv`) and two
-**AnvilNext** text bridges (Assassin's Creed).
+Shift-JIS/UTF-16), **Godot** (gettext `.po` / translation `.csv`), two
+**AnvilNext** text bridges (Assassin's Creed) and **XUnity.AutoTranslator**
+translation files (the runtime-hook route for games with no file format we can
+open — Unity above all).
 Tauri v2 (Rust core) + React/Vite/TypeScript. The Rust side owns all heavy logic (parse, extract, inject,
 DB, AI orchestration, keychain); the frontend is a thin view over Tauri `invoke`
 commands + events.
@@ -192,6 +194,21 @@ projects.
   Thai isn't "NO GLYPH"). The source `.rpy` are never touched → no recompile, and
   `<lang>` becomes a selectable in-game language. Falls back to in-place inject
   when no bundled launcher is found.
+- **XUnity is the escape hatch, and it is a text engine.** `engine/xunity.rs` does
+  not touch Unity at all: it reads and writes
+  [XUnity.AutoTranslator](https://github.com/bbepis/XUnity.AutoTranslator)'s own
+  translation files (`BepInEx/Translation/<lang>/Text/**.txt`, also the MelonLoader
+  `UserData/` and ReiPatcher `AutoTranslator/` layouts), one `original=translation`
+  entry per line, split at the **first** `=`. The pointer spans the **value only**,
+  so keys, `//` comments, `#directives` and `r:`/`sr:` regex rules splice through
+  byte-identical; an empty value imports as `Untranslated`, which makes a dumped
+  file a ready-made to-do list. XUnity hooks the game's text components and does
+  the font swap itself, so the two problems that killed the Unity engines (asset
+  repack, TMPro SDF baking) never arise. Detection is content-based and registered
+  **last** — a game we translate natively must not be claimed by the XUnity
+  sidecar it happens to also have installed. `inject` rewrites a newline in a
+  translation as XUnity's `\n` escape: a value is one line, and a real break would
+  split the entry.
 
 ## Adding an engine
 

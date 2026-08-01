@@ -27,6 +27,9 @@ const FORGER_CODE_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|
 // AC Origins aclocexport text: shape-based angle tags + [cue] brackets only
 // (no {…}, no %). Mirrors mask_ac_loctext.
 const AC_LOCTEXT_CODE_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\[[^[\]]+\]|⟦\d+⟧/g;
+// XUnity.AutoTranslator: Unity rich text, \n escapes, {{A}} substitution params.
+// Mirrors mask_xunity.
+const XUNITY_CODE_RE = /<\/?[A-Za-z][^>\n]*>|\{\{[^{}]*\}\}|\\[nrt]|⟦\d+⟧/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_CODE_RE;
@@ -34,6 +37,7 @@ function codeRe(engineId?: string | null): RegExp {
   if (engineId === "godot") return GODOT_CODE_RE;
   if (engineId === "forger-acod") return FORGER_CODE_RE;
   if (engineId === "ac-loctext") return AC_LOCTEXT_CODE_RE;
+  if (engineId === "xunity") return XUNITY_CODE_RE;
   return CODE_RE;
 }
 

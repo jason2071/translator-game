@@ -117,6 +117,10 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         "forger-acod" => mask_forger(input),
         // AC Origins aclocexport text: angle tags + `[…]` audio cues only.
         "ac-loctext" => mask_ac_loctext(input),
+        // XUnity.AutoTranslator files carry whatever markup the hooked game used —
+        // in practice Unity rich text (`<color=#fff>`, `<b>`), XUnity's own `\n`
+        // line-break escape and its `{{A}}` substitution parameters.
+        "xunity" => mask_xunity(input),
         // RPGMaker MV/MZ (and Hendrix, which is MV/MZ underneath): stock `\Word[n]`
         // + `%N` masking plus VisuMZ/Yanfly `<…>` text codes (`<Show Switch: 24>`,
         // `<center>`, font tags) — else a model translates the words inside a tag.
@@ -354,6 +358,41 @@ pub fn mask_ac_loctext(input: &str) -> Masked {
             text.push(OPEN);
             text.push_str(&idx.to_string());
             text.push(CLOSE);
+            i += len;
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap();
+        text.push(ch);
+        i += ch.len_utf8();
+    }
+    Masked { text, tokens }
+}
+
+/// Replace XUnity.AutoTranslator markup with `⟦k⟧` sentinels: Unity rich-text tags
+/// (`<b>`, `<color=#ff0000>`, `<size=32>`, `</color>` — shape-based via
+/// [`vmz_angle_len`], which allows the `=`/`#`/digits those carry), XUnity's `\n`
+/// line-break escape, and `{{A}}` substitution parameters (from `_Substitutions.txt`
+/// — the game text they stand for must come back unchanged or the entry stops
+/// matching). Restores via the shared [`restore`].
+pub fn mask_xunity(input: &str) -> Masked {
+    let mut text = String::with_capacity(input.len());
+    let mut tokens: Vec<String> = Vec::new();
+    let b = input.as_bytes();
+    let mut i = 0;
+    while i < input.len() {
+        let len = match b[i] {
+            b'<' => vmz_angle_len(&input[i..]),
+            // `{{A}}` — a substitution placeholder, never prose.
+            b'{' if input[i..].starts_with("{{") => {
+                input[i..].find("}}").map(|end| end + 2)
+            }
+            // The two-character `\n` escape XUnity writes for a line break (and the
+            // `\r`/`\t` it accepts), not a backslash followed by prose.
+            b'\\' if matches!(b.get(i + 1), Some(b'n' | b'r' | b't')) => Some(2),
+            _ => None,
+        };
+        if let Some(len) = len {
+            push_token(&mut text, &mut tokens, &input[i..i + len]);
             i += len;
             continue;
         }

@@ -32,7 +32,8 @@ and are much riskier.
 | **RAGS** | `.rag` (binary DB) | binary | 🔴 Hard |
 | **Flash** | `.swf` (compiled ActionScript) | binary | 🔴 Hard (legacy/EOL) |
 | **Java** | `.jar` (`.properties` or hardcoded in `.class`) | mixed | 🟡 Medium if `.properties`, else 🔴 |
-| **Unity** | managed `TextAsset`s / Addressables bundles / `.assets` (Naninovel, CSV localization, custom `TextTable`, TMPro) | binary | ⚫ Out of scope — engines for three Unity storage schemes shipped and were **removed** (the font path needed a 400 MB Python sidecar and still shipped broken); use XUnity.AutoTranslator |
+| **Unity** | managed `TextAsset`s / Addressables bundles / `.assets` (Naninovel, CSV localization, custom `TextTable`, TMPro) | binary | ⚫ Out of scope as files — engines for three Unity storage schemes shipped and were **removed** (the font path needed a 400 MB Python sidecar and still shipped broken). Translate it through XUnity.AutoTranslator instead: ✅ its files are supported by the `xunity` engine |
+| **XUnity.AutoTranslator files** | `BepInEx/Translation/<lang>/Text/*.txt` (`original=translation`) | text | ✅ Supported — the runtime-hook route for any game the app can't open natively (Unity above all) |
 | **Unreal Engine** | `.locres` localization table | binary (documented) | 🟡 Medium |
 | **AnvilNext** (AC Origins/Odyssey/Valhalla) | `.forge` archive → Forger `.acod` (UTF-16LE `ID=text`) **or** `aclocexport` text (UTF-8 `Id: [0x…]`) | binary archive / **text once exported** | ✅ Supported: `.acod` + `ac-loctext` (needs external Forger or Delutto+aclocexport) |
 | **WebGL** | build target — usually Unity WebGL or HTML5 | — | see Unity / HTML |

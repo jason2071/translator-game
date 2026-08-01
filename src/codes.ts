@@ -26,6 +26,10 @@ const FORGER_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\{[^{
 // audio brackets only. Unlike Forger, {…} (a whole-line wrap) and % (prose) are
 // NOT codes here. Mirrors mask_ac_loctext.
 const AC_LOCTEXT_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\[[^[\]]+\]/g;
+// XUnity.AutoTranslator: Unity rich text (<b>, <color=#f00>, </size>) by the same
+// letter-after-< rule as RPGMaker, XUnity's \n / \r / \t line-break escapes, and
+// {{A}} substitution parameters. Mirrors mask_xunity.
+const XUNITY_RE = /<\/?[A-Za-z][^>\n]*>|\{\{[^{}]*\}\}|\\[nrt]/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_RE;
@@ -33,6 +37,7 @@ function codeRe(engineId?: string | null): RegExp {
   if (engineId === "godot") return GODOT_RE;
   if (engineId === "forger-acod") return FORGER_RE;
   if (engineId === "ac-loctext") return AC_LOCTEXT_RE;
+  if (engineId === "xunity") return XUNITY_RE;
   return RPGMAKER_RE;
 }
 
