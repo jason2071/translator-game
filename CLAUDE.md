@@ -208,7 +208,12 @@ projects.
   **last** — a game we translate natively must not be claimed by the XUnity
   sidecar it happens to also have installed. `inject` rewrites a newline in a
   translation as XUnity's `\n` escape: a value is one line, and a real break would
-  split the entry.
+  split the entry. XUnity only learns a line once the game renders it, so a fresh
+  install yields a few dozen entries; `scripts/i2_to_xunity.py` (Python + UnityPy,
+  outside the app on purpose — no Unity code in the Rust core) reads a game's **I2
+  Localization** table straight out of `resources.assets` and writes the whole
+  thing as an XUnity file, so the project starts with the full game instead of
+  whatever happened to be on screen.
 
 ## Adding an engine
 
