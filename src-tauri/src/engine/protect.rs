@@ -209,6 +209,87 @@ pub fn normalize_thai_dates(s: &str) -> String {
     abbr.to_string()
 }
 
+/// Thai sentence-final politeness particles, longest first so `ครับผม` is matched
+/// before `ครับ`. `นะ` is deliberately absent: it is not a politeness particle and
+/// dropping only the trailing `คะ` turns `นะคะ` into a natural neutral `นะ`.
+const THAI_PARTICLES: [&str; 8] = ["ครับผม", "ครับ", "ค่ะ", "คะ", "ขา", "จ้ะ", "จ้า", "ฮ่ะ"];
+
+/// Strip Thai sentence-final politeness particles (ครับ / ค่ะ / คะ …) from a
+/// translation. The Run prompt already bans them when the project's **Polite
+/// particles** toggle is off, but a model — a small local one above all — still slips
+/// one onto a stock phrase (`ยินดีต้อนรับสู่ร้านครับ`). Prompting can't guarantee this;
+/// this pass can.
+///
+/// A particle is only removed at a **word boundary**: the run must end the string or
+/// be followed by whitespace or punctuation. So `คะแนน` (score) and `จ้าละหวั่น` keep
+/// their syllables — the particle there is followed by another Thai letter. Whitespace
+/// left behind by a removal is collapsed, and a space before punctuation is dropped.
+/// Thai target only (the caller gates on the language).
+pub fn strip_thai_particles(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < s.len() {
+        let mut matched = None;
+        for p in THAI_PARTICLES {
+            if s[i..].starts_with(p) {
+                let after = i + p.len();
+                // Word boundary: end of string, or a non-Thai-letter next.
+                let boundary = match s[after..].chars().next() {
+                    None => true,
+                    Some(c) => !is_thai_letter(c),
+                };
+                // Must follow something — a line that *is* only a particle keeps it
+                // rather than becoming empty.
+                let has_prefix = !out.trim().is_empty();
+                if boundary && has_prefix {
+                    matched = Some(p.len());
+                }
+                break; // longest-first: the first prefix hit is the only candidate
+            }
+        }
+        if let Some(len) = matched {
+            i += len;
+            continue;
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+        let _ = b;
+    }
+    tidy_spaces(&out)
+}
+
+/// A Thai letter (consonants, vowels, tone marks) — the script block minus digits
+/// and the currency/repetition symbols, which do end a word.
+fn is_thai_letter(c: char) -> bool {
+    matches!(c, '\u{0e01}'..='\u{0e4e}')
+}
+
+/// Collapse the double spaces and the ` ,` / ` .` a removal leaves behind, and trim.
+fn tidy_spaces(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for c in s.chars() {
+        if c == ' ' || c == '\u{00a0}' {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+            continue;
+        }
+        // Drop a space that ended up in front of closing punctuation.
+        if prev_space && matches!(c, ',' | '.' | '!' | '?' | ':' | ';' | ')' | ']' | '}' | '"' | '\'' | '…') {
+            out.pop();
+        }
+        out.push(c);
+        prev_space = false;
+    }
+    // Keep the line's own leading/trailing layout out of it: only trim spaces we
+    // may have introduced at the very end.
+    out.trim_end_matches(' ').to_string()
+}
+
 /// Replace Godot placeholders with `⟦k⟧` sentinels: BBCode `[tag]`, `String`
 /// format braces `{0}`/`{name}`, printf `%s`/`%d`/`%.2f`/`%1$s`, and backslash
 /// escapes (`\n`, `\t`, `\"`). Restores via the shared [`restore`].
@@ -1027,6 +1108,43 @@ mod tests {
         assert_eq!(normalize_cjk_brackets("【注意】〔a〕〈b〉《c》（d）"), "(注意)(a)(b)(c)(d)");
         // Thai/ASCII text and existing parens are untouched.
         assert_eq!(normalize_cjk_brackets("สวัสดี (ok) [x]"), "สวัสดี (ok) [x]");
+    }
+
+    /// The prompt bans ครับ/ค่ะ when Polite particles is off, but a small local model
+    /// still slips one onto a stock phrase (measured: 1 line in 6). This pass is the
+    /// guarantee the prompt can't give.
+    #[test]
+    fn strip_thai_particles_removes_sentence_final_politeness() {
+        // The real leak from the probe run.
+        assert_eq!(
+            strip_thai_particles("ยินดีต้อนรับสู่ร้านครับ รับอะไรดี"),
+            "ยินดีต้อนรับสู่ร้าน รับอะไรดี"
+        );
+        // Every listed particle, at end of string and before punctuation.
+        assert_eq!(strip_thai_particles("ขอบคุณครับ"), "ขอบคุณ");
+        assert_eq!(strip_thai_particles("ขอบคุณค่ะ"), "ขอบคุณ");
+        assert_eq!(strip_thai_particles("สบายดีไหมคะ?"), "สบายดีไหม?");
+        assert_eq!(strip_thai_particles("ขอบคุณครับผม"), "ขอบคุณ");
+        // `นะคะ` loses only the particle and stays a natural neutral `นะ`.
+        assert_eq!(strip_thai_particles("รอสักครู่นะคะ"), "รอสักครู่นะ");
+        assert_eq!(strip_thai_particles("รอสักครู่นะครับ"), "รอสักครู่นะ");
+        // Multiple in one line.
+        assert_eq!(
+            strip_thai_particles("อรุณสวัสดิ์ค่ะ นอนหลับสบายดีไหมคะ"),
+            "อรุณสวัสดิ์ นอนหลับสบายดีไหม"
+        );
+
+        // A syllable that only *looks* like a particle keeps its word: the next
+        // character is a Thai letter, so there's no word boundary.
+        assert_eq!(strip_thai_particles("คะแนนสูงสุด"), "คะแนนสูงสุด");
+        assert_eq!(strip_thai_particles("ได้คะแนน 100"), "ได้คะแนน 100");
+        assert_eq!(strip_thai_particles("วุ่นวายจ้าละหวั่น"), "วุ่นวายจ้าละหวั่น");
+
+        // Text with no particle is untouched, and other scripts pass through.
+        assert_eq!(strip_thai_particles("เมืองเงียบสงบ"), "เมืองเงียบสงบ");
+        assert_eq!(strip_thai_particles("Hello there"), "Hello there");
+        // A line that is *only* a particle is left alone rather than emptied.
+        assert_eq!(strip_thai_particles("ครับ"), "ครับ");
     }
 
     #[test]

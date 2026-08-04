@@ -1287,7 +1287,15 @@ async fn translate_units(
                             // Thai date labels overflow the game's short-token boxes, so
                             // shorten a standalone month/day name to its usual abbreviation.
                             if is_thai_lang(&target_lang) {
-                                protect::normalize_thai_dates(&t)
+                                let t = protect::normalize_thai_dates(&t);
+                                // The prompt bans ครับ/ค่ะ when the toggle is off, but a
+                                // model still slips one onto a stock phrase; strip them so
+                                // the setting actually holds.
+                                if polite_particles {
+                                    t
+                                } else {
+                                    protect::strip_thai_particles(&t)
+                                }
                             } else {
                                 t
                             }
