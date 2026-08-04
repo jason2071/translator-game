@@ -76,6 +76,31 @@ fn names_are_not_exported_when_the_toggle_is_off() {
     );
 }
 
+/// A brand-new project keeps the original names: the toggle defaults **off**, so a
+/// project that has never touched it must not export a translated `Name` unit.
+#[test]
+fn a_fresh_project_defaults_to_keeping_the_original_names() {
+    let (_tmp, root) = temp_game();
+    let (mut proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+    assert!(
+        !proj.info(false).unwrap().translate_names,
+        "no meta set ⇒ the toggle reads as off"
+    );
+
+    for u in &db::all_units(&proj.conn).unwrap() {
+        let tr = format!("\u{e41}\u{e1b}\u{e25}-{}", u.source);
+        db::update_unit(&proj.conn, u.id, Some(&tr), "Translated").unwrap();
+    }
+    project::export(&mut proj, true, false).unwrap();
+
+    let actors = read(&root.join("data/Actors.json"));
+    assert!(actors.contains("\"name\":\"Hero\""), "original name kept: {actors}");
+    assert!(
+        actors.contains("\u{e41}\u{e1b}\u{e25}-A young warrior from the village."),
+        "other text still translated: {actors}"
+    );
+}
+
 /// A mod export (staging mirror + zip) follows the same rule.
 #[test]
 fn mod_export_also_skips_names_when_the_toggle_is_off() {

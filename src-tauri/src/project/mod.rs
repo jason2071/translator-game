@@ -36,7 +36,7 @@ pub struct ProjectInfo {
     /// Per-project setting-era preset (e.g. "ancient", "modern") that seeds a
     /// register directive into the prompt. Empty = unset. See `ai::prompt::era_directive`.
     pub era: String,
-    /// Whether character-name units are translated. Default true; when false, Run
+    /// Whether character-name units are translated. **Default false**; when off, Run
     /// skips `Name` units and export keeps the original name.
     pub translate_names: bool,
     /// Whether Thai sentence-final politeness particles (ครับ / ค่ะ / คะ) are used.
@@ -142,10 +142,10 @@ impl Project {
                 .unwrap_or_else(|| "Thai".into()),
             game_context: db::get_meta(&self.conn, "game_context")?.unwrap_or_default(),
             era: db::get_meta(&self.conn, "era")?.unwrap_or_default(),
-            // Default on: absent meta (older projects) means translate names.
+            // Default OFF: absent meta means keep the original names.
             translate_names: db::get_meta(&self.conn, "translate_names")?
-                .map(|v| v != "0")
-                .unwrap_or(true),
+                .map(|v| v == "1")
+                .unwrap_or(false),
             // Default OFF: absent meta means no ครับ/ค่ะ.
             polite_particles: db::get_meta(&self.conn, "polite_particles")?
                 .map(|v| v == "1")
@@ -173,11 +173,11 @@ pub struct ExportResult {
     pub warning: Option<String>,
 }
 
-/// Is the project's **Translate character names** toggle on? Default on.
+/// Is the project's **Translate character names** toggle on? Default **off**.
 fn translate_names_on(conn: &Connection) -> Result<bool> {
     Ok(db::get_meta(conn, "translate_names")?
-        .map(|v| v != "0")
-        .unwrap_or(true))
+        .map(|v| v == "1")
+        .unwrap_or(false))
 }
 
 /// Drop `Name` units from an export when that toggle is off, so the game keeps

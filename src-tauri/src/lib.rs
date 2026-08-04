@@ -159,7 +159,7 @@ fn set_era(era: String, state: tauri::State<AppState>) -> Result<(), String> {
 
 /// Toggle whether character-name units are translated. When off, Run skips `Name`
 /// units and export keeps the original name (see `translate_units` / `export_tl`).
-/// Persisted per-project in the sidecar DB; default on.
+/// Persisted per-project in the sidecar DB; **default off**.
 #[tauri::command]
 fn set_translate_names(on: bool, state: tauri::State<AppState>) -> Result<(), String> {
     with_project(&state, |p| {
@@ -896,11 +896,13 @@ async fn translate_units(
         let overwrite = scope.overwrite.unwrap_or(false);
         let engine_id = proj.engine_id.clone();
         // When name translation is off, Name units are left for the game's original.
+        // Default OFF: a transliterated character name reads worse than the original
+        // in most games, and it desyncs a name from its voice/UI art.
         let translate_names = project::db::get_meta(&proj.conn, "translate_names")
             .ok()
             .flatten()
-            .map(|v| v != "0")
-            .unwrap_or(true);
+            .map(|v| v == "1")
+            .unwrap_or(false);
 
         let candidates = if let Some(ids) = &scope.ids {
             project::db::units_by_ids(&proj.conn, ids).map_err(|e| e.to_string())?
