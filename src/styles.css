@@ -1628,9 +1628,15 @@ code {
   max-height: 340px;
   overflow: auto;
 }
+/* Each row is its own grid, so the columns only line up if they can't be pushed
+   around by their content. A grid item defaults to min-width:auto — a plain `1fr`
+   therefore refuses to shrink below the term's own width, and a long term shoved
+   the translation box to the right. Rows then looked like their translation
+   started with a stray space. `minmax(0, 1fr)` lets the column shrink, and the
+   fixed last column keeps the ✓/⚠ marker from moving things too. */
 .suggest-row {
   display: grid;
-  grid-template-columns: auto 1fr 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) 3.4rem;
   align-items: center;
   gap: 0.6rem;
   padding: 0.3rem;
@@ -1638,9 +1644,13 @@ code {
 }
 .cand-term {
   font-weight: 600;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.cand-tr {
+  min-width: 0;
 }
 .suggest-row.filled {
   background: color-mix(in srgb, var(--ok) 12%, transparent);
