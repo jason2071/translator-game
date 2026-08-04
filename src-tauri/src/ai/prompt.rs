@@ -293,15 +293,48 @@ pub fn norm_gender(g: &str) -> &'static str {
     }
 }
 
-/// A system directive telling the model to match Thai gendered sentence-final
-/// particles (ครับ / ค่ะ·คะ) and first-person pronouns (ผม / ฉัน·ดิฉัน) to the `ctx`
-/// speaker's gender, using the project's known speaker→gender map. Thai-only — this
-/// is Thai's specific failure mode (a model guesses the particle and often mis-genders
-/// it); returns `None` for other targets or an empty/all-neutral map. `chars` is
-/// `(name, gender)`.
-pub fn gender_directive(chars: &[(String, String)], target_lang: &str) -> Option<String> {
+/// A system directive about Thai gendered speech, driven by the project's
+/// speaker→gender map. Thai-only (this is Thai's specific failure mode: a model
+/// guesses the particle and often mis-genders it); `None` for other targets.
+/// `chars` is `(name, gender)`.
+///
+/// `particles` is the project's **Polite particles** toggle:
+/// - **on** — match the sentence-final particle (ครับ / ค่ะ·คะ) *and* the
+///   first-person pronoun (ผม / ฉัน·ดิฉัน) to the speaker.
+/// - **off** — ban the final particles outright and keep only the pronouns. The
+///   ban has to be stated, not merely left unsaid: with no directive a model
+///   sprinkles ครับ/ค่ะ on its own, which is the whole complaint.
+pub fn gender_directive(
+    chars: &[(String, String)],
+    target_lang: &str,
+    particles: bool,
+) -> Option<String> {
     if !is_thai(target_lang) {
         return None;
+    }
+    if !particles {
+        // Worth sending even with no gendered speaker at all — the ban stands on
+        // its own, and the pronoun map is a bonus when the cast is known.
+        let listed: Vec<String> = chars
+            .iter()
+            .filter(|(n, g)| !n.trim().is_empty() && norm_gender(g) != "neutral")
+            .map(|(n, g)| format!("{}={}", n.trim(), norm_gender(g)))
+            .collect();
+        let mut s = String::from(
+            "Do NOT use Thai sentence-final politeness particles anywhere in the translation: \
+             no ครับ, ค่ะ, คะ, นะคะ, นะครับ, ครับผม, จ้ะ, จ้า, ฮะ, ฮ่ะ. End sentences plainly \
+             instead — the register comes from word choice, not from a trailing particle. This \
+             holds for every speaker, however polite or formal the line is.",
+        );
+        if !listed.is_empty() {
+            s.push_str(
+                " First-person pronouns are still gendered by the SPEAKER (read each item's \
+                 `ctx`): male → ผม, female → ฉัน / ดิฉัน. Speaker genders: ",
+            );
+            s.push_str(&listed.join(", "));
+            s.push('.');
+        }
+        return Some(s);
     }
     let listed: Vec<String> = chars
         .iter()
@@ -867,6 +900,33 @@ mod tests {
         assert!(era_directive("nonsense", "Thai").is_none());
     }
 
+    /// Polite particles off: the ban must be stated outright. Leaving the directive
+    /// out entirely doesn't work — a model then ends most lines with ครับ/ค่ะ by
+    /// itself, which reads as a dub rather than a translation.
+    #[test]
+    fn gender_directive_bans_particles_when_the_toggle_is_off() {
+        let chars = vec![
+            ("Mei".to_string(), "female".to_string()),
+            ("Hiroshi".to_string(), "male".to_string()),
+        ];
+        let d = gender_directive(&chars, "Thai", false).expect("the ban is always worth sending");
+        assert!(d.contains("Do NOT use"), "{d}");
+        for p in ["ครับ", "ค่ะ", "คะ", "นะคะ", "จ้ะ"] {
+            assert!(d.contains(p), "the banned particle {p} must be named: {d}");
+        }
+        // Pronouns are a separate axis and stay gendered.
+        assert!(d.contains("ผม") && d.contains("ฉัน"), "{d}");
+        assert!(d.contains("Mei=female") && d.contains("Hiroshi=male"), "{d}");
+
+        // With no gendered speaker the ban still stands (nothing to list, that's all).
+        let bare = gender_directive(&[], "Thai", false).unwrap();
+        assert!(bare.contains("Do NOT use"));
+        assert!(!bare.contains("Speaker genders"), "nothing to list: {bare}");
+
+        // Still Thai-only.
+        assert!(gender_directive(&chars, "English", false).is_none());
+    }
+
     #[test]
     fn gender_directive_lists_speakers_and_rules_for_thai() {
         let chars = vec![
@@ -874,16 +934,16 @@ mod tests {
             ("Hiroshi".to_string(), "male".to_string()),
             ("Narrator".to_string(), "neutral".to_string()),
         ];
-        let d = gender_directive(&chars, "Thai").unwrap();
+        let d = gender_directive(&chars, "Thai", true).unwrap();
         assert!(d.contains("ครับ") && d.contains("ค่ะ"));
         assert!(d.contains("ผม") && d.contains("ฉัน"));
         assert!(d.contains("Mei=female") && d.contains("Hiroshi=male") && d.contains("Narrator=neutral"));
 
         // Non-Thai target → gendered particles don't apply, nothing added.
-        assert!(gender_directive(&chars, "English").is_none());
+        assert!(gender_directive(&chars, "English", true).is_none());
         // All-neutral (or empty) map → nothing worth sending.
-        assert!(gender_directive(&[("N".into(), "neutral".into())], "Thai").is_none());
-        assert!(gender_directive(&[], "Thai").is_none());
+        assert!(gender_directive(&[("N".into(), "neutral".into())], "Thai", true).is_none());
+        assert!(gender_directive(&[], "Thai", true).is_none());
     }
 
     #[test]

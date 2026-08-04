@@ -63,6 +63,7 @@ export interface ProjectInfo {
   gameContext: string;
   era: string;
   translateNames: boolean;
+  politeParticles: boolean;
   stats: Stats;
   freshlyExtracted: boolean;
 }
@@ -239,6 +240,7 @@ export const api = {
   setGameContext: (text: string) => invoke<void>("set_game_context", { text }),
   setEra: (era: string) => invoke<void>("set_era", { era }),
   setTranslateNames: (on: boolean) => invoke<void>("set_translate_names", { on }),
+  setPoliteParticles: (on: boolean) => invoke<void>("set_polite_particles", { on }),
 
   listUnits: (filter: UnitFilter) =>
     invoke<TransUnit[]>("list_units", { filter }),

@@ -39,6 +39,10 @@ pub struct ProjectInfo {
     /// Whether character-name units are translated. Default true; when false, Run
     /// skips `Name` units and export keeps the original name.
     pub translate_names: bool,
+    /// Whether Thai sentence-final politeness particles (ครับ / ค่ะ / คะ) are used.
+    /// **Default false** — the Run prompt then bans them outright, since a model
+    /// adds them unprompted. Gendered pronouns (ผม / ฉัน) are unaffected.
+    pub polite_particles: bool,
     pub stats: Stats,
     /// True if this open just extracted the game (fresh project).
     pub freshly_extracted: bool,
@@ -142,6 +146,10 @@ impl Project {
             translate_names: db::get_meta(&self.conn, "translate_names")?
                 .map(|v| v != "0")
                 .unwrap_or(true),
+            // Default OFF: absent meta means no ครับ/ค่ะ.
+            polite_particles: db::get_meta(&self.conn, "polite_particles")?
+                .map(|v| v == "1")
+                .unwrap_or(false),
             stats: db::stats(&self.conn)?,
             freshly_extracted,
         })

@@ -492,6 +492,17 @@ function CharactersPanel() {
             />
             Translate character names
           </label>
+          <label
+            className="chk gloss-name-toggle"
+            title="Thai only. Off = Run tells the model never to end a line with ครับ / ค่ะ / คะ; gendered pronouns (ผม / ฉัน) still follow the speaker. On = particles match each speaker's gender."
+          >
+            <input
+              type="checkbox"
+              checked={project.politeParticles}
+              onChange={(e) => useStore.getState().setPoliteParticles(e.target.checked)}
+            />
+            Polite particles (ครับ / ค่ะ)
+          </label>
           {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
           {chars === null ? (
             <p className="hint">Loading…</p>

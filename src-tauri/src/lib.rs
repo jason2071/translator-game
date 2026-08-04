@@ -167,6 +167,17 @@ fn set_translate_names(on: bool, state: tauri::State<AppState>) -> Result<(), St
     })
 }
 
+/// Toggle Thai sentence-final politeness particles (ครับ / ค่ะ / คะ …). When off,
+/// the Run prompt bans them outright — leaving the directive out is not enough,
+/// because a model adds them on its own. Gendered first-person pronouns (ผม / ฉัน)
+/// are unaffected either way. Persisted per-project; **default off**.
+#[tauri::command]
+fn set_polite_particles(on: bool, state: tauri::State<AppState>) -> Result<(), String> {
+    with_project(&state, |p| {
+        project::db::set_meta(&p.conn, "polite_particles", if on { "1" } else { "0" })
+    })
+}
+
 // --- grid browse & edit ---------------------------------------------------
 
 #[tauri::command]
@@ -879,7 +890,7 @@ async fn translate_units(
     // source (dedup), and pre-fill any group whose source is already in TM. Only
     // genuinely-new distinct sources reach the AI, so repeated lines and
     // previously-translated strings are never re-billed.
-    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters, personas) = {
+    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters, personas, polite_particles) = {
         let guard = state.project.lock().unwrap();
         let proj = guard.as_ref().ok_or("no project is open")?;
         let overwrite = scope.overwrite.unwrap_or(false);
@@ -1039,8 +1050,15 @@ async fn translate_units(
             cast.iter().map(|c| (c.name.clone(), c.gender.clone())).collect();
         let personas: Vec<(String, String)> =
             cast.into_iter().map(|c| (c.name, c.note)).collect();
+        // Thai politeness particles (ครับ/ค่ะ). Default OFF: left to itself a model
+        // ends most lines with one, which reads as a dub rather than a translation.
+        let polite_particles = project::db::get_meta(&proj.conn, "polite_particles")
+            .ok()
+            .flatten()
+            .map(|v| v == "1")
+            .unwrap_or(false);
 
-        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters, personas)
+        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters, personas, polite_particles)
     };
 
     let mut summary = TranslateSummary {
@@ -1080,7 +1098,7 @@ async fn translate_units(
         if let Some(dir) = ai::prompt::era_directive(&era, &target_lang) {
             parts.push(dir);
         }
-        if let Some(dir) = ai::prompt::gender_directive(&characters, &target_lang) {
+        if let Some(dir) = ai::prompt::gender_directive(&characters, &target_lang, polite_particles) {
             parts.push(dir);
         }
         if let Some(dir) = ai::prompt::persona_directive(&personas, &target_lang) {
@@ -1612,6 +1630,7 @@ pub fn run() {
             set_game_context,
             set_era,
             set_translate_names,
+            set_polite_particles,
             list_units,
             count_units,
             copy_source_to_translation,
