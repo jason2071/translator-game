@@ -1329,13 +1329,6 @@ code {
 /* ============================================================
    Glossary
    ============================================================ */
-/* Two collapsible setup rows (Game context, Characters), collapsed by default
-   so the glossary table — the modal's actual content — is what you see first.
-   One quiet divider between them; no boxed "card" styling, matching the plain
-   eyebrow-label sections below. */
-.gloss-setup {
-  margin-bottom: 1.2rem;
-}
 /* Provider + model for every AI action on this screen. Sits above the collapsible
    panels so it stays visible when Game context / Characters are collapsed. */
 .gloss-ai-bar {
@@ -1358,60 +1351,63 @@ code {
   min-width: 10rem;
   max-width: 15rem;
 }
-.gloss-collapse {
-  padding: 0.5rem 0;
+/* The modal's four screens as tabs. Each is a full screen of controls, so
+   stacking them as collapsibles made the page jump as they folded open/shut.
+   The label carries the status the collapsed summary used to show, so where the
+   work is needed is visible without opening anything. */
+.gloss-tabs {
+  display: flex;
+  gap: 0.15rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.9rem;
+  overflow-x: auto;
 }
-.gloss-collapse + .gloss-collapse {
-  border-top: 1px solid var(--border);
+.gloss-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  color: var(--muted);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
 }
-.gloss-collapse-head {
+.gloss-tab:hover {
+  color: var(--fg);
+}
+.gloss-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+.gloss-tab-badge {
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.14));
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.gloss-tab.active .gloss-tab-badge {
+  color: var(--fg);
+}
+/* One tab's content. The panels inside are always open now — the collapse
+   chrome (chevron, summary line) is gone. */
+.gloss-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-2);
+  margin-bottom: 0.5rem;
 }
-/* The label itself IS the toggle — no second header, just a chevron + the
-   existing title (or, collapsed, a one-line status in its place). */
-.gloss-collapse-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  min-width: 0;
-  background: none;
-  border: none;
-  padding: 0;
-  margin: 0;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.gloss-collapse-toggle label {
-  cursor: pointer;
-}
-.gloss-chevron {
-  flex: 0 0 auto;
-  color: var(--muted);
-  transition: transform 0.15s ease;
-}
-.gloss-chevron.open {
-  transform: rotate(90deg);
-}
-.gloss-collapse-summary {
-  color: var(--muted);
-  font-size: var(--fs-sm);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.gloss-collapse-body {
-  margin-top: 0.5rem;
-  padding-left: 1.4rem; /* lines up under the title, past the chevron */
+.gloss-panel-body {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
 }
-.gloss-collapse-body textarea {
+.gloss-panel-body textarea {
   width: 100%;
   resize: vertical;
 }

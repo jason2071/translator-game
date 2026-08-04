@@ -35,18 +35,7 @@ export default function GlossaryView() {
   return (
     <div className="glossary">
       <GlossaryAiBar />
-      <div className="gloss-setup">
-        <GameContextPanel />
-        <CharactersPanel />
-      </div>
-
-      <section className="gloss-section">
-        <p className="gloss-section-label">Term suggestions</p>
-        <SuggestPanel onAdded={reload} />
-      </section>
-
-      <section className="gloss-section">
-        <p className="gloss-section-label">Glossary terms</p>
+      <GlossaryTabs entries={entries} onAdded={reload}>
 
         <div className="gloss-add">
           <input placeholder="Source term" value={term} onChange={(e) => setTerm(e.target.value)} />
@@ -95,8 +84,69 @@ export default function GlossaryView() {
             )}
           </tbody>
         </table>
-      </section>
+      </GlossaryTabs>
     </div>
+  );
+}
+
+/// The modal's four screens as tabs: Game context, Characters, Term suggestions,
+/// and the glossary table itself (passed in as `children`, since it owns the add
+/// form's state). Tabs rather than stacked collapsibles — each of these is a full
+/// screen's worth of controls, and having three of them fold in and out of one
+/// scroll made the modal jump around. The label carries the status the collapsed
+/// summary used to show, so nothing has to be opened to see where work is needed.
+function GlossaryTabs({
+  entries,
+  onAdded,
+  children,
+}: {
+  entries: GlossaryEntry[];
+  onAdded: () => void;
+  children: React.ReactNode;
+}) {
+  const project = useStore((s) => s.project);
+  const characters = useStore((s) => s.characters);
+  const [tab, setTab] = useState<"terms" | "context" | "characters" | "suggest">("terms");
+
+  const hasContext = !!(project?.gameContext ?? "").trim();
+  const noNote = characters.filter((c) => !(c.note ?? "").trim()).length;
+
+  const tabs = [
+    { id: "terms" as const, label: "Glossary terms", badge: entries.length ? String(entries.length) : "" },
+    { id: "context" as const, label: "Game context", badge: hasContext ? "set" : "empty" },
+    {
+      id: "characters" as const,
+      label: "Characters",
+      badge: characters.length
+        ? `${characters.length}${noNote ? ` · ${noNote} need notes` : ""}`
+        : "",
+    },
+    { id: "suggest" as const, label: "Term suggestions", badge: "" },
+  ];
+
+  return (
+    <>
+      <div className="gloss-tabs" role="tablist">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
+            className={`gloss-tab${tab === t.id ? " active" : ""}`}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+            {t.badge && <span className="gloss-tab-badge">{t.badge}</span>}
+          </button>
+        ))}
+      </div>
+      <div className="gloss-tab-body">
+        {tab === "terms" && children}
+        {tab === "context" && <GameContextPanel />}
+        {tab === "characters" && <CharactersPanel />}
+        {tab === "suggest" && <SuggestPanel onAdded={onAdded} />}
+      </div>
+    </>
   );
 }
 
@@ -209,13 +259,7 @@ function GameContextPanel() {
   const glossaryConfig = useSettings((s) => s.glossaryConfig);
   const [drafting, setDrafting] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  // Collapsed by default; only springs open if there's nothing here yet, since
-  // that's the one case that needs attention on first look.
-  const [open, setOpen] = useState(() => !(project?.gameContext ?? "").trim());
-
   if (!project) return null;
-
-  const hasContext = !!project.gameContext.trim();
 
   async function draft() {
     const p = useStore.getState().project;
@@ -245,59 +289,43 @@ function GameContextPanel() {
   }
 
   return (
-    <div className="gloss-collapse">
-      <div className="gloss-collapse-head">
-        <button
-          type="button"
-          className="gloss-collapse-toggle"
-          onClick={() => setOpen((o) => !o)}
-          aria-expanded={open}
-        >
-          <Icon name="chevron-right" size={14} className={`gloss-chevron${open ? " open" : ""}`} />
-          {open ? (
-            <label>
-              Game context <span className="hint">(this project)</span>
-            </label>
-          ) : (
-            <span className="gloss-collapse-summary">Game context · {hasContext ? "set" : "empty"}</span>
-          )}
-        </button>
-        {open && (
-          <div className="gloss-context-actions">
-            <select
-              className="gloss-provider"
-              value={project.era ?? ""}
-              onChange={(e) => setEra(e.target.value)}
-              title="Setting era — seeds period-appropriate register/pronouns (e.g. ancient → ข้า/เจ้า) into the AI prompt on every Run"
-            >
-              {ERA_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-            <button
-              className="ghost"
-              onClick={draft}
-              disabled={drafting}
-              title="Draft a setting/character brief from this game's own text with AI"
-            >
-              <Icon name="sparkle" size={14} /> {drafting ? "Drafting…" : "AI draft"}
-            </button>
-          </div>
-        )}
-      </div>
-      {open && (
-        <div className="gloss-collapse-body">
-          <textarea
-            rows={3}
-            placeholder="Lore/setting for THIS game — era, characters, relationships, tone, world rules. Fed to the AI on every Run. e.g. Modern-day Thailand; Callum and Daisy are siblings; casual speech."
-            value={project.gameContext}
-            onChange={(e) => setGameContext(e.target.value)}
-          />
-          {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
+    <div className="gloss-panel">
+      <div className="gloss-panel-head">
+        <label>
+          Game context <span className="hint">(this project)</span>
+        </label>
+        <div className="gloss-context-actions">
+          <select
+            className="gloss-provider"
+            value={project.era ?? ""}
+            onChange={(e) => setEra(e.target.value)}
+            title="Setting era — seeds period-appropriate register/pronouns (e.g. ancient → ข้า/เจ้า) into the AI prompt on every Run"
+          >
+            {ERA_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <button
+            className="ghost"
+            onClick={draft}
+            disabled={drafting}
+            title="Draft a setting/character brief from this game's own text with AI"
+          >
+            <Icon name="sparkle" size={14} /> {drafting ? "Drafting…" : "AI draft"}
+          </button>
         </div>
-      )}
+      </div>
+      <div className="gloss-panel-body">
+        <textarea
+          rows={6}
+          placeholder="Lore/setting for THIS game — era, characters, relationships, tone, world rules. Fed to the AI on every Run. e.g. Modern-day Thailand; Callum and Daisy are siblings; casual speech."
+          value={project.gameContext}
+          onChange={(e) => setGameContext(e.target.value)}
+        />
+        {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
+      </div>
     </div>
   );
 }
@@ -315,19 +343,13 @@ const GENDER_OPTIONS: { value: string; label: string }[] = [
 
 function CharactersPanel() {
   const project = useStore((s) => s.project);
-  // Snapshot from the store's already-loaded cast (fetched with the project) —
-  // just to seed the collapse default; this panel keeps its own `chars` below
-  // for optimistic edits.
-  const storeCharCount = useStore((s) => s.characters.length);
+  // The tab label reads the store's cast; this panel keeps its own `chars` for
+  // optimistic edits.
   const glossaryConfig = useSettings((s) => s.glossaryConfig);
   const [chars, setChars] = useState<Character[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [rescanning, setRescanning] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  // Collapsed by default; only springs open when there's no cast yet, since
-  // that's the one case where "AI find characters" needs to be seen right away.
-  const [open, setOpen] = useState(() => storeCharCount === 0);
-
   async function reload() {
     setChars(await api.charactersList());
   }
@@ -411,31 +433,15 @@ function CharactersPanel() {
   const locked = busy || rescanning;
 
   return (
-    <div className="gloss-collapse">
-      <div className="gloss-collapse-head">
-        <button
-          type="button"
-          className="gloss-collapse-toggle"
-          onClick={() => setOpen((o) => !o)}
-          aria-expanded={open}
-        >
-          <Icon name="chevron-right" size={14} className={`gloss-chevron${open ? " open" : ""}`} />
-          {open ? (
-            <label>
-              Characters
-              {chars !== null && chars.length > 0 ? ` · ${chars.length}` : ""}{" "}
-              <span className="hint">(gender → ครับ/ค่ะ · persona note · this project)</span>
-            </label>
-          ) : (
-            <span className="gloss-collapse-summary">
-              Characters · {chars?.length ?? storeCharCount}
-              {noNote > 0 && chars !== null ? ` · ${noNote} need notes` : ""}
-            </span>
-          )}
-        </button>
+    <div className="gloss-panel">
+      <div className="gloss-panel-head">
+        <label>
+          Characters
+          {chars !== null && chars.length > 0 ? ` · ${chars.length}` : ""}{" "}
+          <span className="hint">(gender → ครับ/ค่ะ · persona note · this project)</span>
+        </label>
       </div>
-      {open && (
-        <div className="gloss-collapse-body">
+      <div className="gloss-panel-body">
           {/* Every action as a visible button on its own tidy row — nothing
               tucked behind a ⋯ menu (and no crowding next to the title). */}
           <div className="gloss-context-actions">
@@ -549,8 +555,7 @@ function CharactersPanel() {
               ))}
             </div>
           )}
-        </div>
-      )}
+      </div>
     </div>
   );
 }
