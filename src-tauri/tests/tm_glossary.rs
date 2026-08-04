@@ -54,6 +54,43 @@ fn tm_propagates_to_duplicate_sources() {
     assert_eq!(other.status, Status::Draft);
 }
 
+/// Rows written before outer-whitespace alignment carry the model's stray leading
+/// space. Reuse hands a TM row back without ever calling the model, so a re-Run
+/// would keep the padding forever — opening the project cleans it out instead.
+#[test]
+fn opening_a_project_trims_padding_a_model_invented() {
+    let (_tmp, root) = temp_game();
+    let db_path;
+    {
+        let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+        db_path = root.join(".rpgtl").join("project.db");
+
+        // A padded TM row and a padded unit, as an older build would have stored them.
+        project::db::tm_upsert(&proj.conn, "Yes", " ใช่").unwrap();
+        // A source that pads on purpose keeps its translation's padding.
+        project::db::tm_upsert(&proj.conn, "  Menu", "  เมนู").unwrap();
+        let yes = all(&proj.conn).into_iter().find(|u| u.source == "Yes").unwrap();
+        project::db::update_unit(&proj.conn, yes.id, Some(" ใช่ "), Status::Translated.as_str())
+            .unwrap();
+    }
+    assert!(db_path.is_file());
+
+    // Re-open: the migration runs on every open.
+    let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+    assert_eq!(
+        project::db::tm_lookup(&proj.conn, "Yes").unwrap().as_deref(),
+        Some("ใช่"),
+        "invented padding trimmed"
+    );
+    assert_eq!(
+        project::db::tm_lookup(&proj.conn, "  Menu").unwrap().as_deref(),
+        Some("  เมนู"),
+        "a padded source keeps its padding"
+    );
+    let yes = all(&proj.conn).into_iter().find(|u| u.source == "Yes").unwrap();
+    assert_eq!(yes.translation.as_deref(), Some("ใช่"), "unit rows are cleaned too");
+}
+
 #[test]
 fn glossary_crud_and_lint() {
     let (_tmp, root) = temp_game();

@@ -68,6 +68,28 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     // Migrations for pre-existing project DBs (there is no version framework; every
     // open re-runs init_schema, so these must be idempotent).
     add_column_if_missing(conn, "character", "note", "TEXT")?;
+    trim_stray_padding(conn)?;
+    Ok(())
+}
+
+/// Drop the leading/trailing whitespace a model invented, on rows stored before
+/// `ai::align_outer_whitespace` existed. Only rows whose **source** carries no
+/// padding of its own are touched, so a string that pads deliberately (a menu label
+/// aligned with a leading space) keeps it. Runs on every open and is a no-op once
+/// clean — TM rows matter most, since reuse hands them straight back without ever
+/// calling the model.
+fn trim_stray_padding(conn: &Connection) -> Result<()> {
+    for table in ["unit", "tm"] {
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET translation = TRIM(translation)
+                  WHERE translation IS NOT NULL
+                    AND translation <> TRIM(translation)
+                    AND source = TRIM(source)"
+            ),
+            [],
+        )?;
+    }
     Ok(())
 }
 

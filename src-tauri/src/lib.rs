@@ -1008,6 +1008,11 @@ async fn translate_units(
                         protect::codes_match(&engine_id, &g.source, tm)
                             && !looks_like_asset_path(tm)
                     })
+                    // A TM entry written before outer-whitespace alignment carries
+                    // the model's stray leading space. Reuse skips the AI entirely,
+                    // so without this a re-Run keeps handing the same padded text
+                    // back and the fix never reaches the project.
+                    .map(|tm| ai::align_outer_whitespace(&g.source, &tm))
             };
             if let Some(tm) = tm {
                 for id in &g.ids {
