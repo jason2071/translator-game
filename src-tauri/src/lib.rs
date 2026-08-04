@@ -1199,7 +1199,15 @@ async fn translate_units(
         let results: Vec<Option<String>> = match res {
             Ok(v) => {
                 done += batch_units;
-                v.into_iter().map(Some).collect()
+                // A model routinely answers with a stray leading space; keep the
+                // source's own outer whitespace instead of whatever it invented.
+                v.into_iter()
+                    .enumerate()
+                    .map(|(j, t)| {
+                        let src = req.items.get(j).map(|it| it.text.as_str()).unwrap_or("");
+                        Some(ai::align_outer_whitespace(src, &t))
+                    })
+                    .collect()
             }
             Err(e) => {
                 batch_error = Some(e.to_string());
@@ -1224,8 +1232,9 @@ async fn translate_units(
                 let mut singles = futures::stream::iter(singles).buffered(concurrency);
                 let mut j = 0usize;
                 while let Some(r) = singles.next().await {
+                    let src = req.items.get(j).map(|it| it.text.clone()).unwrap_or_default();
                     let text = match r {
-                        Some(Ok(mut v)) => v.pop(),
+                        Some(Ok(mut v)) => v.pop().map(|t| ai::align_outer_whitespace(&src, &t)),
                         Some(Err(e)) => {
                             // Network down / HTTP 401 / 429 rate-limit, etc.
                             // Surface the first one live so the user isn't left
@@ -1491,6 +1500,9 @@ async fn translate_texts(
             .await
             .ok()
             .and_then(|mut v| v.pop())
+            // A model routinely answers with a stray leading space — a glossary
+            // term must not carry one into the game.
+            .map(|t| ai::align_outer_whitespace(&masks[i].text, &t))
             .and_then(|m| protect::restore(&m, &masks[i].tokens).ok());
         if restored.is_some() {
             translated += 1;

@@ -144,7 +144,11 @@ pub async fn translate_batch_or_split(
     req: &BatchReq,
 ) -> Vec<Option<String>> {
     match provider.translate_batch(client, key, req).await {
-        Ok(v) => v.into_iter().map(Some).collect(),
+        Ok(v) => v
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| Some(align_outer_whitespace(req.items.get(i).map(|it| it.text.as_str()).unwrap_or(""), &t)))
+            .collect(),
         Err(_) if req.items.len() <= 1 => vec![None; req.items.len()],
         Err(_) => {
             let mut out = Vec::with_capacity(req.items.len());
@@ -154,13 +158,37 @@ pub async fn translate_batch_or_split(
                     ..req.clone()
                 };
                 match provider.translate_batch(client, key, &single).await {
-                    Ok(mut v) => out.push(v.pop()),
+                    Ok(mut v) => out.push(v.pop().map(|t| align_outer_whitespace(&it.text, &t))),
                     Err(_) => out.push(None),
                 }
             }
             out
         }
     }
+}
+
+/// Give `translated` the same leading/trailing whitespace as `source`.
+///
+/// A model routinely answers with a stray leading space — `"(default properties
+/// omitted)"` comes back as `" (ละเว้นคุณสมบัติเริ่มต้น)"` — and nothing downstream
+/// trimmed it, so the space was stored and shipped into the game.
+///
+/// Trimming outright would be wrong: some game strings pad deliberately (a menu
+/// label aligned with a leading space, a line that ends with one before an inline
+/// icon). Copying the source's own outer whitespace keeps those byte-identical
+/// while dropping whatever the model invented.
+pub fn align_outer_whitespace(source: &str, translated: &str) -> String {
+    let core = translated.trim();
+    if core.is_empty() {
+        // Nothing but whitespace came back — leave it as-is for the caller to judge.
+        return translated.to_string();
+    }
+    let lead = &source[..source.len() - source.trim_start().len()];
+    let trail = &source[source.trim_end().len()..];
+    if lead.is_empty() && trail.is_empty() {
+        return core.to_string();
+    }
+    format!("{lead}{core}{trail}")
 }
 
 /// Resolve the API base URL for a provider (config override or default).
@@ -303,5 +331,32 @@ pub fn make_provider(cfg: &ProviderConfig) -> Result<Box<dyn TranslationProvider
         "anthropic" => Ok(Box::new(anthropic::Anthropic::new(cfg))),
         "gemini" => Ok(Box::new(gemini::Gemini::new(cfg))),
         other => Err(anyhow!("unknown provider kind: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::align_outer_whitespace;
+
+    #[test]
+    fn align_outer_whitespace_drops_invented_padding_and_keeps_the_source_s() {
+        // The real case: a model prefixed a space that then shipped into the game.
+        assert_eq!(
+            align_outer_whitespace("(default properties omitted)", " (ละเว้นคุณสมบัติเริ่มต้น)"),
+            "(ละเว้นคุณสมบัติเริ่มต้น)"
+        );
+        assert_eq!(align_outer_whitespace("Start", "  เริ่ม\n"), "เริ่ม");
+
+        // A source that pads deliberately keeps exactly its own padding — a menu
+        // label aligned with a leading space, a line ending in one before an icon.
+        assert_eq!(align_outer_whitespace("  Menu", "เมนู"), "  เมนู");
+        assert_eq!(align_outer_whitespace("HP: ", " พลังชีวิต: "), "พลังชีวิต: ");
+        assert_eq!(align_outer_whitespace("\n Line ", "บรรทัด"), "\n บรรทัด ");
+
+        // Inner spacing is the translation's own business.
+        assert_eq!(align_outer_whitespace("a b", "ก ข"), "ก ข");
+        // A blank answer is left for the caller to judge, not silently reshaped.
+        assert_eq!(align_outer_whitespace("x", "   "), "   ");
+        assert_eq!(align_outer_whitespace("", "ok"), "ok");
     }
 }
