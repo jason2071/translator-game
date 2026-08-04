@@ -167,6 +167,10 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
           persist();
         }
       });
+      // Show *why* a term failed while it's still running. Without this a wrong
+      // model name or a dead endpoint looked exactly like a model that answered
+      // badly: every row simply kept whatever it already showed.
+      const unlistenErr = await api.onTranslateError((message) => set({ msg: message }));
       try {
         const res = await useTranslation
           .getState()
@@ -195,11 +199,20 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
         // Persist to TM (dedup vs unit translation) and to disk (panel survives).
         if (pairs.length) await api.rememberTexts(pairs);
         persist();
-        set({ msg: failed > 0 ? `${failed} term(s) failed — see the failed filter` : null });
+        // Keep a provider error on screen — it explains the failures far better
+        // than the count does.
+        if (failed > 0) {
+          set((s) => ({
+            msg: s.msg ?? `${failed} term(s) failed — see the failed filter`,
+          }));
+        } else {
+          set({ msg: null });
+        }
       } catch (e) {
         set({ msg: String(e) });
       } finally {
         unlisten();
+        unlistenErr();
       }
     },
 

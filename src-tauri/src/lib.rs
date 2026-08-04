@@ -1467,6 +1467,9 @@ async fn translate_texts(
     let mut out: Vec<Option<String>> = Vec::with_capacity(total);
     let mut translated = 0usize;
     let mut failed = 0usize;
+    // The first provider error, surfaced live and then returned, so the panel can
+    // say *why* instead of only how many failed.
+    let mut last_error: Option<String> = None;
     let _ = app.emit(
         "translate://progress",
         Progress { done: 0, total, translated: 0, failed: 0 },
@@ -1500,15 +1503,26 @@ async fn translate_texts(
             max_tokens: config.max_tokens(),
             thinking: config.thinking,
         };
-        let restored = provider
-            .translate_batch(&client, key.as_deref(), &req)
-            .await
-            .ok()
-            .and_then(|mut v| v.pop())
-            // A model routinely answers with a stray leading space — a glossary
-            // term must not carry one into the game.
-            .map(|t| ai::align_outer_whitespace(&masks[i].text, &t))
-            .and_then(|m| protect::restore(&m, &masks[i].tokens).ok());
+        let restored = match provider.translate_batch(&client, key.as_deref(), &req).await {
+            Ok(mut v) => v
+                .pop()
+                // A model routinely answers with a stray leading space — a glossary
+                // term must not carry one into the game.
+                .map(|t| ai::align_outer_whitespace(&masks[i].text, &t))
+                .and_then(|m| protect::restore(&m, &masks[i].tokens).ok()),
+            Err(e) => {
+                // Surface the first failure the way a Run does. Without this the
+                // panel could only ever say "N terms failed" — a wrong model name
+                // or a dead endpoint looked identical to a model that answered
+                // badly, and every row silently kept whatever it showed before.
+                let msg = e.to_string();
+                if last_error.is_none() {
+                    let _ = app.emit("translate://error", &msg);
+                    last_error = Some(msg);
+                }
+                None
+            }
+        };
         if restored.is_some() {
             translated += 1;
         } else {
@@ -1524,6 +1538,13 @@ async fn translate_texts(
             "translate://progress",
             Progress { done: i + 1, total, translated, failed },
         );
+    }
+    // Nothing came back at all and the provider told us why — report that instead
+    // of a list of nulls, which the panel could only show as "N failed".
+    if translated == 0 {
+        if let Some(e) = last_error {
+            return Err(e);
+        }
     }
     Ok(out)
 }
