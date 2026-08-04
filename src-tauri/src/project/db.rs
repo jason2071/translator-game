@@ -90,6 +90,14 @@ fn trim_stray_padding(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    // The glossary is different: an entry is a *word* matched against text, so
+    // padding is never meaningful there — a padded entry simply never matches.
+    // Trim both sides unconditionally, source included.
+    conn.execute(
+        "UPDATE glossary SET term = TRIM(term), translation = TRIM(translation)
+          WHERE term <> TRIM(term) OR translation <> TRIM(translation)",
+        [],
+    )?;
     Ok(())
 }
 
@@ -551,9 +559,11 @@ pub fn glossary_add(
     if term.trim().is_empty() || translation.trim().is_empty() {
         return Err(anyhow!("glossary term and translation must not be empty"));
     }
+    // Store trimmed: a glossary entry is a word matched against text, so outer
+    // whitespace is never meaningful and a padded copy would simply never match.
     conn.execute(
         "INSERT INTO glossary(term, translation, note, case_sensitive) VALUES(?1, ?2, ?3, ?4)",
-        params![term, translation, note, case_sensitive as i64],
+        params![term.trim(), translation.trim(), note, case_sensitive as i64],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -767,7 +777,7 @@ pub fn glossary_add_bulk(conn: &mut Connection, items: &[(String, String)]) -> R
             if key.is_empty() || translation.trim().is_empty() || !seen.insert(key) {
                 continue;
             }
-            added += stmt.execute(params![term, translation])?;
+            added += stmt.execute(params![term.trim(), translation.trim()])?;
         }
     }
     tx.commit()?;
@@ -811,14 +821,29 @@ pub fn suggest_glossary(conn: &Connection) -> Result<Vec<GlossCandidate>> {
           LIMIT 500",
     )?;
     let rows = stmt.query_map([], |r| {
+        // A glossary entry is a *word*, matched against text — leading/trailing
+        // whitespace carries no meaning here and only confuses the panel. Some
+        // game strings pad on purpose (Ren'Py's own SDK screens indent with
+        // spaces: `old "        (default properties omitted)"`), which made a
+        // candidate's translation look like the AI had added a space. Unit
+        // translations keep their padding; only the glossary view trims.
+        let term: String = r.get(0)?;
+        let tr: Option<String> = r.get(1)?;
         Ok(GlossCandidate {
-            term: r.get(0)?,
-            translation: r.get::<_, Option<String>>(1)?,
+            term: term.trim().to_string(),
+            translation: tr.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
             kind: r.get(2)?,
             count: r.get(3)?,
         })
     })?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    // Trimming can collapse two candidates onto the same term (a padded and an
+    // unpadded copy of one string); keep the first, which is the more frequent.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    Ok(rows
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|c| !c.term.is_empty() && seen.insert(c.term.clone()))
+        .collect())
 }
 
 /// Sample distinct narrative source lines for AI glossary mining: the most

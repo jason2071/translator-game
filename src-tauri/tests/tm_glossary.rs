@@ -195,3 +195,50 @@ fn suggest_glossary_prefills_from_tm() {
     let d2 = after.iter().find(|c| c.term == "Dagger").unwrap();
     assert_eq!(d2.translation.as_deref(), Some("กริช"));
 }
+
+/// A glossary entry is a word matched against text, so outer whitespace means
+/// nothing there — a padded entry would simply never match. Game strings do pad
+/// on purpose though (Ren'Py's SDK screens indent with spaces:
+/// `old "        (default properties omitted)"`), and carrying that padding into
+/// the panel made a candidate's translation look like the AI had added a space.
+#[test]
+fn glossary_candidates_and_entries_are_trimmed() {
+    let (_tmp, root) = temp_game();
+    let (mut proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+
+    // A padded Term unit, the way Ren'Py's own strings arrive, plus a padded TM
+    // hit to prefill it with.
+    project::db::merge_units(
+        &mut proj.conn,
+        &[app_lib::model::TransUnit::new(
+            "screens.rpy",
+            "str#1:20",
+            app_lib::model::UnitKind::Term,
+            "        (attributes)",
+        )],
+    )
+    .unwrap();
+    project::db::tm_upsert(&proj.conn, "        (attributes)", "   (คุณสมบัติ)  ").unwrap();
+
+    let cands = project::db::suggest_glossary(&proj.conn).unwrap();
+    let c = cands
+        .iter()
+        .find(|c| c.term == "(attributes)")
+        .expect("the candidate is offered without its padding");
+    assert_eq!(c.translation.as_deref(), Some("(คุณสมบัติ)"), "prefill trimmed too");
+
+    // Adding stores the trimmed form, whichever path is used.
+    project::db::glossary_add(&proj.conn, "  Dagger ", "  กริช  ", None, false).unwrap();
+    project::db::glossary_add_bulk(&mut proj.conn, &[("  Sword ".into(), " ดาบ ".into())]).unwrap();
+    let entries = project::db::glossary_list(&proj.conn).unwrap();
+    let dagger = entries.iter().find(|g| g.term == "Dagger").expect("trimmed on add");
+    assert_eq!(dagger.translation, "กริช");
+    let sword = entries.iter().find(|g| g.term == "Sword").expect("trimmed on bulk add");
+    assert_eq!(sword.translation, "ดาบ");
+
+    // The unit itself keeps its padding — only the glossary view trims.
+    let padded = all(&proj.conn)
+        .into_iter()
+        .find(|u| u.source == "        (attributes)");
+    assert!(padded.is_some(), "the unit's own source is untouched");
+}
