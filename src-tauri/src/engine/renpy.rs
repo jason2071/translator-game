@@ -2000,6 +2000,11 @@ pub fn export_tl(
     };
 
     let mut files = 0usize;
+    // Every `old "…"` the generated skeleton already declares. Ren'Py refuses a
+    // second translation for the same string — `Exception: A translation for "%b %d,
+    // %H:%M" already exists at game/tl/thai/common.rpy:271` — and that exception
+    // kills the game at startup, so nothing we add below may collide with these.
+    let mut skeleton_olds: HashSet<String> = HashSet::new();
     let mut stack = vec![dir.clone()];
     while let Some(d) = stack.pop() {
         for e in std::fs::read_dir(&d)?.flatten() {
@@ -2008,6 +2013,11 @@ pub fn export_tl(
                 stack.push(p);
             } else if p.extension().and_then(|x| x.to_str()) == Some("rpy") {
                 let content = std::fs::read_to_string(&p)?;
+                for line in content.lines() {
+                    if let Some(old) = strings_block_old(line) {
+                        skeleton_olds.insert(old);
+                    }
+                }
                 let filled = renpy_tl::fill_tl(&content, &lookup);
                 if filled != content {
                     std::fs::write(&p, filled).with_context(|| format!("writing {}", p.display()))?;
@@ -2050,7 +2060,10 @@ pub fn export_tl(
                 }
                 continue;
             }
-            if used.contains(u.source.as_str()) || !extra_seen.insert(u.source.as_str()) {
+            if used.contains(u.source.as_str())
+                || skeleton_olds.contains(&unescape_rpy(&u.source))
+                || !extra_seen.insert(u.source.as_str())
+            {
                 continue;
             }
             extra.push((u.source.clone(), t.clone()));
@@ -2066,6 +2079,11 @@ pub fn export_tl(
     for (term, tr) in glossary {
         let (term, tr) = (term.trim(), tr.trim());
         if term.is_empty() || tr.is_empty() || term == tr {
+            continue;
+        }
+        // A term the skeleton already declares must not be repeated: a second
+        // `old` for the same string is a hard Ren'Py error at startup.
+        if skeleton_olds.contains(term) || used.borrow().contains(term) {
             continue;
         }
         if extra_seen.insert(term) {
@@ -2283,6 +2301,27 @@ fn unescape_rpy(s: &str) -> String {
 /// can't collect (bare screen literals, python-level quest names / notify text) —
 /// every displayed string passes through `translate_string`, so these entries
 /// translate the UI without touching python-side identity.
+/// The string an `old "…"` line of a `translate <lang> strings:` block declares,
+/// unescaped. Used to see what a generated skeleton already covers, so the block
+/// we append can't declare it a second time — Ren'Py treats a duplicate `old` as a
+/// fatal error and the game dies on startup.
+fn strings_block_old(line: &str) -> Option<String> {
+    let t = line.trim_start();
+    let rest = t.strip_prefix("old ")?.trim_start();
+    let inner = rest.strip_prefix('"')?;
+    // Find the closing quote, honouring backslash escapes.
+    let b = inner.as_bytes();
+    let mut i = 0;
+    while i < inner.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(unescape_rpy(&inner[..i])),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
 /// Split a Ren'Py string into the TEXT pieces its tokenizer produces: the runs
 /// between `{…}` text tags and `\n` line breaks, each trimmed. `{{` is an escaped
 /// literal brace, not a tag. This mirrors `renpy/text/text.py`'s `tokenize`, whose
@@ -3544,6 +3583,28 @@ define g = Character(_(\"Gwen\"))
         for py3_only in [".isascii(", ".removeprefix(", ".removesuffix(", ".casefold("] {
             assert!(!out.contains(py3_only), "Python 3-only call {py3_only} in generated code");
         }
+    }
+
+    /// Ren'Py treats a second `old` for the same string as a fatal error —
+    /// `Exception: A translation for "%b %d, %H:%M" already exists at
+    /// game/tl/thai/common.rpy:271` — and the game dies at startup. Whatever we
+    /// append has to know what the generated skeleton already declares.
+    #[test]
+    fn strings_block_old_reads_the_declared_key() {
+        assert_eq!(
+            strings_block_old("    old \"%b %d, %H:%M\"").as_deref(),
+            Some("%b %d, %H:%M")
+        );
+        assert_eq!(strings_block_old("old \"Start\"").as_deref(), Some("Start"));
+        // An escaped quote inside the key doesn't end it.
+        assert_eq!(
+            strings_block_old("    old \"say \\\"hi\\\"\"").as_deref(),
+            Some("say \"hi\"")
+        );
+        // Anything else in a tl file is not a declaration.
+        assert!(strings_block_old("    new \"เริ่ม\"").is_none());
+        assert!(strings_block_old("translate thai strings:").is_none());
+        assert!(strings_block_old("    old \"unterminated").is_none());
     }
 
     #[test]
