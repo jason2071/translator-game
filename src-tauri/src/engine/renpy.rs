@@ -2249,6 +2249,50 @@ fn unescape_rpy(s: &str) -> String {
 /// can't collect (bare screen literals, python-level quest names / notify text) —
 /// every displayed string passes through `translate_string`, so these entries
 /// translate the UI without touching python-side identity.
+/// Split a Ren'Py string into the TEXT pieces its tokenizer produces: the runs
+/// between `{…}` text tags and `\n` line breaks, each trimmed. `{{` is an escaped
+/// literal brace, not a tag. This mirrors `renpy/text/text.py`'s `tokenize`, whose
+/// TEXT tokens are what `config.replace_text` is handed one at a time.
+fn text_segments(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < s.len() {
+        if b[i] == b'{' {
+            if b.get(i + 1) == Some(&b'{') {
+                cur.push('{'); // escaped literal
+                i += 2;
+                continue;
+            }
+            if let Some(end) = s[i..].find('}') {
+                out.push(cur.trim().to_string());
+                cur = String::new();
+                i += end + 1;
+                continue;
+            }
+        }
+        // A literal `\n` (backslash + n, as written in the .rpy) is a NEWLINE token.
+        if b[i] == b'\\' && b.get(i + 1) == Some(&b'n') {
+            out.push(cur.trim().to_string());
+            cur = String::new();
+            i += 2;
+            continue;
+        }
+        if b[i] == b'\n' {
+            out.push(cur.trim().to_string());
+            cur = String::new();
+            i += 1;
+            continue;
+        }
+        let ch = s[i..].chars().next().unwrap();
+        cur.push(ch);
+        i += ch.len_utf8();
+    }
+    out.push(cur.trim().to_string());
+    out
+}
+
 fn setup_language(
     data_dir: &Path,
     lang: &str,
@@ -2302,12 +2346,39 @@ fn setup_language(
         // keeps the source language untouched.
         s.push_str("init 1001 python:\n");
         s.push_str("    _tl_text = {\n");
+        let mut seen_keys: HashSet<String> = HashSet::new();
         for (old, new) in strings {
-            s.push_str(&format!(
-                "        \"{}\": \"{}\",\n",
-                renpy_tl::quote_unicode(&unescape_rpy(old)),
-                renpy_tl::quote_unicode(&renpy_tl::decode_escapes(new))
-            ));
+            let old_u = unescape_rpy(old);
+            let new_u = renpy_tl::decode_escapes(new);
+            if seen_keys.insert(old_u.clone()) {
+                s.push_str(&format!(
+                    "        \"{}\": \"{}\",\n",
+                    renpy_tl::quote_unicode(&old_u),
+                    renpy_tl::quote_unicode(&new_u)
+                ));
+            }
+            // …and the same pair split into TEXT segments. Ren'Py tokenizes a
+            // string into TEXT / TAG / NEWLINE **before** calling the hook
+            // (`renpy/text/text.py`: `tokens = self.tokenize(text)` then
+            // `apply_custom_tags` → `config.replace_text(text)` per TEXT token),
+            // so the hook never sees `{color=#fbce6e}Quest done.{/color}` — only
+            // `Quest done.`. Without a segment key a line carrying any text tag
+            // could not be matched at all. Only added when both sides split into
+            // the same number of pieces, so each piece has an unambiguous
+            // counterpart; the lookup is exact (a whole token), never a substring,
+            // so a short segment like `Time:` can't bleed into other text.
+            let (os, ns) = (text_segments(&old_u), text_segments(&new_u));
+            if os.len() == ns.len() && os.len() > 1 {
+                for (o, n) in os.iter().zip(ns.iter()) {
+                    if o != n && !o.is_empty() && !n.is_empty() && seen_keys.insert(o.clone()) {
+                        s.push_str(&format!(
+                            "        \"{}\": \"{}\",\n",
+                            renpy_tl::quote_unicode(o),
+                            renpy_tl::quote_unicode(n)
+                        ));
+                    }
+                }
+            }
         }
         s.push_str("    }\n");
         // Same pairs, longest first, for the substring pass below.
@@ -2317,12 +2388,23 @@ fn setup_language(
         // ("牛柄ビキニを手に入れた！") matches no key. Keep the single-placeholder ones
         // so the hook can match around the value.
         s.push_str("    _tl_fmts = [(_k.split(\"{}\"), _v) for _k, _v in _tl_frags if _k.count(\"{}\") == 1 and _v.count(\"{}\") == 1]\n");
-        // Does the text still hold an untranslated CJK character? Cheap guard so a
-        // fully-translated line skips the scan.
+        // Does the text still hold untranslated source-language script? Cheap guard
+        // so a fully-translated line skips the scan, and the all-or-nothing test for
+        // the substring pass below.
+        //
+        // CJK is the easy case — kana/kanji left in the output means the rewrite
+        // didn't finish. A **Latin-script** game has no such marker: every check
+        // returned False, the hook bailed at the first `if not …: return _t`, and
+        // nothing past the exact-match lookup ever ran. So fall back to "the text
+        // still contains a key we know how to translate", which works for any
+        // source language.
         s.push_str("    def _tl_has_src(_t):\n");
         s.push_str("        for _c in _t:\n");
         s.push_str("            _o = ord(_c)\n");
         s.push_str("            if 0x3040 <= _o <= 0x30ff or 0x4e00 <= _o <= 0x9fff:\n");
+        s.push_str("                return True\n");
+        s.push_str("        for _k in _tl_text:\n");
+        s.push_str("            if _k and _k in _t:\n");
         s.push_str("                return True\n");
         s.push_str("        return False\n");
         s.push_str("    _tl_prev_replace_text = config.replace_text\n");
@@ -3293,6 +3375,51 @@ define g = Character(_(\"Gwen\"))
         assert!(!units.iter().any(|u| u.source == "nope"));
         assert!(units.iter().all(|u| u.kind == UnitKind::Name));
         assert!(units.iter().all(|u| u.pointer.starts_with("name#")));
+    }
+
+    /// Ren'Py hands `config.replace_text` one TEXT token at a time, **after** its
+    /// tokenizer has split the tags out (`renpy/text/text.py`). A quest line stored
+    /// as `{color=#fbce6e}The main story is completed.{/color}\n{color=…}…{/color}`
+    /// therefore reaches the hook as bare `The main story is completed.` — the whole
+    /// -string key never matches, and the line stayed English in-game.
+    #[test]
+    fn setup_language_also_keys_the_hook_by_text_segment() {
+        let d = tempfile::tempdir().unwrap();
+        let src = "{color=#fbce6e}The main story is completed.{/color}\\n{color=#a4f1ff}Some new conversations are available.{/color}";
+        let tr = "{color=#fbce6e}\u{e40}\u{e19}\u{e37}\u{e49}\u{e2d}\u{e40}\u{e23}\u{e37}\u{e48}\u{e2d}\u{e07}\u{e08}\u{e1a}\u{e41}\u{e25}\u{e49}\u{e27}{/color}\\n{color=#a4f1ff}\u{e21}\u{e35}\u{e1a}\u{e17}\u{e2a}\u{e19}\u{e17}\u{e19}\u{e32}\u{e43}\u{e2b}\u{e21}\u{e48}{/color}";
+        setup_language(
+            d.path(),
+            "thai",
+            "\u{e44}\u{e17}\u{e22}",
+            &[(src.to_string(), tr.to_string())],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
+
+        // The whole string is still a key (that is what a `text "…"` literal needs)…
+        assert!(out.contains("The main story is completed.{/color}"), "{out}");
+        // …and so is each TEXT segment on its own, which is all the hook ever sees.
+        assert!(
+            out.contains("\"The main story is completed.\": \""),
+            "segment key missing: {out}"
+        );
+        assert!(
+            out.contains("\"Some new conversations are available.\": \""),
+            "second segment key missing: {out}"
+        );
+    }
+
+    #[test]
+    fn text_segments_splits_on_tags_and_newlines() {
+        assert_eq!(
+            text_segments("{color=#f00}Hello{/color}\\n{b}World{/b}"),
+            vec!["", "Hello", "", "", "World", ""]
+        );
+        // An escaped `{{` is a literal brace, not a tag.
+        assert_eq!(text_segments("a {{b}} c"), vec!["a {b}} c"]);
+        // No tags at all → the string itself.
+        assert_eq!(text_segments("plain line"), vec!["plain line"]);
     }
 
     #[test]
