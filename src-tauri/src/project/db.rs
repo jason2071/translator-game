@@ -200,6 +200,48 @@ pub fn merge_units(conn: &mut Connection, units: &[TransUnit]) -> Result<(usize,
     Ok((inserted, filled))
 }
 
+/// Delete units a fresh extraction no longer produces **and** that hold no work —
+/// no translation, and a status of Untranslated or Failed.
+///
+/// The extractors get stricter over time (an `image <name>:` ATL block used to
+/// yield its frame filenames as dialogue, so a project carried rows like
+/// `images/GYM/Training 1/4.jpg` that can only ever fail). Merging alone never
+/// removed them, because a rescan only inserts. Anything translated, drafted,
+/// reviewed or locked is kept whatever the extractor now thinks — a user's work
+/// is never deleted to satisfy a scan.
+pub fn prune_stale_units(conn: &mut Connection, fresh: &[TransUnit]) -> Result<usize> {
+    use std::collections::HashSet;
+    let keep: HashSet<(&str, &str)> = fresh
+        .iter()
+        .map(|u| (u.file.as_str(), u.pointer.as_str()))
+        .collect();
+    let doomed: Vec<i64> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, file, pointer FROM unit
+              WHERE (translation IS NULL OR translation = '')
+                AND status IN ('Untranslated', 'Failed')",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        rows.filter_map(|r| r.ok())
+            .filter(|(_, f, p)| !keep.contains(&(f.as_str(), p.as_str())))
+            .map(|(id, _, _)| id)
+            .collect()
+    };
+    if doomed.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    {
+        let mut del = tx.prepare("DELETE FROM unit WHERE id = ?1")?;
+        for id in &doomed {
+            del.execute(params![id])?;
+        }
+    }
+    tx.commit()?;
+    Ok(doomed.len())
+}
 
 /// Filter/paginate the unit grid. All fields optional.
 #[derive(Debug, Default, Clone, Deserialize)]

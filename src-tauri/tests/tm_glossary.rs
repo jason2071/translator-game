@@ -196,6 +196,50 @@ fn suggest_glossary_prefills_from_tm() {
     assert_eq!(d2.translation.as_deref(), Some("กริช"));
 }
 
+/// Extractors get stricter over time, and a rescan used to only ever insert — so a
+/// project kept rows the current extractor would never produce (an `image <name>:`
+/// ATL block once yielded its frame filenames as dialogue, which can only fail).
+/// Rescan drops those now, but never anything carrying work.
+#[test]
+fn rescan_drops_stale_untranslated_units_but_keeps_work() {
+    use app_lib::model::{TransUnit, UnitKind};
+    let (_tmp, root) = temp_game();
+    let (mut proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
+
+    // Three rows the fresh extraction won't produce: one untranslated, one failed,
+    // one that a translator has already worked on.
+    project::db::merge_units(
+        &mut proj.conn,
+        &[
+            TransUnit::new("gone.rpy", "1:10", UnitKind::Dialogue, "images/GYM/Training 1/4.jpg"),
+            TransUnit::new("gone.rpy", "2:10", UnitKind::Dialogue, "images/GYM/Training 1/5.jpg"),
+            TransUnit::new("gone.rpy", "3:10", UnitKind::Dialogue, "Real line"),
+        ],
+    )
+    .unwrap();
+    let failed = all(&proj.conn).into_iter().find(|u| u.pointer == "2:10").unwrap();
+    project::db::set_status(&proj.conn, failed.id, "Failed").unwrap();
+    let kept = all(&proj.conn).into_iter().find(|u| u.pointer == "3:10").unwrap();
+    project::db::update_unit(&proj.conn, kept.id, Some("บรรทัดจริง"), "Translated").unwrap();
+
+    let before = all(&proj.conn).len();
+    let (_added, _filled, removed) = project::rescan(&mut proj).unwrap();
+    assert_eq!(removed, 2, "the untranslated and the failed stale rows go");
+
+    let after = all(&proj.conn);
+    assert_eq!(after.len(), before - 2);
+    assert!(
+        after.iter().any(|u| u.pointer == "3:10" && u.translation.as_deref() == Some("บรรทัดจริง")),
+        "a translated row is kept even though the extractor no longer produces it"
+    );
+    assert!(!after.iter().any(|u| u.pointer == "1:10"));
+    assert!(!after.iter().any(|u| u.pointer == "2:10"));
+
+    // Running it again is a no-op.
+    let (_, _, removed2) = project::rescan(&mut proj).unwrap();
+    assert_eq!(removed2, 0);
+}
+
 /// A glossary entry is a word matched against text, so outer whitespace means
 /// nothing there — a padded entry would simply never match. Game strings do pad
 /// on purpose though (Ren'Py's SDK screens indent with spaces:

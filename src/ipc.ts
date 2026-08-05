@@ -137,6 +137,8 @@ export interface Character {
 export interface RescanResult {
   added: number;
   contextFilled: number;
+  /** Untranslated rows a stricter extractor no longer produces, dropped. */
+  removed: number;
   total: number;
 }
 

@@ -103,25 +103,27 @@ fn close_project(state: tauri::State<AppState>) {
     *state.project.lock().unwrap() = None;
 }
 
-/// Result of a rescan: units added, existing units whose speaker context was filled in,
-/// and the new total.
+/// Result of a rescan: units added, existing units whose speaker context was filled
+/// in, untranslated units the extractor no longer produces (dropped), and the new total.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RescanResult {
     added: usize,
     context_filled: usize,
+    removed: usize,
     total: i64,
 }
 
 /// Re-scan the game and merge into the open project — pick up engine tiers added since
-/// the project was created (new units) and backfill speaker context on existing units,
-/// keeping all translations. Safe to run repeatedly.
+/// the project was created (new units), backfill speaker context on existing units, and
+/// drop untranslated rows a stricter extractor no longer produces. Every translation is
+/// kept. Safe to run repeatedly.
 #[tauri::command]
 fn rescan_project(state: tauri::State<AppState>) -> Result<RescanResult, String> {
     with_project_mut(&state, |p| {
-        let (added, context_filled) = project::rescan(p)?;
+        let (added, context_filled, removed) = project::rescan(p)?;
         let total = project::db::unit_count(&p.conn)?;
-        Ok(RescanResult { added, context_filled, total })
+        Ok(RescanResult { added, context_filled, removed, total })
     })
 }
 
@@ -1006,7 +1008,9 @@ async fn translate_units(
                     // Drop it so the unit goes to the AI instead.
                     .filter(|tm| {
                         protect::codes_match(&engine_id, &g.source, tm)
-                            && !looks_like_asset_path(tm)
+                            // Same rule as the AI path: a path in the translation is
+                            // only suspect when the source has none.
+                            && !(looks_like_asset_path(tm) && !looks_like_asset_path(&g.source))
                     })
                     // A TM entry written before outer-whitespace alignment carries
                     // the model's stray leading space. Reuse skips the AI entirely,
@@ -1288,8 +1292,11 @@ async fn translate_units(
                     // carrying another unit's markup.
                     // A weak model sometimes echoes a nearby asset path instead of
                     // translating; never store that (it would print a file path in
-                    // game) — fail the unit so it's retried.
-                    Ok(t) if looks_like_asset_path(&t) => {
+                    // game) — fail the unit so it's retried. Only when the SOURCE
+                    // has no path of its own: plenty of real lines embed one
+                    // (`{image=images/emo/13 Hearts.png}Thanks!`), and those came
+                    // back correct only to be rejected here.
+                    Ok(t) if looks_like_asset_path(&t) && !looks_like_asset_path(&g.source) => {
                         "The model returned an asset path, not a translation".to_string()
                     }
                     Ok(t) if protect::codes_match(&engine_id, &g.source, &t) => {

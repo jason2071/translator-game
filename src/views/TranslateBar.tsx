@@ -124,8 +124,9 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
       await refreshTotal();
       await useStore.getState().reloadUnits();
       setRescanMsg(
-        r.added > 0 || r.contextFilled > 0
-          ? `Rescanned: +${r.added} new line(s), filled ${r.contextFilled} speaker(s).`
+        r.added > 0 || r.contextFilled > 0 || r.removed > 0
+          ? `Rescanned: +${r.added} new line(s), filled ${r.contextFilled} speaker(s)` +
+            (r.removed > 0 ? `, dropped ${r.removed} stale line(s).` : ".")
           : "Rescanned — nothing new in the game.",
       );
     } catch (e) {
