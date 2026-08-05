@@ -491,7 +491,10 @@ function CharactersPanel() {
               </button>
             )}
           </div>
-          <label className="chk gloss-name-toggle" title="Off = keep character names in the source language: Run skips them and export leaves the original name in the game.">
+          <label
+            className="chk gloss-name-toggle"
+            title="Off = people's names stay in the source language: Run skips them and export leaves the original in the game. Item, skill, weapon, armor, state and enemy names are always translated — this is only about characters."
+          >
             <input
               type="checkbox"
               checked={project.translateNames}

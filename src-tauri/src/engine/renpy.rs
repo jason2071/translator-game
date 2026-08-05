@@ -2048,7 +2048,7 @@ pub fn export_tl(
             }
             // Keep character names in the source language when the toggle is off,
             // even if a prior Run had translated them.
-            if !translate_names && u.kind == UnitKind::Name {
+            if !translate_names && u.is_character_name() {
                 continue;
             }
             let Some(t) = &u.translation else { continue };

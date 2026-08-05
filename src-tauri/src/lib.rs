@@ -957,7 +957,7 @@ async fn translate_units(
                 continue;
             }
             // Keep character names in the source language when the toggle is off.
-            if !translate_names && u.kind == model::UnitKind::Name {
+            if !translate_names && u.is_character_name() {
                 continue;
             }
             total_units += 1;

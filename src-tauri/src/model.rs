@@ -170,4 +170,31 @@ impl TransUnit {
         self.group = group;
         self
     }
+
+    /// Is this the name of a **person** — what the project's *Translate character
+    /// names* toggle is about?
+    ///
+    /// [`UnitKind::Name`] is broader than the toggle's wording: in RPGMaker it also
+    /// covers every item, skill, weapon, armor, state and enemy name. Gating on the
+    /// kind alone silently left a game's whole item database in English (255 of them
+    /// on a real project, against a single actor). So the database files whose names
+    /// are *things* are excluded here; what remains is actors, a change-name event,
+    /// a Ren'Py `Character(...)` name, a Tyrano/KiriKiri `jname`.
+    pub fn is_character_name(&self) -> bool {
+        if !matches!(self.kind, UnitKind::Name | UnitKind::Nickname) {
+            return false;
+        }
+        let base = self.file.rsplit(['/', '\\']).next().unwrap_or(&self.file);
+        !matches!(
+            base,
+            "Items.json"
+                | "Skills.json"
+                | "Weapons.json"
+                | "Armors.json"
+                | "States.json"
+                | "Troops.json"
+                | "Enemies.json"
+                | "Classes.json"
+        )
+    }
 }

@@ -194,10 +194,7 @@ fn drop_names_when_off(conn: &Connection, units: Vec<crate::model::TransUnit>) -
     if translate_names_on(conn)? {
         return Ok(units);
     }
-    Ok(units
-        .into_iter()
-        .filter(|u| u.kind != crate::model::UnitKind::Name)
-        .collect())
+    Ok(units.into_iter().filter(|u| !u.is_character_name()).collect())
 }
 
 /// Back up the game files that are about to change, then patch translations
@@ -251,7 +248,7 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
             }
             let applied = all_units
                 .iter()
-                .filter(|u| u.status.is_applied() && (translate_names || u.kind != crate::model::UnitKind::Name))
+                .filter(|u| u.status.is_applied() && (translate_names || !u.is_character_name()))
                 .count();
             return Ok(ExportResult {
                 files_written: tl.files,
