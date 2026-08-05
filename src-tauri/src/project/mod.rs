@@ -218,7 +218,15 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
         let lang = db::get_meta(&project.conn, "target_lang")?
             .unwrap_or_else(|| "translated".to_string());
         let translate_names = translate_names_on(&project.conn)?;
-        if let Some(tl) = engine::renpy::export_tl(&project.root, &project.data_dir, &all_units, &lang, translate_names)? {
+        // The glossary rides along: a name the game shows through a variable
+        // (`menu: "[Mom_name]"`) reaches neither the skeleton nor a byte-span
+        // splice, and the runtime hook is the only place left to catch it.
+        let glossary: Vec<(String, String)> = db::glossary_list(&project.conn)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|g| (g.term, g.translation))
+            .collect();
+        if let Some(tl) = engine::renpy::export_tl(&project.root, &project.data_dir, &all_units, &lang, translate_names, &glossary)? {
             // The generated skeleton also lists Ren'Py's built-in UI strings (quit /
             // main-menu confirmations, save-load prompts) — from `renpy/common`, which
             // extraction skips, so they had no unit and stayed English. Harvest the

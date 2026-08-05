@@ -1919,6 +1919,7 @@ pub fn export_tl(
     units: &[TransUnit],
     target_lang: &str,
     translate_names: bool,
+    glossary: &[(String, String)],
 ) -> Result<Option<TlExport>> {
     // tl-source mode: the units were read from an existing `tl/<src>/` tree (their file
     // paths live under `tl/`). Produce `tl/<target>/` by retagging that tree — no
@@ -2053,6 +2054,22 @@ pub fn export_tl(
                 continue;
             }
             extra.push((u.source.clone(), t.clone()));
+        }
+    }
+
+    // Glossary entries ride along. A name the game shows through a variable —
+    // `menu: "[Mom_name]"` picks its text at runtime — is translated by neither the
+    // skeleton (which sees the literal `[Mom_name]`) nor a byte-span splice (there
+    // is no literal to splice). The runtime hook is the only thing that can catch
+    // the value, and the glossary is exactly the list of words the user has decided
+    // must read the same everywhere. Skipped when a unit already provides the pair.
+    for (term, tr) in glossary {
+        let (term, tr) = (term.trim(), tr.trim());
+        if term.is_empty() || tr.is_empty() || term == tr {
+            continue;
+        }
+        if extra_seen.insert(term) {
+            extra.push((term.to_string(), tr.to_string()));
         }
     }
 
@@ -3485,6 +3502,28 @@ define g = Character(_(\"Gwen\"))
         let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
         assert!(!out.contains("\"d\": \""), "one-character key leaked: {out}");
         assert!(out.contains("\"Start\": \""), "real terms still exported: {out}");
+    }
+
+    /// A name the game renders through a variable (`menu: "[Mom_name]"`) is reached
+    /// by neither the skeleton — which sees the literal `[Mom_name]` — nor a
+    /// byte-span splice, since there is no literal to splice. The runtime hook is
+    /// the only place left, so the glossary is exported into it.
+    #[test]
+    fn setup_language_exports_glossary_terms_into_the_hook() {
+        let d = tempfile::tempdir().unwrap();
+        setup_language(
+            d.path(),
+            "thai",
+            "\u{e44}\u{e17}\u{e22}",
+            &[
+                // as if it came from the glossary
+                ("Linda".to_string(), "\u{e25}\u{e34}\u{e19}\u{e14}\u{e32}".to_string()),
+            ],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
+        assert!(out.contains("\"Linda\": \""), "name missing from the hook table: {out}");
     }
 
     /// The generated `zzz_translator.rpy` runs inside the *game's* Python. Ren'Py 7

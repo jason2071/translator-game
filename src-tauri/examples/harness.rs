@@ -542,8 +542,15 @@ fn cmd_tlexport(rest: &[String]) {
     let lang = db::get_meta(&conn, "target_lang").ok().flatten().unwrap_or_else(|| "thai".into());
     let units = db::all_units(&conn).unwrap();
     let data_dir = engine::renpy::game_dir(&root).expect("not a Ren'Py game");
-    println!("target_lang={lang}  units={}", units.len());
-    match engine::renpy::export_tl(&root, &data_dir, &units, &lang, true) {
+    // Same glossary the app passes: names the game shows through a variable are
+    // caught only by the runtime hook.
+    let glossary: Vec<(String, String)> = db::glossary_list(&conn)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|g| (g.term, g.translation))
+        .collect();
+    println!("target_lang={lang}  units={}  glossary={}", units.len(), glossary.len());
+    match engine::renpy::export_tl(&root, &data_dir, &units, &lang, true, &glossary) {
         Ok(Some(tl)) => println!("OK: filled {} tl files under {}", tl.files, tl.dir.display()),
         Ok(None) => println!("no bundled Ren'Py launcher — would fall back to in-place inject"),
         Err(e) => println!("ERROR: {e:#}"),
