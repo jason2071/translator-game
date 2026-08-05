@@ -920,6 +920,13 @@ fn python_display_ok(s: &str, allow_single: bool) -> bool {
         return false;
     }
     let stripped = strip_markup(s);
+    // A single ASCII character is never player-facing text — it is a key name, a
+    // flag, a letter a minigame records (`SetVariable("last_pressed", "d")`).
+    // Translating one is actively harmful: "d" → "ดี" then rewrote *Cindy* into
+    // "Cinดีy" through the runtime substring pass.
+    if stripped.trim().chars().count() < 2 && stripped.is_ascii() {
+        return false;
+    }
     if stripped.trim().contains(char::is_whitespace) {
         return true;
     }
@@ -1937,6 +1944,16 @@ pub fn export_tl(
         let _ = ensure_decompiled(data_dir, root);
     }
 
+    // Remove our own generated file before running the game's Ren'Py. It is written
+    // at the END of this function, but `translate` runs the game's init code first —
+    // so a `zzz_translator.rpy` from a previous export that this Ren'Py chokes on
+    // (a Python 3 call on a Ren'Py 7 game, say) would abort `translate`, and export
+    // would die before it could ever write a corrected file. Deleting it first makes
+    // that unrecoverable state recoverable: the worst case is one export without the
+    // language hook, and the next one restores it.
+    let _ = std::fs::remove_file(data_dir.join(GENERATED_RPY));
+    let _ = std::fs::remove_file(data_dir.join(format!("{GENERATED_RPY}c")));
+
     // Generate the skeleton. The `translate` command is headless (returns without
     // launching the game window) and writes `game/tl/<lang>/`.
     let output = Command::new(&exe)
@@ -2347,9 +2364,17 @@ fn setup_language(
         s.push_str("init 1001 python:\n");
         s.push_str("    _tl_text = {\n");
         let mut seen_keys: HashSet<String> = HashSet::new();
+        // A one-character ASCII key is a flag or a keystroke, never player text; a
+        // project translated before the extractor learned that still carries one
+        // (`"d"` → `"ดี"`). Keep it out of the runtime table entirely rather than
+        // rely on a rescan to clear the unit.
+        let usable = |k: &str| k.chars().count() > 1 || !k.is_ascii();
         for (old, new) in strings {
             let old_u = unescape_rpy(old);
             let new_u = renpy_tl::decode_escapes(new);
+            if !usable(&old_u) {
+                continue;
+            }
             if seen_keys.insert(old_u.clone()) {
                 s.push_str(&format!(
                     "        \"{}\": \"{}\",\n",
@@ -2370,7 +2395,8 @@ fn setup_language(
             let (os, ns) = (text_segments(&old_u), text_segments(&new_u));
             if os.len() == ns.len() && os.len() > 1 {
                 for (o, n) in os.iter().zip(ns.iter()) {
-                    if o != n && !o.is_empty() && !n.is_empty() && seen_keys.insert(o.clone()) {
+                    if o != n && !o.is_empty() && !n.is_empty() && usable(o) && seen_keys.insert(o.clone())
+                    {
                         s.push_str(&format!(
                             "        \"{}\": \"{}\",\n",
                             renpy_tl::quote_unicode(o),
@@ -2381,8 +2407,24 @@ fn setup_language(
             }
         }
         s.push_str("    }\n");
-        // Same pairs, longest first, for the substring pass below.
-        s.push_str("    _tl_frags = sorted(_tl_text.items(), key=lambda kv: -len(kv[0]))\n");
+        // Same pairs, longest first, for the substring pass below — but only the
+        // ones that are safe to match *inside* other text. A short Latin key is
+        // not: `"d"` → `"ดี"` rewrote the character name **Cindy** as "Cinดีy".
+        // CJK has no word boundaries, so a short key there is the whole point;
+        // Latin does, and a substring hit lands mid-word. Keep a key when it is
+        // long enough to be a phrase, or when it carries non-ASCII script.
+        // `str.isascii()` is Python 3.7+; a Ren'Py 7 game runs Python 2, where this
+        // whole init block would die with AttributeError and take the translation
+        // with it. `max(ord(...))` works in both.
+        s.push_str("    def _tl_nonascii(_s):\n");
+        s.push_str("        for _c in _s:\n");
+        s.push_str("            if ord(_c) > 127:\n");
+        s.push_str("                return True\n");
+        s.push_str("        return False\n");
+        s.push_str(
+            "    _tl_frags = sorted([_kv for _kv in _tl_text.items() \
+             if len(_kv[0]) >= 8 or _tl_nonascii(_kv[0])], key=lambda kv: -len(kv[0]))\n",
+        );
         // Entries the game fills in with `.format(...)`: `"{}を手に入れた！"` is
         // formatted in python *before* any translation runs, so the finished text
         // ("牛柄ビキニを手に入れた！") matches no key. Keep the single-placeholder ones
@@ -2390,21 +2432,13 @@ fn setup_language(
         s.push_str("    _tl_fmts = [(_k.split(\"{}\"), _v) for _k, _v in _tl_frags if _k.count(\"{}\") == 1 and _v.count(\"{}\") == 1]\n");
         // Does the text still hold untranslated source-language script? Cheap guard
         // so a fully-translated line skips the scan, and the all-or-nothing test for
-        // the substring pass below.
-        //
-        // CJK is the easy case — kana/kanji left in the output means the rewrite
-        // didn't finish. A **Latin-script** game has no such marker: every check
-        // returned False, the hook bailed at the first `if not …: return _t`, and
-        // nothing past the exact-match lookup ever ran. So fall back to "the text
-        // still contains a key we know how to translate", which works for any
-        // source language.
+        // the substring pass below. Kana/kanji left in the output means the rewrite
+        // didn't finish; a Latin-script game has no such marker, which is why the
+        // substring pass is gated on this and the exact/template passes are not.
         s.push_str("    def _tl_has_src(_t):\n");
         s.push_str("        for _c in _t:\n");
         s.push_str("            _o = ord(_c)\n");
         s.push_str("            if 0x3040 <= _o <= 0x30ff or 0x4e00 <= _o <= 0x9fff:\n");
-        s.push_str("                return True\n");
-        s.push_str("        for _k in _tl_text:\n");
-        s.push_str("            if _k and _k in _t:\n");
         s.push_str("                return True\n");
         s.push_str("        return False\n");
         s.push_str("    _tl_prev_replace_text = config.replace_text\n");
@@ -2421,16 +2455,23 @@ fn setup_language(
         // which matches no key whole \u2014 the literal was translated before `[…]` was
         // substituted, and the value came from python. So fall back to replacing each
         // known source string *inside* the text, longest first.
-        s.push_str("        if not _tl_has_src(_t):\n");
-        s.push_str("            return _t\n");
-        // A filled template: match its literal halves, translate the value that
-        // sat between them, and rebuild with the translated template.
+        // A filled template: match its literal halves, translate the value that sat
+        // between them, and rebuild with the translated template. Anchored at both
+        // ends, so it is safe in any script — no language gate.
         s.push_str("        for (_a, _b), _v in _tl_fmts:\n");
         s.push_str("            if len(_t) >= len(_a) + len(_b) and _t.startswith(_a) and _t.endswith(_b):\n");
         s.push_str("                _mid = _t[len(_a):len(_t) - len(_b)] if _b else _t[len(_a):]\n");
         s.push_str("                _out = _v.replace(\"{}\", _tl_text.get(_mid, _mid))\n");
-        s.push_str("                if not _tl_has_src(_out):\n");
+        s.push_str("                if _out != _t:\n");
         s.push_str("                    return _out\n");
+        // Last resort — replace known source strings *inside* the text, longest
+        // first. A screen can build one Text from a translated literal plus an
+        // interpolated value, which matches no key whole. Unanchored, so it runs
+        // only for a CJK source: there a leftover kana proves the rewrite is
+        // unfinished and there are no word boundaries to respect, while in a Latin
+        // game a substring hit lands mid-word — that is how Cindy became "Cinดีy".
+        s.push_str("        if not _tl_has_src(_t):\n");
+        s.push_str("            return _t\n");
         s.push_str("        _p = _t\n");
         s.push_str("        for _k, _v in _tl_frags:\n");
         s.push_str("            if _k and _k in _p:\n");
@@ -3377,6 +3418,20 @@ define g = Character(_(\"Gwen\"))
         assert!(units.iter().all(|u| u.pointer.starts_with("name#")));
     }
 
+    /// A one-character ASCII string is a key name or a flag, never player text —
+    /// `SetVariable("last_pressed", "d")` gave a unit whose translation ("ดี") then
+    /// rewrote the character name **Cindy** into "Cinดีy" through the runtime
+    /// substring pass.
+    #[test]
+    fn a_single_ascii_character_is_not_display_text() {
+        assert!(!python_display_ok("d", true));
+        assert!(!python_display_ok("R", true));
+        // Two characters can be a real label ("No", "On"), and a single non-ASCII
+        // character is a word in CJK.
+        assert!(python_display_ok("No", true));
+        assert!(python_display_ok("\u{50d5}", true));
+    }
+
     /// Ren'Py hands `config.replace_text` one TEXT token at a time, **after** its
     /// tokenizer has split the tags out (`renpy/text/text.py`). A quest line stored
     /// as `{color=#fbce6e}The main story is completed.{/color}\n{color=…}…{/color}`
@@ -3408,6 +3463,48 @@ define g = Character(_(\"Gwen\"))
             out.contains("\"Some new conversations are available.\": \""),
             "second segment key missing: {out}"
         );
+    }
+
+    /// A project translated before the extractor learned to skip one-character
+    /// keys still carries `"d" → "ดี"`. It must not reach the runtime table: the
+    /// substring pass turned **Cindy** into "Cinดีy".
+    #[test]
+    fn setup_language_drops_one_character_ascii_keys() {
+        let d = tempfile::tempdir().unwrap();
+        setup_language(
+            d.path(),
+            "thai",
+            "\u{e44}\u{e17}\u{e22}",
+            &[
+                ("d".to_string(), "\u{e14}\u{e35}".to_string()),
+                ("Start".to_string(), "\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}".to_string()),
+            ],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
+        assert!(!out.contains("\"d\": \""), "one-character key leaked: {out}");
+        assert!(out.contains("\"Start\": \""), "real terms still exported: {out}");
+    }
+
+    /// The generated `zzz_translator.rpy` runs inside the *game's* Python. Ren'Py 7
+    /// ships Python 2, where `str.isascii()` does not exist — using it killed the
+    /// whole init block with an AttributeError and took the translation with it.
+    #[test]
+    fn generated_python_avoids_python3_only_calls() {
+        let d = tempfile::tempdir().unwrap();
+        setup_language(
+            d.path(),
+            "thai",
+            "\u{e44}\u{e17}\u{e22}",
+            &[("Start".to_string(), "\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}".to_string())],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
+        for py3_only in [".isascii(", ".removeprefix(", ".removesuffix(", ".casefold("] {
+            assert!(!out.contains(py3_only), "Python 3-only call {py3_only} in generated code");
+        }
     }
 
     #[test]
