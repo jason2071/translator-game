@@ -16,6 +16,9 @@ pub enum ParamText {
     /// (`{ "message": "…", "icon": "4" }`) — each entry is judged by
     /// [`plugin_arg_kind`], since most args are config, not text.
     ArgsAt(usize),
+    /// `parameters[idx]` is raw JavaScript (355/655). Only the string literals
+    /// inside it that read as prose become units — see [`script_text_spans`].
+    ScriptAt(usize),
 }
 
 /// Options controlling which "risky" categories are extracted.
@@ -61,7 +64,13 @@ pub fn translatable_params(code: i64, opts: &ExtractOpts) -> Vec<ParamText> {
         // a dynamic-text-picture plugin), so skipping 357 outright loses the story.
         // Which args count as text is decided per entry — see `plugin_arg_kind`.
         357 => vec![ParamText::ArgsAt(3)],
+        // Raw script. `include_scripts` takes the *whole* command as one unit,
+        // which only makes sense for a human editing JS by hand. Off (the default)
+        // we still mine the string literals inside it: a game can narrate entirely
+        // through `$gameVariables.setValue(21, "…")`, and skipping 355 outright
+        // left 32 000 lines of one real game invisible.
         355 | 655 if opts.include_scripts => vec![ParamText::At(0, UnitKind::Script)],
+        355 | 655 => vec![ParamText::ScriptAt(0)],
         _ => vec![],
     }
 }
@@ -163,6 +172,125 @@ pub fn looks_like_player_text(value: &str) -> bool {
     true
 }
 
+/// Calls in a script command whose string arguments are **never** player text —
+/// asset loaders, audio, switches by name. Matched as a substring of the code
+/// preceding the literal, so `Galv.CACHE.load("pic")` and
+/// `AudioManager.playSe({name:"..."})` keep their filenames.
+const SCRIPT_NON_TEXT_CALLS: &[&str] = &[
+    "CACHE.load",
+    "loadPicture",
+    "loadBitmap",
+    "loadFace",
+    "loadCharacter",
+    "loadSystem",
+    "playSe",
+    "playBgm",
+    "playBgs",
+    "playMe",
+    "requestAnimation",
+    "ImageManager",
+    "AudioManager",
+    "SceneManager",
+    "require(",
+    "console.",
+];
+
+/// The string literals inside a script command (355/655) that read as player
+/// text, as `(byte offset, byte length)` spans into `js` — the span covers the
+/// literal's **contents**, not its quotes.
+///
+/// Some games never use Show Text at all and narrate entirely through
+/// `$gameVariables.setValue(21, "…")`, which leaves their whole script invisible
+/// to extraction. Taking the raw command as one unit (the old `include_scripts`
+/// behaviour) is not an option — a model would rewrite the JS. Only the literals
+/// are addressable, and only those that look like prose: a filename, an
+/// identifier or a number in the same call stays untouched, as does anything
+/// inside a known asset-loading call.
+pub fn script_text_spans(js: &str) -> Vec<(usize, usize)> {
+    let b = js.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let q = b[i];
+        if q != b'"' && q != b'\'' {
+            i += 1;
+            continue;
+        }
+        // Walk to the closing quote, honouring backslash escapes.
+        let start = i + 1;
+        let mut j = start;
+        let mut closed = false;
+        while j < b.len() {
+            match b[j] {
+                b'\\' => j += 2,
+                c if c == q => {
+                    closed = true;
+                    break;
+                }
+                _ => j += 1,
+            }
+        }
+        if !closed {
+            break; // unterminated — leave the rest alone
+        }
+        let raw = &js[start..j.min(js.len())];
+        // The code just before the literal decides whether it can be text at all.
+        let prefix = &js[..i];
+        let tail = &prefix[prefix.len().saturating_sub(64)..];
+        let asset_call = SCRIPT_NON_TEXT_CALLS.iter().any(|c| tail.contains(c));
+        // Only take a literal whose escaping survives a round trip. Anything
+        // exotic (`A`, `\x41`, `\0`) would come back re-escaped differently
+        // and break `extract → inject == source`, so it is left alone.
+        let text = unescape_js(raw);
+        if !asset_call && escape_js_literal(&text, q) == raw && looks_like_player_text(&text) {
+            out.push((start, raw.len()));
+        }
+        i = j + 1;
+    }
+    out
+}
+
+/// Resolve the JS escapes a game's dialogue actually uses. Paired with
+/// [`escape_js_literal`]: a literal is only extracted when the two round-trip,
+/// which is what keeps `extract → inject == source` exact.
+pub fn unescape_js(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other), // \\ \" \' and anything else
+            None => break,
+        }
+    }
+    out
+}
+
+/// Write `s` back as the body of a JS string literal quoted with `quote`.
+/// The other quote character is left bare — that is how a game writes
+/// `"It's fine"` — so the result matches the source it came from.
+pub fn escape_js_literal(s: &str, quote: u8) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '"' if quote == b'"' => out.push_str("\\\""),
+            '\'' if quote == b'\'' => out.push_str("\\'"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Codes whose consecutive runs form a single logical message box, so the UI
 /// can merge them. 401 = normal text, 405 = scrolling text.
 pub fn is_message_line(code: i64) -> bool {
@@ -251,5 +379,56 @@ mod tests {
         assert!(!looks_like_player_text("PictureGrouping"));
         assert!(looks_like_player_text("「ちがっ……」"));
         assert!(looks_like_player_text("You found a key."));
+    }
+
+    /// Some games never use Show Text and narrate entirely through script
+    /// commands — one real project had 32 000 lines inside
+    /// `$gameVariables.setValue(21, "…")` and extracted none of them. Only the
+    /// prose literals are taken; the JS around them is not a unit.
+    #[test]
+    fn script_text_spans_takes_prose_and_leaves_code_alone() {
+        let js = r#"$gameVariables.setValue(21, "I can't be wasting time.");"#;
+        let spans = script_text_spans(js);
+        assert_eq!(spans.len(), 1, "one literal: {spans:?}");
+        let (s, l) = spans[0];
+        assert_eq!(&js[s..s + l], "I can't be wasting time.");
+
+        // A number, an identifier and a filename in the same shape are not text.
+        assert!(script_text_spans(r#"$gameSwitches.setValue(3, "on");"#).is_empty());
+        assert!(script_text_spans(r#"Galv.CACHE.load("pic", "img/pictures/cg01.png");"#).is_empty());
+        assert!(script_text_spans(r#"AudioManager.playSe({name:"Cursor 1"});"#).is_empty());
+
+        // Two literals in one command are two units.
+        let two = r#"a("Take the west road."); b("Or head back home.");"#;
+        assert_eq!(script_text_spans(two).len(), 2);
+
+        // Single quotes work, and the other quote inside stays bare.
+        let sq = r#"say('It "rained" all day.');"#;
+        let sp = script_text_spans(sq);
+        assert_eq!(sp.len(), 1);
+        assert_eq!(&sq[sp[0].0..sp[0].0 + sp[0].1], r#"It "rained" all day."#);
+
+        // Plain UTF-8 is fine — nothing to re-escape.
+        assert_eq!(script_text_spans("t(\"caf\u{e9} is open today\");").len(), 1);
+        // A `\uXXXX` escape is not reproduced byte for byte, so that literal is
+        // skipped rather than risk breaking `extract → inject == source`.
+        assert!(script_text_spans("t(\"caf\\u00e9 is open today\");").is_empty());
+    }
+
+    #[test]
+    fn js_escapes_round_trip() {
+        for (raw, quote) in [
+            (r#"I can't be late"#, b'"'),
+            (r#"He said \"hi\" twice"#, b'"'),
+            (r#"It \'s fine"#, b'\''),
+            (r#"line one\nline two"#, b'"'),
+            (r#"back\\slash"#, b'"'),
+        ] {
+            assert_eq!(
+                escape_js_literal(&unescape_js(raw), quote),
+                raw,
+                "round trip failed for {raw:?}"
+            );
+        }
     }
 }

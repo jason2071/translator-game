@@ -225,3 +225,100 @@ fn plugin_command_text_injects_and_round_trips() {
         "16"
     );
 }
+
+/// A game that narrates through script commands instead of Show Text: its
+/// dialogue lives in `$gameVariables.setValue(21, "…")`, which extraction used to
+/// ignore entirely — one real project had 32 000 such lines and reported 1 522
+/// dialogue units. The literals are units now; the JS around them is not.
+fn script_dialogue_game() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        data.join("System.json"),
+        r#"{"gameTitle":"Script Quest","currencyUnit":"G"}"#,
+    )
+    .unwrap();
+    let common = r#"[null,{"id":1,"name":"EV001","trigger":0,"switchId":1,"list":[
+{"code":355,"indent":0,"parameters":["$gameVariables.setValue(21, \"I can't be wasting time.\");"]},
+{"code":655,"indent":0,"parameters":["$gameVariables.setValue(22, \"The church is closed.\");"]},
+{"code":355,"indent":0,"parameters":["Galv.CACHE.load(\"pic\", \"img/pictures/cg01.png\");"]},
+{"code":355,"indent":0,"parameters":["$gameSwitches.setValue(3, \"on\");"]},
+{"code":0,"indent":0,"parameters":[]}]}]"#;
+    std::fs::write(data.join("CommonEvents.json"), common).unwrap();
+    tmp
+}
+
+#[test]
+fn script_command_prose_is_extracted_but_not_its_code() {
+    let tmp = script_dialogue_game();
+    let root = tmp.path();
+    let eng = engine::detect(root).unwrap();
+    let units = eng.extract(root, &ExtractOpts::default()).unwrap();
+
+    let sources: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+    assert!(sources.contains(&"I can't be wasting time."), "{sources:?}");
+    assert!(sources.contains(&"The church is closed."), "655 continuation too: {sources:?}");
+    // An asset load and a flag value in the same shape are not text.
+    assert!(!sources.iter().any(|s| s.contains("img/pictures")), "{sources:?}");
+    assert!(!sources.contains(&"on"), "a switch value is not dialogue: {sources:?}");
+    // The JS itself never becomes a unit.
+    assert!(
+        !sources.iter().any(|s| s.contains("$gameVariables")),
+        "the script line must not be a unit: {sources:?}"
+    );
+
+    // The pointer addresses a byte span inside the command's parameter.
+    let u = units.iter().find(|u| u.source == "I can't be wasting time.").unwrap();
+    assert!(u.pointer.contains('#'), "span pointer expected, got {}", u.pointer);
+}
+
+#[test]
+fn script_command_prose_injects_in_place_and_round_trips() {
+    let tmp = script_dialogue_game();
+    let root = tmp.path();
+    let eng = engine::detect(root).unwrap();
+    let mut units = eng.extract(root, &ExtractOpts::default()).unwrap();
+
+    for u in &mut units {
+        u.translation = Some(u.source.clone());
+        u.status = Status::Draft;
+    }
+    let out = tempfile::tempdir().unwrap();
+    eng.inject(root, &units, out.path()).unwrap();
+    // Value equality, like the other round-trip tests: MvMz always re-serializes
+    // compact, so only the data has to match, not this fixture's line breaks.
+    let orig: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("data/CommonEvents.json")).unwrap(),
+    )
+    .unwrap();
+    let same: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out.path().join("CommonEvents.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(orig, same, "round-trip altered the script commands");
+
+    // A real translation replaces only the literal; the JS keeps its shape and
+    // the quote it used, and an apostrophe in the translation is escaped.
+    for u in &mut units {
+        if u.source == "I can't be wasting time." {
+            u.translation = Some("ไม่มีเวลาแล้ว 'รีบ' หน่อย".into());
+            u.status = Status::Translated;
+        } else {
+            u.status = Status::Untranslated;
+            u.translation = None;
+        }
+    }
+    let out2 = tempfile::tempdir().unwrap();
+    eng.inject(root, &units, out2.path()).unwrap();
+    let patched: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out2.path().join("CommonEvents.json")).unwrap(),
+    )
+    .unwrap();
+    let js = patched.pointer("/1/list/0/parameters/0").unwrap().as_str().unwrap();
+    assert_eq!(
+        js,
+        r#"$gameVariables.setValue(21, "ไม่มีเวลาแล้ว 'รีบ' หน่อย");"#,
+        "only the literal changes"
+    );
+}

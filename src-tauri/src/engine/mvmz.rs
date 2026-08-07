@@ -109,7 +109,16 @@ impl GameEngine for MvMzEngine {
             let mut val: Value = serde_json::from_str(&text)
                 .with_context(|| format!("parsing {file}"))?;
 
-            for u in file_units {
+            // A script-literal unit addresses a byte range *inside* its node, so
+            // several of them share one node. Apply those from the end backwards,
+            // and after the plain ones, so earlier offsets stay valid.
+            let (mut spans, plain): (Vec<&TransUnit>, Vec<&TransUnit>) =
+                file_units.into_iter().partition(|u| u.pointer.contains('#'));
+            spans.sort_by_key(|u| {
+                std::cmp::Reverse(split_span_pointer(&u.pointer).map(|(_, s, _)| s).unwrap_or(0))
+            });
+
+            for u in plain {
                 let translation = u.translation.clone().unwrap_or_default();
                 match val.pointer_mut(&u.pointer) {
                     Some(node) => *node = Value::String(translation),
@@ -121,6 +130,38 @@ impl GameEngine for MvMzEngine {
                         ))
                     }
                 }
+            }
+
+            for u in spans {
+                let (ptr, start, len) = split_span_pointer(&u.pointer).ok_or_else(|| {
+                    anyhow!("bad script pointer {} in {}", u.pointer, file)
+                })?;
+                let node = val.pointer_mut(ptr).ok_or_else(|| {
+                    anyhow!("stale pointer {} in {} — re-extract needed", u.pointer, file)
+                })?;
+                let Some(js) = node.as_str() else {
+                    return Err(anyhow!("script pointer {} in {} is not a string", u.pointer, file));
+                };
+                let end = start + len;
+                if end > js.len() || !js.is_char_boundary(start) || !js.is_char_boundary(end) {
+                    return Err(anyhow!(
+                        "stale pointer {} in {} — re-extract needed",
+                        u.pointer,
+                        file
+                    ));
+                }
+                // Re-escape for the quote this literal uses — the character just
+                // before the span. Only the JS layer needs it; serde handles JSON.
+                let quote = js.as_bytes().get(start.wrapping_sub(1)).copied().unwrap_or(b'"');
+                let translation = super::codes::escape_js_literal(
+                    &u.translation.clone().unwrap_or_default(),
+                    quote,
+                );
+                let mut next = String::with_capacity(js.len());
+                next.push_str(&js[..start]);
+                next.push_str(&translation);
+                next.push_str(&js[end..]);
+                *node = Value::String(next);
             }
 
             // Compact form matches RPGMaker's own serialization (no spaces,
@@ -784,6 +825,23 @@ fn walk_event_list(
                         }
                     }
                 }
+                ParamText::ScriptAt(idx) => {
+                    // A script command's prose lives in its string literals. The
+                    // pointer keeps the JSON path to the whole command parameter and
+                    // adds the literal's byte span inside it (`…/parameters/0#12:34`),
+                    // so inject splices just that run and the JS around it is
+                    // untouched.
+                    if let Some(js) = params.and_then(|p| p.get(idx)).and_then(|v| v.as_str()) {
+                        for (start, len) in super::codes::script_text_spans(js) {
+                            let ptr = format!("{base}/{ci}/parameters/{idx}#{start}:{len}");
+                            // The unit carries the *text*, not the escaped source —
+                            // a translator should not see `\'`. Inject re-escapes it
+                            // for the quote the literal actually uses.
+                            let text = super::codes::unescape_js(&js[start..start + len]);
+                            out.push(TransUnit::new(file, ptr, UnitKind::Dialogue, text));
+                        }
+                    }
+                }
                 ParamText::ArgsAt(idx) => {
                     // MZ plugin command: `parameters` = [plugin, command, label, args].
                     let str_param = |i: usize| {
@@ -818,6 +876,16 @@ fn walk_event_list(
 fn esc_ptr(key: &str) -> String {
     key.replace('~', "~0").replace('/', "~1")
 }
+
+/// Split a script-literal pointer — `"/events/1/pages/0/list/3/parameters/0#12:34"`
+/// — into the JSON Pointer and the `(start, len)` byte span inside that node.
+/// `None` for a plain pointer, which addresses the whole node.
+fn split_span_pointer(p: &str) -> Option<(&str, usize, usize)> {
+    let (ptr, span) = p.rsplit_once('#')?;
+    let (start, len) = span.split_once(':')?;
+    Some((ptr, start.parse().ok()?, len.parse().ok()?))
+}
+
 
 fn push_if(
     out: &mut Vec<TransUnit>,
