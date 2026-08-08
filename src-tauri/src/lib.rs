@@ -381,14 +381,20 @@ async fn classify_genders(
             trusted.insert(n.trim().to_string());
             todo.push((n.trim().to_string(), samples.get(n).cloned().unwrap_or_default()));
         }
-        for c in project::db::mine_glossary_candidates(&p.conn, &engine_id, 120)
-            .map_err(|e| e.to_string())?
-        {
-            let key = c.term.trim().to_lowercase();
-            if c.term.trim().is_empty() || have.contains(c.term.trim()) || !seen.insert(key) {
-                continue;
+        // Mining is the fallback for a game that names no speakers at all. When the
+        // game does name them, mining only adds noise: a miner reads the capitalized
+        // word that opens a line, so "Mh", "Stop" and "We're" arrive looking like cast
+        // members and the panel stops resembling the game.
+        if speakers.len() < 3 {
+            for c in project::db::mine_glossary_candidates(&p.conn, &engine_id, 120)
+                .map_err(|e| e.to_string())?
+            {
+                let key = c.term.trim().to_lowercase();
+                if c.term.trim().is_empty() || have.contains(c.term.trim()) || !seen.insert(key) {
+                    continue;
+                }
+                todo.push((c.term.trim().to_string(), c.example));
             }
-            todo.push((c.term.trim().to_string(), c.example));
         }
         todo.truncate(150);
         (todo, trusted)

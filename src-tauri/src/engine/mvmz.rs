@@ -69,6 +69,10 @@ impl GameEngine for MvMzEngine {
             .collect();
         files.sort(); // deterministic unit order
 
+        // Read the cast first: a message names its speaker with `\N[id]`, which only
+        // Actors.json can resolve (see `name_box`).
+        let actors = actor_names(&dir);
+
         let mut units = Vec::new();
         for path in files {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -81,7 +85,7 @@ impl GameEngine for MvMzEngine {
                 .with_context(|| format!("reading {name}"))?;
             let val: Value = serde_json::from_str(&text)
                 .with_context(|| format!("parsing {name}"))?;
-            extract_file(&name, &val, opts, &mut units);
+            extract_file(&name, &val, opts, &actors, &mut units);
         }
         Ok(units)
     }
@@ -480,13 +484,19 @@ fn is_data_file(name: &str) -> bool {
         || db_fields(name).is_some()
 }
 
-fn extract_file(name: &str, val: &Value, opts: &ExtractOpts, out: &mut Vec<TransUnit>) {
+fn extract_file(
+    name: &str,
+    val: &Value,
+    opts: &ExtractOpts,
+    actors: &[String],
+    out: &mut Vec<TransUnit>,
+) {
     match name {
         "System.json" => extract_system(name, val, out),
         "MapInfos.json" => extract_mapinfos(name, val, out),
-        "CommonEvents.json" => extract_common_events(name, val, opts, out),
-        "Troops.json" => extract_troops(name, val, opts, out),
-        _ if is_map_file(name) => extract_map(name, val, opts, out),
+        "CommonEvents.json" => extract_common_events(name, val, opts, actors, out),
+        "Troops.json" => extract_troops(name, val, opts, actors, out),
+        _ if is_map_file(name) => extract_map(name, val, opts, actors, out),
         _ => {
             if let Some(fields) = db_fields(name) {
                 extract_db_array(name, val, fields, opts, out);
@@ -656,7 +666,13 @@ fn extract_mapinfos(file: &str, val: &Value, out: &mut Vec<TransUnit>) {
 // Event-list bearing files
 // ---------------------------------------------------------------------------
 
-fn extract_map(file: &str, val: &Value, opts: &ExtractOpts, out: &mut Vec<TransUnit>) {
+fn extract_map(
+    file: &str,
+    val: &Value,
+    opts: &ExtractOpts,
+    actors: &[String],
+    out: &mut Vec<TransUnit>,
+) {
     if let Some(s) = val.get("displayName").and_then(|v| v.as_str()) {
         if !s.is_empty() {
             push_if(out, file, "/displayName", UnitKind::MapName, s, None);
@@ -674,13 +690,19 @@ fn extract_map(file: &str, val: &Value, opts: &ExtractOpts, out: &mut Vec<TransU
         for (pi, page) in pages.iter().enumerate() {
             if let Some(list) = page.get("list") {
                 let base = format!("/events/{ei}/pages/{pi}/list");
-                walk_event_list(list, &base, file, opts, out);
+                walk_event_list(list, &base, file, opts, actors, out);
             }
         }
     }
 }
 
-fn extract_common_events(file: &str, val: &Value, opts: &ExtractOpts, out: &mut Vec<TransUnit>) {
+fn extract_common_events(
+    file: &str,
+    val: &Value,
+    opts: &ExtractOpts,
+    actors: &[String],
+    out: &mut Vec<TransUnit>,
+) {
     let arr = match val.as_array() {
         Some(a) => a,
         None => return,
@@ -688,12 +710,18 @@ fn extract_common_events(file: &str, val: &Value, opts: &ExtractOpts, out: &mut 
     for (i, ev) in arr.iter().enumerate() {
         if let Some(list) = ev.get("list") {
             let base = format!("/{i}/list");
-            walk_event_list(list, &base, file, opts, out);
+            walk_event_list(list, &base, file, opts, actors, out);
         }
     }
 }
 
-fn extract_troops(file: &str, val: &Value, opts: &ExtractOpts, out: &mut Vec<TransUnit>) {
+fn extract_troops(
+    file: &str,
+    val: &Value,
+    opts: &ExtractOpts,
+    actors: &[String],
+    out: &mut Vec<TransUnit>,
+) {
     let arr = match val.as_array() {
         Some(a) => a,
         None => return,
@@ -713,21 +741,97 @@ fn extract_troops(file: &str, val: &Value, opts: &ExtractOpts, out: &mut Vec<Tra
             for (pi, page) in pages.iter().enumerate() {
                 if let Some(list) = page.get("list") {
                     let base = format!("/{i}/pages/{pi}/list");
-                    walk_event_list(list, &base, file, opts, out);
+                    walk_event_list(list, &base, file, opts, actors, out);
                 }
             }
         }
     }
 }
 
+/// Actor names by id, straight out of Actors.json (index 0 is the conventional
+/// null, so the array index *is* the id `\N[id]` refers to). Missing or unreadable
+/// file ⇒ empty, which just means no speaker gets resolved.
+fn actor_names(dir: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(dir.join("Actors.json")) else {
+        return Vec::new();
+    };
+    let Ok(val) = serde_json::from_str::<Value>(&text) else {
+        return Vec::new();
+    };
+    match val.as_array() {
+        Some(arr) => arr
+            .iter()
+            .map(|a| a.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string())
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// The speaker a message line names inside its own text.
+///
+/// MV's Show Text carries no speaker field at all and MZ's is usually left empty,
+/// so in practice a game states the speaker with a name-box text code — YEP
+/// MessageCore's `\n<Name>` (`\nc<>` centered, `\nr<>` right; VisuStella MZ and the
+/// common forks all copy the shape). The box's content is itself markup:
+/// `\n<\c[23]\N[2]>` means "actor 2, drawn in color 23".
+///
+/// Returns `None` unless the whole box resolves to plain text, so an unknown code —
+/// or a `\v[7]` whose value only exists at runtime — yields no speaker rather than a
+/// meaningless one.
+fn name_box(text: &str, actors: &[String]) -> Option<String> {
+    let t = text.trim_start();
+    let inner = ["\\n<", "\\nc<", "\\nr<"]
+        .iter()
+        .find_map(|p| strip_prefix_ci(t, p))?;
+    resolve_name_codes(&inner[..inner.find('>')?], actors)
+}
+
+/// `str::strip_prefix`, but MV matches its text codes case-insensitively.
+fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = s.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then(|| &s[prefix.len()..])
+}
+
+/// Flatten the markup inside a name box to the name a player sees.
+fn resolve_name_codes(s: &str, actors: &[String]) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = s;
+    loop {
+        let Some(i) = rest.find('\\') else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..i]);
+        // Every code we understand is one letter plus a bracketed number.
+        let tail = &rest[i + 1..];
+        let letter = tail.chars().next()?;
+        let arg = tail[letter.len_utf8()..].strip_prefix('[')?;
+        let end = arg.find(']')?;
+        let n: usize = arg[..end].trim().parse().ok()?;
+        match letter.to_ascii_lowercase() {
+            // The one that carries the name.
+            'n' => out.push_str(actors.get(n).map(String::as_str).filter(|s| !s.is_empty())?),
+            // Color and icon draw something, but no text.
+            'c' | 'i' => {}
+            // Anything else (notably `\v[n]`) isn't knowable from the data files.
+            _ => return None,
+        }
+        rest = &arg[end + 1..];
+    }
+    let name = out.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// Walk a single event command `list`, emitting a unit per translatable
-/// parameter. Consecutive message lines (401/405) are grouped; a preceding
-/// Show-Text header (101) supplies speaker context (MZ `parameters[4]`).
+/// parameter. Consecutive message lines (401/405) are grouped; the speaker comes
+/// from the preceding Show-Text header (101) on MZ (`parameters[4]`), else from a
+/// name box in the run's first line (see `name_box`).
 fn walk_event_list(
     list: &Value,
     base: &str,
     file: &str,
     opts: &ExtractOpts,
+    actors: &[String],
     out: &mut Vec<TransUnit>,
 ) {
     let arr = match list.as_array() {
@@ -777,6 +881,15 @@ fn walk_event_list(
                 group_id += 1;
                 cur_group = Some(format!("{base}/g{group_id}"));
                 in_message = true;
+                // No speaker from the header (always so on MV): the game states it
+                // in the run's first line instead.
+                if cur_ctx.is_none() {
+                    cur_ctx = cmd
+                        .get("parameters")
+                        .and_then(|p| p.get(0))
+                        .and_then(|v| v.as_str())
+                        .and_then(|t| name_box(t, actors));
+                }
             }
         } else {
             // Standalone translatable (choices, name changes) end a run.
@@ -918,6 +1031,22 @@ mod tests {
         assert!(!is_data_file("package.json"));
         assert!(!is_data_file("Map.json"));
         assert!(!is_data_file("MapABC.json"));
+    }
+
+    #[test]
+    fn name_box_resolves_the_speaker_a_message_line_declares() {
+        let actors = vec![String::new(), "Me".into(), "Linda".into(), "Julie".into()];
+        // Plain, colored, and actor-referencing boxes all name someone.
+        assert_eq!(name_box("\\n<Siren>Hi!", &actors).as_deref(), Some("Siren"));
+        assert_eq!(name_box("\\n<\\c[23]\\N[2]>Hi!", &actors).as_deref(), Some("Linda"));
+        assert_eq!(name_box("\\N<\\c[6]Cleo>Hi!", &actors).as_deref(), Some("Cleo"));
+        assert_eq!(name_box("\\nc<\\n[3]>Hi!", &actors).as_deref(), Some("Julie"));
+        // No box, a runtime variable, or an id with no actor behind it: no speaker
+        // beats a wrong one.
+        assert_eq!(name_box("Just a line.", &actors), None);
+        assert_eq!(name_box("\\n<\\v[7]>Hi!", &actors), None);
+        assert_eq!(name_box("\\n<\\N[9]>Hi!", &actors), None);
+        assert_eq!(name_box("\\n<>Hi!", &actors), None);
     }
 
     fn write_plugins(base: &Path, body: &str) {
