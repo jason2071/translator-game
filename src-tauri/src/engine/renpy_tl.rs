@@ -248,12 +248,55 @@ fn last_quoted(line: &str) -> Option<(usize, usize)> {
 /// source `.rpy` / the skeleton) to its translation.
 ///
 /// - Dialogue blocks: the say line's last quoted string is the `what`; it is
-///   replaced with the translation, re-escaped via [`encode_say_string`].
+///   replaced with the translation, re-escaped via [`encode_say_string`]. A block
+///   can open with statements of its own — `voice "…"` above all — which are left
+///   alone, and repaired from their comment if an earlier export wrote over them
+///   (see [`restore_statement`]).
 /// - `strings` blocks: each `new "…"` is set to the translation of the preceding
 ///   `old "…"`, escaped via [`quote_unicode`].
 ///
 /// Lines whose source has no translation are left as-is (Ren'Py then shows the
 /// original for those).
+/// Is this line of a dialogue block the say itself, rather than one of the
+/// statements Ren'Py groups above it?
+///
+/// A say is `tag "what"`, `"what"` (narration) or `extend "…"`; everything else
+/// opens with a statement keyword. The distinction matters because those
+/// statements quote strings of their own — `voice "voice/P_007.ogg"` — and a
+/// translation written into one both silences the voice and leaves the dialogue in
+/// the source language.
+fn is_say_statement(trimmed: &str) -> bool {
+    !matches!(
+        trimmed.split_whitespace().next().unwrap_or(""),
+        "voice" | "play" | "queue" | "stop" | "show" | "hide" | "scene" | "with"
+            | "window" | "pause" | "nvl" | "camera" | "call" | "jump" | "return"
+            | "$" | "python" | "pass" | "if" | "elif" | "else" | "while" | "for"
+    )
+}
+
+/// Put a non-say statement's string back to the original its own comment records.
+///
+/// Repairs the damage of an export that took a block's *first* statement for the
+/// say: the `voice` filename became Thai dialogue. Returns `None` when the line is
+/// already right (the normal case) or when no comment corroborates it — a line is
+/// only rewritten on evidence from the same block.
+fn restore_statement(body: &str, comments: &[String]) -> Option<String> {
+    let head = body.trim_start().split_whitespace().next()?;
+    let (s, l) = last_quoted(body)?;
+    let original = comments.iter().find_map(|c| {
+        let c = c.trim_start_matches('#').trim_start();
+        if c.split_whitespace().next()? != head {
+            return None;
+        }
+        let (cs, cl) = last_quoted(c)?;
+        Some(c[cs..cs + cl].to_string())
+    })?;
+    if body[s..s + l] == original {
+        return None;
+    }
+    Some(format!("{}{original}{}", &body[..s], &body[s + l..]))
+}
+
 pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> String {
     let mut out = String::with_capacity(content.len());
     let mut in_strings = false;
@@ -264,6 +307,9 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
     // already holds the previous translation by then, so keying off it would miss
     // and silently keep the stale text.
     let mut pending_src: Option<String> = None;
+    // Every statement in a dialogue block is echoed as a comment above it, so a
+    // statement's original string is always recoverable from the block itself.
+    let mut block_comments: Vec<String> = Vec::new();
 
     for line in content.split_inclusive('\n') {
         let nl = line.ends_with('\n');
@@ -278,6 +324,7 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
             expect_say = !in_strings;
             pending_old = None;
             pending_src = None;
+            block_comments.clear();
             push_line(&mut out, body, nl);
             continue;
         }
@@ -288,6 +335,7 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
                 if let Some((s, l)) = last_quoted(body) {
                     pending_src = Some(body[s..s + l].to_string());
                 }
+                block_comments.push(trimmed.to_string());
             }
             push_line(&mut out, body, nl);
             continue;
@@ -314,8 +362,14 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
             continue;
         }
 
-        // Dialogue block: the first non-comment content line is the say.
+        // Dialogue block: the say is the block's LAST statement — anything before it
+        // (`voice`, `play`, `show`) belongs to the line but carries no dialogue.
         if expect_say {
+            if !is_say_statement(trimmed) {
+                let repaired = restore_statement(body, &block_comments);
+                push_line(&mut out, repaired.as_deref().unwrap_or(body), nl);
+                continue;
+            }
             expect_say = false;
             let commented = pending_src.take();
             if let Some((s, l)) = last_quoted(body) {
@@ -548,6 +602,41 @@ translate thai lily_1:
         let got = fill(skel, &[("Not yet, sorry.", "\u{e22}\u{e31}\u{e07}\u{e40}\u{e25}\u{e22}")]);
         assert!(got.contains("    m \"\u{e22}\u{e31}\u{e07}\u{e40}\u{e25}\u{e22}\""), "{got}");
         assert!(got.contains("    # m \"Not yet, sorry.\""), "comment untouched: {got}");
+    }
+
+    #[test]
+    fn fill_translates_the_say_not_the_voice_above_it() {
+        // A voiced line's block opens with `voice "<file>"`. Writing the translation
+        // there silenced the voice AND left the dialogue English (3 358 lines of
+        // Saiminbo). The say is the block's last statement.
+        let skel = "\
+translate thai kumiko_1:
+
+    # voice \"voice/P_007_KUMI_010.ogg\"
+    # k \"Oh, Souichi... Did something happen?\"
+    voice \"voice/P_007_KUMI_010.ogg\"
+    k \"Oh, Souichi... Did something happen?\"
+";
+        let got = fill(skel, &[("Oh, Souichi... Did something happen?", "\u{e2d}\u{e49}\u{e32}\u{e27}")]);
+        assert!(got.contains("    voice \"voice/P_007_KUMI_010.ogg\""), "voice kept: {got}");
+        assert!(got.contains("    k \"\u{e2d}\u{e49}\u{e32}\u{e27}\""), "say translated: {got}");
+    }
+
+    #[test]
+    fn fill_repairs_a_statement_an_earlier_export_wrote_over() {
+        // Self-heal: the file on disk already has Thai in the `voice` statement. Its
+        // own comment still records the filename, so put it back.
+        let skel = "\
+translate thai kumiko_1:
+
+    # voice \"voice/P_007_KUMI_010.ogg\"
+    # k \"Oh, Souichi... Did something happen?\"
+    voice \"\u{e2d}\u{e49}\u{e32}\u{e27}\"
+    k \"Oh, Souichi... Did something happen?\"
+";
+        let got = fill(skel, &[("Oh, Souichi... Did something happen?", "\u{e2d}\u{e49}\u{e32}\u{e27}")]);
+        assert!(got.contains("    voice \"voice/P_007_KUMI_010.ogg\""), "voice restored: {got}");
+        assert!(got.contains("    k \"\u{e2d}\u{e49}\u{e32}\u{e27}\""), "say translated: {got}");
     }
 
     #[test]
