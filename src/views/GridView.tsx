@@ -87,6 +87,8 @@ export default function GridView() {
                   file: undefined,
                   status: undefined,
                   search: undefined,
+                  matchCase: undefined,
+                  matchWholeWord: undefined,
                   context: undefined,
                   untranslatedOnly: false,
                 })
@@ -192,6 +194,14 @@ function FilterBar() {
     setFields(next);
     commit(text, next); // re-run the current query against the new field set
   };
+  const toggleSearchOption = (key: "matchCase" | "matchWholeWord", checked: boolean) => {
+    cancelTimer();
+    setFilter({
+      search: text.trim() || undefined,
+      searchFields: fields,
+      [key]: checked,
+    });
+  };
 
   const placeholder = "Search " + fields.map((f) => SEARCH_FIELDS.find((s) => s.key === f)!.word).join(" / ") + "…";
 
@@ -257,6 +267,24 @@ function FilterBar() {
           onChange={(e) => setFilter({ untranslatedOnly: e.target.checked })}
         />
         Untranslated only
+      </label>
+
+      <label className="chk">
+        <input
+          type="checkbox"
+          checked={!!filter.matchCase}
+          onChange={(e) => toggleSearchOption("matchCase", e.target.checked)}
+        />
+        Match Case
+      </label>
+
+      <label className="chk">
+        <input
+          type="checkbox"
+          checked={!!filter.matchWholeWord}
+          onChange={(e) => toggleSearchOption("matchWholeWord", e.target.checked)}
+        />
+        Match Whole Word
       </label>
 
       <span className="shown" role="status" aria-live="polite">

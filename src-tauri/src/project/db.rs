@@ -3,11 +3,15 @@
 
 use crate::model::{Status, TransUnit, UnitKind};
 use anyhow::{anyhow, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{
+    functions::{Context, FunctionFlags},
+    params, Connection,
+};
 use serde::{Deserialize, Serialize};
 
 /// Create tables + indexes if absent. Safe to call on every open.
 pub fn init_schema(conn: &Connection) -> Result<()> {
+    register_search_functions(conn)?;
     conn.execute_batch(
         r#"
         PRAGMA journal_mode = WAL;
@@ -70,6 +74,48 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "character", "note", "TEXT")?;
     trim_stray_padding(conn)?;
     Ok(())
+}
+
+/// Install the Unicode-aware whole-word matcher used by the unit grid. SQLite's
+/// `LIKE` has no portable word-boundary operator; doing this in SQL keeps paging
+/// and counts correct without loading every translation unit into the frontend.
+fn register_search_functions(conn: &Connection) -> rusqlite::Result<()> {
+    conn.create_scalar_function(
+        "whole_word_contains",
+        3,
+        FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx: &Context<'_>| {
+            let haystack: Option<String> = ctx.get(0)?;
+            let needle: String = ctx.get(1)?;
+            let match_case: bool = ctx.get(2)?;
+            Ok(haystack
+                .as_deref()
+                .is_some_and(|text| whole_word_contains(text, &needle, match_case)))
+        },
+    )
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn whole_word_contains(haystack: &str, needle: &str, match_case: bool) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    // `to_ascii_lowercase` retains all non-ASCII bytes and their boundaries, so the
+    // match offsets remain valid for Thai while preserving SQLite's prior ASCII-only
+    // case-insensitive search behavior for English source text.
+    let (text, query) = if match_case {
+        (haystack.to_owned(), needle.to_owned())
+    } else {
+        (haystack.to_ascii_lowercase(), needle.to_ascii_lowercase())
+    };
+    text.match_indices(&query).any(|(start, found)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + found.len()..].chars().next();
+        before.map_or(true, |c| !is_word_char(c)) && after.map_or(true, |c| !is_word_char(c))
+    })
 }
 
 /// Drop the leading/trailing whitespace a model invented, on rows stored before
@@ -254,6 +300,10 @@ pub struct UnitFilter {
     /// "translation", "context"; unknown names ignored. None/empty ⇒ the legacy
     /// default of source+translation.
     pub search_fields: Option<Vec<String>>,
+    /// Use exact uppercase/lowercase matching for an active text search.
+    pub match_case: Option<bool>,
+    /// Only match when the query begins and ends on a Unicode word boundary.
+    pub match_whole_word: Option<bool>,
     /// Exact speaker/character filter (`context = ?`) — the sidebar's character
     /// dropdown; the value comes from the known cast, not free text.
     pub context: Option<String>,
@@ -307,6 +357,8 @@ fn unit_where(filter: &UnitFilter) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
                 .replace('\\', "\\\\")
                 .replace('%', "\\%")
                 .replace('_', "\\_");
+            let match_case = filter.match_case.unwrap_or(false);
+            let match_whole_word = filter.match_whole_word.unwrap_or(false);
             let like = format!("%{esc}%");
             // Map each requested field to a FIXED column literal (never interpolate
             // the raw string → no injection surface). None/empty/all-unknown ⇒ the
@@ -330,13 +382,28 @@ fn unit_where(filter: &UnitFilter) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
             };
             let ors: Vec<String> = cols
                 .iter()
-                .map(|c| format!("{c} LIKE ? ESCAPE '\\'"))
+                .map(|c| {
+                    if match_whole_word {
+                        format!("whole_word_contains({c}, ?, ?)")
+                    } else if match_case {
+                        format!("instr({c}, ?) > 0")
+                    } else {
+                        format!("{c} LIKE ? ESCAPE '\\'")
+                    }
+                })
                 .collect();
             sql.push_str(" AND (");
             sql.push_str(&ors.join(" OR "));
             sql.push(')');
             for _ in &cols {
-                args.push(Box::new(like.clone()));
+                args.push(Box::new(if match_whole_word || match_case {
+                    q.clone()
+                } else {
+                    like.clone()
+                }));
+                if match_whole_word {
+                    args.push(Box::new(match_case));
+                }
             }
         }
     }
@@ -1424,6 +1491,37 @@ mod tests {
         // count_units must always agree with list_units row count.
         let f = UnitFilter { search: Some("Alice".into()), search_fields: fields(&["context"]), limit: Some(1000), ..Default::default() };
         assert_eq!(count_units(&conn, &f).unwrap(), list_units(&conn, &f).unwrap().len() as i64);
+    }
+
+    #[test]
+    fn search_can_match_case_and_whole_words() {
+        let units = [
+            unit("A.json", "/p/1", "Alice meets ALICE", Status::Untranslated),
+            unit("A.json", "/p/2", "Malice is unrelated", Status::Untranslated),
+            unit("A.json", "/p/3", "Alice's plan", Status::Untranslated),
+            unit("A.json", "/p/4", "Alicea is unrelated", Status::Untranslated),
+        ];
+        let conn = mem_db(&units);
+        let count = |f: UnitFilter| count_units(&conn, &f).unwrap();
+
+        assert_eq!(count(UnitFilter { search: Some("alice".into()), ..Default::default() }), 4);
+        assert_eq!(
+            count(UnitFilter { search: Some("Alice".into()), match_case: Some(true), ..Default::default() }),
+            3
+        );
+        assert_eq!(
+            count(UnitFilter { search: Some("alice".into()), match_whole_word: Some(true), ..Default::default() }),
+            2
+        );
+        assert_eq!(
+            count(UnitFilter {
+                search: Some("Alice".into()),
+                match_case: Some(true),
+                match_whole_word: Some(true),
+                ..Default::default()
+            }),
+            2
+        );
     }
 
     #[test]

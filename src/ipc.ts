@@ -108,6 +108,10 @@ export interface UnitFilter {
   search?: string;
   /** Columns the `search` substring runs against. Omitted/empty ⇒ source + translation. */
   searchFields?: ("source" | "translation" | "context")[];
+  /** Respect uppercase/lowercase when matching an active search. */
+  matchCase?: boolean;
+  /** Match only at the start/end of a Unicode word. */
+  matchWholeWord?: boolean;
   /** Exact speaker/character filter — the sidebar cast dropdown. */
   context?: string;
   untranslatedOnly?: boolean;
