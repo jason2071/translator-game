@@ -2037,9 +2037,11 @@ pub fn export_tl(
     // `PicklingError: … not the same object as store.<fn>` when the player saves.)
     let mut extra_seen: HashSet<&str> = HashSet::new();
     let mut extra: Vec<(String, String)> = Vec::new();
-    // `pylist#<var>#<index>` units: interpolated list words, applied by replacing the
-    // store value rather than through the strings table.
-    let mut lists: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
+    // `pylist#<var>#<index>` units are carried into the runtime strings table like
+    // other display text. Keeping the game's source values intact is critical: lists
+    // such as `time_cycle` are also used as program-state keys (`index(current_time)`).
+    // Keep their old/new pairs only to repair saves written by pre-fix exports.
+    let mut lists: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     {
         let used = used.borrow();
         for u in units {
@@ -2054,11 +2056,13 @@ pub fn export_tl(
             let Some(t) = &u.translation else { continue };
             if let Some(rest) = u.pointer.strip_prefix("pylist#") {
                 if let Some((var, idx)) = rest.split_once('#') {
-                    if let Ok(i) = idx.parse::<usize>() {
-                        lists.entry(var.to_string()).or_default().push((i, t.clone()));
+                    if idx.parse::<usize>().is_ok() {
+                        lists
+                            .entry(var.to_string())
+                            .or_default()
+                            .push((u.source.clone(), t.clone()));
                     }
                 }
-                continue;
             }
             if used.contains(u.source.as_str())
                 || skeleton_olds.contains(&unescape_rpy(&u.source))
@@ -2371,7 +2375,7 @@ fn setup_language(
     lang: &str,
     label: &str,
     strings: &[(String, String)],
-    lists: &BTreeMap<String, Vec<(usize, String)>>,
+    lists: &BTreeMap<String, Vec<(String, String)>>,
 ) -> Result<()> {
     // Add the language to the game's own Settings language menu, if it has one.
     add_language_option(data_dir, lang, label)?;
@@ -2542,33 +2546,37 @@ fn setup_language(
         s.push_str("    config.replace_text = _tl_replace_text\n\n");
     }
 
-    // Interpolated word lists (`days_of_week`, `parts_of_day`). `"Day [n]
-    // ([days_of_week[i]])"` is translated *before* interpolation, so the list value
-    // itself must change — a strings entry never reaches it. Replace with a new list
-    // (a copy, so the game's own `define`d object is left alone) under the language;
-    // a list of strings pickles cleanly, so this is safe to leave in the store.
+    // Older exports replaced list values (such as `time_cycle`) with translations.
+    // Those lists also act as game-state keys, so that made `time_cycle.index("morning")`
+    // fail in affected saves. Current exports translate the values through
+    // `config.replace_text` instead; emit a load-safe migration for existing saves.
     if !lists.is_empty() {
-        s.push_str(&format!("translate {lang} python:\n"));
-        s.push_str("    _tl_lists = {\n");
+        s.push_str("init python:\n");
+        s.push_str("    _tl_restore_lists = {\n");
         for (var, items) in lists {
             let mut items = items.clone();
-            items.sort_by_key(|(i, _)| *i);
+            items.sort();
             s.push_str(&format!("        \"{var}\": {{"));
-            for (i, t) in &items {
-                s.push_str(&format!("{i}: \"{}\", ", renpy_tl::quote_unicode(&renpy_tl::decode_escapes(t))));
+            for (source, translated) in &items {
+                s.push_str(&format!(
+                    "\"{}\": \"{}\", ",
+                    renpy_tl::quote_unicode(&renpy_tl::decode_escapes(translated)),
+                    renpy_tl::quote_unicode(&renpy_tl::decode_escapes(source))
+                ));
             }
             s.push_str("},\n");
         }
         s.push_str("    }\n");
-        s.push_str("    for _v, _m in _tl_lists.items():\n");
-        s.push_str("        try:\n");
-        s.push_str("            _l = list(getattr(store, _v))\n");
-        s.push_str("            for _i, _t in _m.items():\n");
-        s.push_str("                if _i < len(_l):\n");
-        s.push_str("                    _l[_i] = _t\n");
-        s.push_str("            setattr(store, _v, _l)\n");
-        s.push_str("        except Exception:\n");
-        s.push_str("            pass\n\n");
+        s.push_str("    def _tl_restore_runtime_lists():\n");
+        s.push_str("        for _v, _m in _tl_restore_lists.items():\n");
+        s.push_str("            try:\n");
+        s.push_str("                setattr(store, _v, [_m.get(_x, _x) for _x in getattr(store, _v)])\n");
+        s.push_str("            except Exception:\n");
+        s.push_str("                pass\n");
+        s.push_str("    if _tl_restore_runtime_lists not in config.after_load_callbacks:\n");
+        s.push_str("        config.after_load_callbacks.append(_tl_restore_runtime_lists)\n\n");
+        s.push_str(&format!("translate {lang} python:\n"));
+        s.push_str("    _tl_restore_runtime_lists()\n\n");
     }
 
     // The bundled font (Sarabun) covers Thai + Latin, so only remap fonts for a
@@ -2626,13 +2634,15 @@ fn setup_language(
         // typing indicator, ♡) render instead of turning into tofu boxes.
         s.push_str("    if hasattr(config, \"font_transforms\"):\n");
         s.push_str("        preferences.font_transform = \"rpgtl_thai\"\n");
-        // Fallback for older Ren'Py, which has no font transform: swap the font file
-        // outright. Whole-face, so glyphs missing from the Thai face become tofu.
-        s.push_str("    else:\n");
-        s.push_str("        for _f in _tl_fonts:\n");
-        s.push_str("            for _b in (False, True):\n");
-        s.push_str("                for _i in (False, True):\n");
-        s.push_str("                    config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
+        // A final whole-face replacement map backs up the glyph-level transform.
+        // Some custom displayables resolve their own font after the transform step;
+        // without this map they keep a Latin-only font and render Thai as tofu. The
+        // bundled Sarabun face also covers Latin, so this preserves readable mixed
+        // Thai/Latin text for those displayables and supports older Ren'Py too.
+        s.push_str("    for _f in _tl_fonts:\n");
+        s.push_str("        for _b in (False, True):\n");
+        s.push_str("            for _i in (False, True):\n");
+        s.push_str("                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
         // Thai has no spaces, so Ren'Py's default (space-based) line breaking can't
         // wrap a Thai run — a long line overflows its box / screen edge instead of
         // wrapping (quest objectives ran off the phone screen). `"anywhere"` lets a
@@ -3670,14 +3680,18 @@ define g = Character(_(\"Gwen\"))
     }
 
     #[test]
-    fn setup_language_replaces_interpolated_word_lists() {
+    fn setup_language_restores_lists_mutated_by_older_exports() {
         let d = tempfile::tempdir().unwrap();
         let mut lists = BTreeMap::new();
-        lists.insert("days_of_week".to_string(), vec![(1usize, "จันทร์".to_string())]);
+        lists.insert(
+            "days_of_week".to_string(),
+            vec![("Monday".to_string(), "จันทร์".to_string())],
+        );
         setup_language(d.path(), "thai", "ไทย", &[], &lists).unwrap();
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
-        assert!(zzz.contains("\"days_of_week\": {1: \"จันทร์\", },"), "{zzz}");
-        assert!(zzz.contains("setattr(store, _v, _l)"), "{zzz}");
+        assert!(zzz.contains("\"days_of_week\": {\"จันทร์\": \"Monday\", },"), "{zzz}");
+        assert!(zzz.contains("config.after_load_callbacks.append(_tl_restore_runtime_lists)"), "{zzz}");
+        assert!(!zzz.contains("_l[_i] = _t"), "list state must not be translated: {zzz}");
     }
 
     #[test]
@@ -3691,8 +3705,12 @@ define g = Character(_(\"Gwen\"))
         // game's own font — a whole-face swap turns symbols like ⚫ into tofu.
         assert!(zzz.contains("FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_f, None, None)"), "{zzz}");
         assert!(zzz.contains("preferences.font_transform = \"rpgtl_thai\""), "{zzz}");
-        // Older Ren'Py has no font transform — the whole-face swap stays as fallback.
+        // The whole-face map also covers custom displayables that bypass transforms.
         assert!(zzz.contains("config.font_replacement_map[_f, _b, _i]"), "{zzz}");
+        assert!(
+            !zzz.contains("else:\n        for _f in _tl_fonts:"),
+            "font replacement must not be limited to old Ren'Py: {zzz}"
+        );
         // Named UI text styles commonly inherit from `text`, rather than `default`.
         // Both roots must allow Thai to break between characters in narrow widgets.
         assert!(zzz.contains("style.default.language = \"anywhere\""), "{zzz}");
