@@ -2584,6 +2584,7 @@ fn setup_language(
     if lang == "thai" {
         let font_rel = "fonts/tl_font.ttf";
         copy_target_font(&data_dir.join(font_rel))?;
+        let has_heart_icon_font = copy_dejavu_icon_font(data_dir)?;
         let refs = collect_font_refs(data_dir);
 
         // `_tl_font_group` MUST live in `init python`, not `translate python`.
@@ -2608,6 +2609,9 @@ fn setup_language(
         s.push_str("        return _g\n");
         s.push_str("    if hasattr(config, \"font_transforms\"):\n");
         s.push_str("        config.font_transforms[\"rpgtl_thai\"] = _tl_font_group\n");
+        if has_heart_icon_font {
+            s.push_str("    config.font_name_map[\"rpgtl_icons\"] = \"fonts/tl_icons.ttf\"\n");
+        }
         // The bundled Thai face renders taller/heavier than the game's Latin font at
         // the same point size, so it crowds boxes laid out for English. Scale just the
         // Thai TTF down (keyed by its filename) — English glyphs keep scale 1.0, so
@@ -2634,15 +2638,16 @@ fn setup_language(
         // typing indicator, ♡) render instead of turning into tofu boxes.
         s.push_str("    if hasattr(config, \"font_transforms\"):\n");
         s.push_str("        preferences.font_transform = \"rpgtl_thai\"\n");
-        // A final whole-face replacement map backs up the glyph-level transform.
-        // Some custom displayables resolve their own font after the transform step;
-        // without this map they keep a Latin-only font and render Thai as tofu. The
-        // bundled Sarabun face also covers Latin, so this preserves readable mixed
-        // Thai/Latin text for those displayables and supports older Ren'Py too.
+        // Some games bypass font transforms entirely, so map their text fonts too.
+        // Icon tags need an un-mapped alias (installed above) to preserve symbols.
         s.push_str("    for _f in _tl_fonts:\n");
         s.push_str("        for _b in (False, True):\n");
         s.push_str("            for _i in (False, True):\n");
         s.push_str("                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
+        if has_heart_icon_font {
+            s.push_str("    if hasattr(store, \"heart_icon\"):\n");
+            s.push_str("        store.heart_icon = \"{font=rpgtl_icons}♡{/font}\"\n");
+        }
         // Thai has no spaces, so Ren'Py's default (space-based) line breaking can't
         // wrap a Thai run — a long line overflows its box / screen edge instead of
         // wrapping (quest objectives ran off the phone screen). `"anywhere"` lets a
@@ -2690,6 +2695,27 @@ fn copy_target_font(dst: &Path) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+/// Copy Ren'Py's built-in DejaVu face under an un-mapped alias for inline icons.
+/// Games commonly define `[heart_icon]` as `{font=DejaVuSans.ttf}♡{/font}`. Thai
+/// whole-face fallback replaces that name, so preserve the original glyph font under
+/// a dedicated alias that the generated hook can use just for the icon.
+fn copy_dejavu_icon_font(data_dir: &Path) -> Result<bool> {
+    let Some(root) = data_dir.parent() else {
+        return Ok(false);
+    };
+    let src = root.join("renpy").join("common").join("DejaVuSans.ttf");
+    if !src.is_file() {
+        return Ok(false);
+    }
+    let dst = data_dir.join("fonts").join("tl_icons.ttf");
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(&src, &dst)
+        .with_context(|| format!("copying icon font {}", src.display()))?;
+    Ok(true)
 }
 
 /// Every font the game references, so they can all be remapped to the target-language
@@ -3705,16 +3731,39 @@ define g = Character(_(\"Gwen\"))
         // game's own font — a whole-face swap turns symbols like ⚫ into tofu.
         assert!(zzz.contains("FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_f, None, None)"), "{zzz}");
         assert!(zzz.contains("preferences.font_transform = \"rpgtl_thai\""), "{zzz}");
-        // The whole-face map also covers custom displayables that bypass transforms.
+        // The whole-face map covers custom displayables; detected heart icons use a
+        // separate, un-mapped DejaVu alias.
         assert!(zzz.contains("config.font_replacement_map[_f, _b, _i]"), "{zzz}");
         assert!(
             !zzz.contains("else:\n        for _f in _tl_fonts:"),
-            "font replacement must not be limited to old Ren'Py: {zzz}"
+            "the text fallback must apply to custom displayables: {zzz}"
         );
         // Named UI text styles commonly inherit from `text`, rather than `default`.
         // Both roots must allow Thai to break between characters in narrow widgets.
         assert!(zzz.contains("style.default.language = \"anywhere\""), "{zzz}");
         assert!(zzz.contains("style.text.language = \"anywhere\""), "{zzz}");
+    }
+
+    #[test]
+    fn setup_language_preserves_a_heart_icon_font() {
+        let root = tempfile::tempdir().unwrap();
+        let game = root.path().join("game");
+        let common = root.path().join("renpy/common");
+        std::fs::create_dir_all(&common).unwrap();
+        std::fs::write(common.join("DejaVuSans.ttf"), b"icon-font").unwrap();
+
+        setup_language(&game, "thai", "ไทย", &[], &BTreeMap::new()).unwrap();
+
+        assert_eq!(
+            std::fs::read(game.join("fonts/tl_icons.ttf")).unwrap(),
+            b"icon-font"
+        );
+        let zzz = std::fs::read_to_string(game.join(GENERATED_RPY)).unwrap();
+        assert!(zzz.contains("config.font_name_map[\"rpgtl_icons\"]"), "{zzz}");
+        assert!(
+            zzz.contains("store.heart_icon = \"{font=rpgtl_icons}♡{/font}\""),
+            "{zzz}"
+        );
     }
 
     #[test]
