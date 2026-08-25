@@ -99,6 +99,10 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+fn is_thai_char(c: char) -> bool {
+    ('\u{0e00}'..='\u{0e7f}').contains(&c)
+}
+
 fn whole_word_contains(haystack: &str, needle: &str, match_case: bool) -> bool {
     if needle.is_empty() {
         return false;
@@ -111,6 +115,13 @@ fn whole_word_contains(haystack: &str, needle: &str, match_case: bool) -> bool {
     } else {
         (haystack.to_ascii_lowercase(), needle.to_ascii_lowercase())
     };
+    // Thai does not put spaces between words, so generic Unicode boundaries treat
+    // an entire sentence as one word. Without a dictionary segmenter, treating a
+    // Thai query as a literal term is the useful behavior: searching `มา` still
+    // finds `เขามาหาฉัน`. Latin-script queries retain strict word boundaries.
+    if query.chars().any(is_thai_char) {
+        return text.contains(&query);
+    }
     text.match_indices(&query).any(|(start, found)| {
         let before = text[..start].chars().next_back();
         let after = text[start + found.len()..].chars().next();
@@ -1500,6 +1511,7 @@ mod tests {
             unit("A.json", "/p/2", "Malice is unrelated", Status::Untranslated),
             unit("A.json", "/p/3", "Alice's plan", Status::Untranslated),
             unit("A.json", "/p/4", "Alicea is unrelated", Status::Untranslated),
+            unit("A.json", "/p/5", "เขามาหาฉัน", Status::Untranslated),
         ];
         let conn = mem_db(&units);
         let count = |f: UnitFilter| count_units(&conn, &f).unwrap();
@@ -1521,6 +1533,15 @@ mod tests {
                 ..Default::default()
             }),
             2
+        );
+        assert_eq!(
+            count(UnitFilter {
+                search: Some("มา".into()),
+                match_whole_word: Some(true),
+                ..Default::default()
+            }),
+            1,
+            "Thai queries need literal matching because Thai sentences omit spaces"
         );
     }
 
