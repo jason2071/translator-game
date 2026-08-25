@@ -2579,7 +2579,7 @@ fn setup_language(
         s.push_str("    _tl_restore_runtime_lists()\n\n");
     }
 
-    // The bundled font (Sarabun) covers Thai + Latin, so only remap fonts for a
+    // The bundled Noto Sans Thai UI font covers Thai + Latin, so only remap fonts for a
     // Thai target — other scripts (CJK, etc.) would render as NO GLYPH in it.
     if lang == "thai" {
         let font_rel = "fonts/tl_font.ttf";
@@ -2672,9 +2672,10 @@ fn setup_language(
     Ok(())
 }
 
-/// The bundled target-language font (Sarabun Regular), shared with the other
-/// engines' font embedding — see [`super::TARGET_FONT`].
-const TL_FONT: &[u8] = super::TARGET_FONT;
+/// Ren'Py uses Noto Sans Thai UI: it is compact for UI widgets and keeps its Thai
+/// shaping separate from the shared RPGMaker Sarabun asset. Inline symbols still
+/// use the game's DejaVu fallback installed by [`copy_dejavu_icon_font`].
+const TL_FONT: &[u8] = include_bytes!("../../resources/NotoSansThaiUI.ttf");
 
 /// Write the bundled font into the game.
 fn copy_target_font(dst: &Path) -> Result<()> {
@@ -3726,6 +3727,11 @@ define g = Character(_(\"Gwen\"))
         std::fs::create_dir_all(d.path().join("gui")).unwrap();
         std::fs::write(d.path().join("gui/game.ttf"), b"fake").unwrap();
         setup_language(d.path(), "thai", "ไทย", &[], &BTreeMap::new()).unwrap();
+        assert_eq!(
+            std::fs::read(d.path().join("fonts/tl_font.ttf")).unwrap(),
+            TL_FONT,
+            "Ren'Py must receive its compact Noto Thai UI font"
+        );
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
         // Thai code points come from the bundled face, every other glyph from the
         // game's own font — a whole-face swap turns symbols like ⚫ into tofu.
