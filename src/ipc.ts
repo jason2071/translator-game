@@ -264,8 +264,8 @@ export const api = {
 
   listFiles: () => invoke<FileCount[]>("list_files"),
 
-  exportProject: (backup = true, embedFont = false) =>
-    invoke<ExportResult>("export_project", { backup, embedFont }),
+  exportProject: (backup = true, embedFont = false, thaiFontScale?: number) =>
+    invoke<ExportResult>("export_project", { backup, embedFont, thaiFontScale }),
 
   /** Export a distributable mod .zip (overlays onto the game; game untouched). */
   exportMod: (embedFont = false) => invoke<ModResult>("export_mod", { embedFont }),

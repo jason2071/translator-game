@@ -792,6 +792,28 @@ code {
 .sb-actions .row .embed-font-chk input {
   cursor: pointer;
 }
+.sb-actions .row .renpy-font-scale {
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.sb-actions .row .renpy-font-scale input {
+  width: 3.4rem;
+  min-width: 0;
+  padding: 0.18rem 0.28rem;
+  font: inherit;
+  color: var(--fg);
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.sb-actions .row .renpy-font-scale + .embed-font-chk {
+  margin-right: auto;
+}
 .sb-msg {
   padding: 0 var(--sp-3) var(--sp-2);
   font-size: var(--fs-xs);

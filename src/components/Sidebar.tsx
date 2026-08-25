@@ -59,7 +59,9 @@ export function Sidebar({
   ];
   const fontCapable = FONT_ENGINES.includes(project.engineId);
   const modCapable = MOD_ENGINES.includes(project.engineId);
+  const renpyThai = project.engineId === "renpy" && /^thai$/i.test(project.targetLang.trim());
   const [embedFont, setEmbedFont] = useState(() => /thai/i.test(project.targetLang ?? ""));
+  const [thaiFontScale, setThaiFontScale] = useState(90);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
@@ -86,7 +88,7 @@ export function Sidebar({
     setErr(null);
     setResult(null);
     try {
-      const r = await api.exportProject(true, fontCapable && embedFont);
+      const r = await api.exportProject(true, fontCapable && embedFont, renpyThai ? thaiFontScale : undefined);
       setResult(r);
       setMsg(r.note ?? `Exported ${r.unitsApplied} units → ${r.filesWritten} files`);
       // The text landed, but something the export promised didn't (a failed font
@@ -346,6 +348,28 @@ export function Sidebar({
           <span className="lbl">{restoring ? "Restoring…" : "Restore original"}</span>
         </button>
         <div className="row">
+          {renpyThai && !collapsed && (
+            <label
+              className="renpy-font-scale"
+              title="Scale the bundled Thai font for this Ren’Py export. 90% is the safe default; the exporter only accepts 70–120%."
+            >
+              Thai font
+              <input
+                type="number"
+                min="70"
+                max="120"
+                step="1"
+                value={thaiFontScale}
+                onChange={(e) => {
+                  const value = Number(e.target.value);
+                  if (Number.isInteger(value)) setThaiFontScale(Math.min(120, Math.max(70, value)));
+                }}
+                disabled={exporting}
+                aria-label="Thai font size percentage"
+              />
+              %
+            </label>
+          )}
           {fontCapable && !collapsed && (
             <label className="chk embed-font-chk" title="Drop a Thai-capable font into the game and repoint its fonts at it, so translated Thai renders instead of missing-glyph boxes">
               <input

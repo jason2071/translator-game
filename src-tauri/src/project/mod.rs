@@ -202,6 +202,22 @@ fn drop_names_when_off(conn: &Connection, units: Vec<crate::model::TransUnit>) -
 /// the bundled Thai font into the game and repoint its fonts at it (RPGMaker
 /// only; Ren'Py handles its own font remap in the `tl/<lang>/` path).
 pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Result<ExportResult> {
+    export_with_renpy_font_scale(
+        project,
+        make_backup,
+        embed_font,
+        engine::renpy::DEFAULT_THAI_FONT_SCALE,
+    )
+}
+
+/// Export with the Thai font size requested by the Ren'Py export UI. Keeping the
+/// original [`export`] entry point preserves callers that do not need this option.
+pub fn export_with_renpy_font_scale(
+    project: &mut Project,
+    make_backup: bool,
+    embed_font: bool,
+    thai_font_scale: u8,
+) -> Result<ExportResult> {
     let eng = engine::detect(&project.root)
         .ok_or_else(|| anyhow!("engine no longer detected for this project"))?;
     let all_units = db::all_units(&project.conn)?;
@@ -212,6 +228,7 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
     // recompiles (no version/CDS crashes) and <lang> becomes a selectable in-game
     // language. Falls back to in-place injection if there's no bundled launcher.
     if eng.id() == "renpy" {
+        let thai_font_scale = engine::renpy::validate_thai_font_scale(thai_font_scale)?;
         let lang = db::get_meta(&project.conn, "target_lang")?
             .unwrap_or_else(|| "translated".to_string());
         let translate_names = translate_names_on(&project.conn)?;
@@ -223,7 +240,15 @@ pub fn export(project: &mut Project, make_backup: bool, embed_font: bool) -> Res
             .into_iter()
             .map(|g| (g.term, g.translation))
             .collect();
-        if let Some(tl) = engine::renpy::export_tl(&project.root, &project.data_dir, &all_units, &lang, translate_names, &glossary)? {
+        if let Some(tl) = engine::renpy::export_tl_with_font_scale(
+            &project.root,
+            &project.data_dir,
+            &all_units,
+            &lang,
+            translate_names,
+            &glossary,
+            thai_font_scale,
+        )? {
             // The generated skeleton also lists Ren'Py's built-in UI strings (quit /
             // main-menu confirmations, save-load prompts) — from `renpy/common`, which
             // extraction skips, so they had no unit and stayed English. Harvest the

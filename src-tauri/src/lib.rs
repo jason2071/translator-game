@@ -733,10 +733,16 @@ fn list_files(state: tauri::State<AppState>) -> Result<Vec<FileCount>, String> {
 fn export_project(
     backup: Option<bool>,
     embed_font: Option<bool>,
+    thai_font_scale: Option<u8>,
     state: tauri::State<AppState>,
 ) -> Result<ExportResult, String> {
     with_project_mut(&state, |p| {
-        project::export(p, backup.unwrap_or(true), embed_font.unwrap_or(false))
+        project::export_with_renpy_font_scale(
+            p,
+            backup.unwrap_or(true),
+            embed_font.unwrap_or(false),
+            thai_font_scale.unwrap_or(engine::renpy::DEFAULT_THAI_FONT_SCALE),
+        )
     })
 }
 

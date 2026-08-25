@@ -1904,6 +1904,23 @@ fn harvest_untranslated_strings(
     }
 }
 
+/// The default multiplier for the bundled Thai face. Sarabun sits slightly taller
+/// than most Latin game fonts at the same point size, so 90% is the safest fit.
+pub const DEFAULT_THAI_FONT_SCALE: u8 = 90;
+pub const MIN_THAI_FONT_SCALE: u8 = 70;
+pub const MAX_THAI_FONT_SCALE: u8 = 120;
+
+/// Reject a font scale that would make exported Ren'Py invalid or impractical.
+/// The value is later emitted as a Rust-formatted decimal, never user text.
+pub fn validate_thai_font_scale(percent: u8) -> Result<u8> {
+    if !(MIN_THAI_FONT_SCALE..=MAX_THAI_FONT_SCALE).contains(&percent) {
+        return Err(anyhow!(
+            "Thai font size must be between {MIN_THAI_FONT_SCALE}% and {MAX_THAI_FONT_SCALE}%"
+        ));
+    }
+    Ok(percent)
+}
+
 /// Export translations the Ren'Py-native way: run the game's own bundled Ren'Py
 /// to generate the `game/tl/<lang>/` skeleton (so every translation identifier is
 /// exactly what Ren'Py expects), then fill it from the project's translations.
@@ -1921,11 +1938,41 @@ pub fn export_tl(
     translate_names: bool,
     glossary: &[(String, String)],
 ) -> Result<Option<TlExport>> {
+    export_tl_with_font_scale(
+        root,
+        data_dir,
+        units,
+        target_lang,
+        translate_names,
+        glossary,
+        DEFAULT_THAI_FONT_SCALE,
+    )
+}
+
+/// Same as [`export_tl`], with a validated Thai font multiplier for the generated
+/// `zzz_translator.rpy` hook.
+pub fn export_tl_with_font_scale(
+    root: &Path,
+    data_dir: &Path,
+    units: &[TransUnit],
+    target_lang: &str,
+    translate_names: bool,
+    glossary: &[(String, String)],
+    thai_font_scale: u8,
+) -> Result<Option<TlExport>> {
+    let thai_font_scale = validate_thai_font_scale(thai_font_scale)?;
     // tl-source mode: the units were read from an existing `tl/<src>/` tree (their file
     // paths live under `tl/`). Produce `tl/<target>/` by retagging that tree — no
     // launcher / `renpy translate` needed, since it already carries the game's ids.
     if let Some(src_lang) = tl_source_lang(units) {
-        return export_tl_from_source(data_dir, &src_lang, units, target_lang).map(Some);
+        return export_tl_from_source_with_font_scale(
+            data_dir,
+            &src_lang,
+            units,
+            target_lang,
+            thai_font_scale,
+        )
+        .map(Some);
     }
     let Some(exe) = find_launcher(root) else {
         return Ok(None);
@@ -2097,7 +2144,14 @@ pub fn export_tl(
 
     // Make the language selectable (default to it) and remap the game's fonts to a
     // glyph-capable one so the translation isn't rendered as "NO GLYPH" boxes.
-    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &extra, &lists)?;
+    setup_language_with_font_scale(
+        data_dir,
+        &lang,
+        &language_label(target_lang, &lang),
+        &extra,
+        &lists,
+        thai_font_scale,
+    )?;
 
     Ok(Some(TlExport { files, dir }))
 }
@@ -2140,11 +2194,28 @@ fn tl_source_lang(units: &[TransUnit]) -> Option<String> {
 /// to the base language). The `tl/<src>/` tree is never modified, so re-export is
 /// idempotent. No `renpy translate` / launcher is needed — the source tree already
 /// carries the game's real translation ids.
+#[cfg(test)]
 fn export_tl_from_source(
     data_dir: &Path,
     src_lang: &str,
     units: &[TransUnit],
     target_lang: &str,
+) -> Result<TlExport> {
+    export_tl_from_source_with_font_scale(
+        data_dir,
+        src_lang,
+        units,
+        target_lang,
+        DEFAULT_THAI_FONT_SCALE,
+    )
+}
+
+fn export_tl_from_source_with_font_scale(
+    data_dir: &Path,
+    src_lang: &str,
+    units: &[TransUnit],
+    target_lang: &str,
+    thai_font_scale: u8,
 ) -> Result<TlExport> {
     let lang = normalize_lang(target_lang);
     let src_header = format!("translate {src_lang} ");
@@ -2209,7 +2280,14 @@ fn export_tl_from_source(
     // Make the target selectable + readable (menu entry, default language, Thai font).
     // No Character re-defines: any `_()`-wrapped name translates via the strings blocks.
     // No extra strings either: tl-source units are all spliced into the retagged tree.
-    setup_language(data_dir, &lang, &language_label(target_lang, &lang), &[], &BTreeMap::new())?;
+    setup_language_with_font_scale(
+        data_dir,
+        &lang,
+        &language_label(target_lang, &lang),
+        &[],
+        &BTreeMap::new(),
+        thai_font_scale,
+    )?;
     Ok(TlExport {
         files,
         dir: data_dir.join("tl").join(&lang),
@@ -2370,6 +2448,7 @@ fn text_segments(s: &str) -> Vec<String> {
     out
 }
 
+#[cfg(test)]
 fn setup_language(
     data_dir: &Path,
     lang: &str,
@@ -2377,6 +2456,25 @@ fn setup_language(
     strings: &[(String, String)],
     lists: &BTreeMap<String, Vec<(String, String)>>,
 ) -> Result<()> {
+    setup_language_with_font_scale(
+        data_dir,
+        lang,
+        label,
+        strings,
+        lists,
+        DEFAULT_THAI_FONT_SCALE,
+    )
+}
+
+fn setup_language_with_font_scale(
+    data_dir: &Path,
+    lang: &str,
+    label: &str,
+    strings: &[(String, String)],
+    lists: &BTreeMap<String, Vec<(String, String)>>,
+    thai_font_scale: u8,
+) -> Result<()> {
+    let thai_font_scale = validate_thai_font_scale(thai_font_scale)?;
     // Add the language to the game's own Settings language menu, if it has one.
     add_language_option(data_dir, lang, label)?;
 
@@ -2616,9 +2714,13 @@ fn setup_language(
         // The bundled Thai face renders taller/heavier than the game's Latin font at
         // the same point size, so it crowds boxes laid out for English. Scale just the
         // Thai TTF down (keyed by its filename) — English glyphs keep scale 1.0, so
-        // only Thai shrinks, game-wide. Set at init: English never uses this font.
+        // only Thai shrinks, game-wide. The percent was range-checked before it became
+        // this fixed decimal literal, so no user input can break the generated Python.
         s.push_str("    if hasattr(config, \"ftfont_scale\"):\n");
-        s.push_str("        config.ftfont_scale[_tl_font] = 0.9\n");
+        s.push_str(&format!(
+            "        config.ftfont_scale[_tl_font] = {:.2}\n",
+            f64::from(thai_font_scale) / 100.0
+        ));
         s.push_str("\n");
 
         // Per-language activation + fallback stay in `translate python` where they
@@ -3731,7 +3833,7 @@ define g = Character(_(\"Gwen\"))
         assert_eq!(
             std::fs::read(d.path().join("fonts/tl_font.ttf")).unwrap(),
             TL_FONT,
-            "Ren'Py must receive its compact Noto Thai UI font"
+            "Ren'Py must receive the bundled Thai font"
         );
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
         // Thai code points come from the bundled face, every other glyph from the
@@ -3749,6 +3851,24 @@ define g = Character(_(\"Gwen\"))
         // Both roots must allow Thai to break between characters in narrow widgets.
         assert!(zzz.contains("style.default.language = \"anywhere\""), "{zzz}");
         assert!(zzz.contains("style.text.language = \"anywhere\""), "{zzz}");
+    }
+
+    #[test]
+    fn setup_language_emits_a_validated_thai_font_scale() {
+        let d = tempfile::tempdir().unwrap();
+        setup_language_with_font_scale(
+            d.path(),
+            "thai",
+            "ไทย",
+            &[],
+            &BTreeMap::new(),
+            105,
+        )
+        .unwrap();
+        let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
+        assert!(zzz.contains("config.ftfont_scale[_tl_font] = 1.05"), "{zzz}");
+        assert!(validate_thai_font_scale(69).is_err());
+        assert!(validate_thai_font_scale(121).is_err());
     }
 
     #[test]
