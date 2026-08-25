@@ -10,7 +10,7 @@ export default defineConfig({
   // Tauri expects a fixed port and does not need Vite obscuring rust errors.
   clearScreen: false,
   server: {
-    port: 1420,
+    port: 5173,
     strictPort: true,
     host: host || false,
     hmr: host

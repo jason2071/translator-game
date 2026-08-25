@@ -2637,10 +2637,12 @@ fn setup_language(
         // wrap a Thai run — a long line overflows its box / screen edge instead of
         // wrapping (quest objectives ran off the phone screen). `"anywhere"` lets a
         // break fall between any two characters, so every Thai text fits its width.
-        // Set on the base style, under the language, so all screens + dialogue inherit
-        // it only while Thai is active. (No dictionary word-breaking in this Ren'Py;
+        // Most game-specific text styles inherit from `text`, not `default`; set both
+        // roots under the language so named styles (such as `questtext`) receive the
+        // Thai line-break policy too. (No dictionary word-breaking in this Ren'Py;
         // "anywhere" is the widely-used Thai fallback.)
         s.push_str("    style.default.language = \"anywhere\"\n");
+        s.push_str("    style.text.language = \"anywhere\"\n");
         // Thai dialogue crowds a say box sized for Latin even after the 0.9 font scale,
         // so drop the dialogue point size ~12%. Derive it from the game's own
         // `gui.text_size` (the stable base, never mutated) rather than the live style
@@ -3691,6 +3693,10 @@ define g = Character(_(\"Gwen\"))
         assert!(zzz.contains("preferences.font_transform = \"rpgtl_thai\""), "{zzz}");
         // Older Ren'Py has no font transform — the whole-face swap stays as fallback.
         assert!(zzz.contains("config.font_replacement_map[_f, _b, _i]"), "{zzz}");
+        // Named UI text styles commonly inherit from `text`, rather than `default`.
+        // Both roots must allow Thai to break between characters in narrow widgets.
+        assert!(zzz.contains("style.default.language = \"anywhere\""), "{zzz}");
+        assert!(zzz.contains("style.text.language = \"anywhere\""), "{zzz}");
     }
 
     #[test]
