@@ -2579,7 +2579,8 @@ fn setup_language(
         s.push_str("    _tl_restore_runtime_lists()\n\n");
     }
 
-    // The bundled Noto Sans Thai UI font covers Thai + Latin, so only remap fonts for a
+    // The bundled Sarabun font covers Thai, Latin, ASCII digits, and currency symbols,
+    // so only remap fonts for a
     // Thai target — other scripts (CJK, etc.) would render as NO GLYPH in it.
     if lang == "thai" {
         let font_rel = "fonts/tl_font.ttf";
@@ -2672,10 +2673,10 @@ fn setup_language(
     Ok(())
 }
 
-/// Ren'Py uses Noto Sans Thai UI: it is compact for UI widgets and keeps its Thai
-/// shaping separate from the shared RPGMaker Sarabun asset. Inline symbols still
-/// use the game's DejaVu fallback installed by [`copy_dejavu_icon_font`].
-const TL_FONT: &[u8] = include_bytes!("../../resources/NotoSansThaiUI.ttf");
+/// Sarabun is the shared target-language font: unlike the Thai-only Noto UI subset,
+/// it also carries Latin, ASCII digits, and currency glyphs. Inline icon symbols
+/// still use the game's DejaVu fallback installed by [`copy_dejavu_icon_font`].
+const TL_FONT: &[u8] = super::TARGET_FONT;
 
 /// Write the bundled font into the game.
 fn copy_target_font(dst: &Path) -> Result<()> {
