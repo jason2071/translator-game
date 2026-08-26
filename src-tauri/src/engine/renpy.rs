@@ -64,7 +64,7 @@ impl GameEngine for RenpyEngine {
         })
     }
 
-    fn extract(&self, root: &Path, _opts: &ExtractOpts) -> Result<Vec<TransUnit>> {
+    fn extract(&self, root: &Path, opts: &ExtractOpts) -> Result<Vec<TransUnit>> {
         let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
         // Scripts packed in a `.rpa` with no loose source: pull the source `.rpy`
         // out of the archive first (many games ship the `.rpy` alongside the
@@ -83,19 +83,19 @@ impl GameEngine for RenpyEngine {
             decompile_hint = ensure_decompiled(&dir, root)?;
             rpys = collect_rpy(&dir); // re-scan for the `.rpy` unrpyc just wrote
         }
-        // Prefer translating from an existing `tl/<en|ja|zh>/` tree when the game ships
-        // one: that text is usually English (easier + higher-quality to translate from
-        // than the base language, which may be Russian/etc.) and it already carries the
-        // game's real translation ids, so export just retags it to the target locale.
-        // Falls through to the base scripts when there is no such tree.
+        // Prefer the user-selected `tl/<language>/` tree. If it is unavailable,
+        // keep the base scripts whenever they exist; the fallback locale is only
+        // used by compiled-only games whose translation tree is all we can read.
         let mut tl_units = Vec::new();
-        if let Some((src_lang, src_dir)) = preferred_tl_source(&dir) {
+        let mut tl_source_lang = None;
+        if let Some((src_lang, src_dir)) = preferred_tl_source(&dir, opts.source_lang.as_deref()) {
             for path in rpy_files_under(&src_dir) {
                 let rel = rel_path(&dir, &path);
                 let content =
                     std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
                 extract_from_tl(&rel, &src_lang, &content, &mut tl_units);
             }
+            tl_source_lang = Some(src_lang);
         }
         // No base scripts at all: the `tl/` tree is all there is.
         if rpys.is_empty() && !tl_units.is_empty() {
@@ -132,14 +132,30 @@ impl GameEngine for RenpyEngine {
             files.push((rel, content));
         }
         // Character names — a cross-file pass, since `define c = Character(name_var)`
-        // and `name_var = "…"` can live in different files.
-        extract_character_names(&files, &mut units);
-        // A shipped `tl/<lang>/` is only the better source when it actually covers the
-        // game. Some games ship a token tree (a handful of UI strings) next to a full
-        // base script — preferring it blindly would drop the entire story — so take
-        // whichever side yields more units, tie going to `tl/` for its better source
-        // language + real translation ids.
-        if !tl_units.is_empty() && tl_units.len() >= units.len() {
+        // and `name_var = "…"` can live in different files. Use the same definitions
+        // to turn terse say-statement variables (`jas`) into useful speaker labels
+        // (`Jasmine (jas)`) for the character panel and AI prompt.
+        let character_defs = character_definitions(&files);
+        extract_character_names_from_defs(&character_defs, &mut units);
+        remap_speaker_contexts(&mut units, &character_defs);
+        remap_speaker_contexts(&mut tl_units, &character_defs);
+        // An explicitly selected source tree takes precedence. In Auto mode, retain
+        // the coverage safeguard: a token translation tree must not hide the base
+        // story merely because it happens to be the preferred fallback language.
+        let requested_tl_matches = opts
+            .source_lang
+            .as_deref()
+            .filter(|lang| !lang.eq_ignore_ascii_case("auto"))
+            .and_then(super::source_lang_rank)
+            .zip(tl_source_lang.as_deref().and_then(super::source_lang_rank))
+            .is_some_and(|(requested, selected)| requested == selected);
+        let auto_source = opts
+            .source_lang
+            .as_deref()
+            .is_none_or(|lang| lang.eq_ignore_ascii_case("auto"));
+        if !tl_units.is_empty()
+            && (requested_tl_matches || (auto_source && tl_units.len() >= units.len()))
+        {
             return Ok(tl_units);
         }
         Ok(units)
@@ -1119,12 +1135,10 @@ fn rpy_files_under(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The best `tl/<lang>/` folder to translate *from*, by the source-language
-/// preference **English > Japanese > Chinese** — a game that ships one of those
-/// localizations is easier to translate from than its (possibly Russian/…) base.
-/// Only en/ja/zh folders holding loose `.rpy` qualify; every other shipped language
-/// is ignored. Returns (folder name, path), or None (→ base-script extraction).
-fn preferred_tl_source(dir: &Path) -> Option<(String, PathBuf)> {
+/// Select a usable `tl/<lang>/` source. A requested source language wins when
+/// present; otherwise the fallback order is English, Japanese, then Chinese.
+/// Only loose `.rpy` trees that cover more than Ren'Py's SDK `common.rpy` qualify.
+fn preferred_tl_source(dir: &Path, requested_lang: Option<&str>) -> Option<(String, PathBuf)> {
     let tl = dir.join("tl");
     let mut cands: Vec<(u8, String, PathBuf)> = std::fs::read_dir(&tl)
         .ok()?
@@ -1148,7 +1162,17 @@ fn preferred_tl_source(dir: &Path) -> Option<(String, PathBuf)> {
             Some((rank, name, p))
         })
         .collect();
-    cands.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let requested_rank = requested_lang
+        .filter(|lang| !lang.eq_ignore_ascii_case("auto"))
+        .and_then(super::source_lang_rank);
+    cands.sort_by(|a, b| {
+        let a_requested = Some(a.0) == requested_rank;
+        let b_requested = Some(b.0) == requested_rank;
+        b_requested
+            .cmp(&a_requested)
+            .then(a.0.cmp(&b.0))
+            .then(a.1.cmp(&b.1))
+    });
     cands.into_iter().next().map(|(_, name, p)| (name, p))
 }
 
@@ -1484,7 +1508,18 @@ fn assign_eq(s: &str) -> Option<usize> {
 /// `Character(name_var, …)` with `name_var = "literal"` (possibly in another file).
 /// Skips `Character(_("…"))` (already translatable via the strings path), `None`, and
 /// interpolated `"[var]"` names.
-fn extract_character_names(files: &[(String, String)], out: &mut Vec<TransUnit>) {
+#[derive(Debug, Clone)]
+struct CharacterDefinition {
+    file: String,
+    name: String,
+    /// Names declared as `Character(_("…"))` are already collected through
+    /// Ren'Py's string translation table, so they need no standalone Name unit.
+    gettext: bool,
+}
+
+/// Resolve each `define <speaker> = Character(...)` to the human-readable display
+/// name. This is shared by Name extraction and dialogue-speaker presentation.
+fn character_definitions(files: &[(String, String)]) -> HashMap<String, CharacterDefinition> {
     // Pass 1: every simple `<ident> = "literal"` assignment → (file, literal). The RHS
     // must be exactly one quoted string (a plain string-valued variable).
     let mut vars: std::collections::HashMap<String, (String, String)> =
@@ -1519,29 +1554,32 @@ fn extract_character_names(files: &[(String, String)], out: &mut Vec<TransUnit>)
     }
 
     // Pass 2: `define <char> = Character(<first arg>, …)`.
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = HashMap::new();
     for (file, content) in files {
         for raw in content.lines() {
             let t = raw.trim_start();
             let Some(after) = t.strip_prefix("define ") else { continue };
             let Some(eq) = after.find('=') else { continue };
             let cident = after[..eq].trim();
-            if !is_ident(cident) || seen.contains(cident) {
+            if !is_ident(cident) || out.contains_key(cident) {
                 continue;
             }
             let rhs = after[eq + 1..].trim_start();
             let Some(rest) = rhs.strip_prefix("Character") else { continue };
             let rest = rest.trim_start();
             let Some(args) = rest.strip_prefix('(').map(str::trim_start) else { continue };
-            if args.starts_with("_(") {
-                continue; // gettext name — already translatable via the strings path
-            }
-            let (name_file, name) = if args.starts_with('"') || args.starts_with('\'') {
+            let (name_file, name, gettext) = if let Some(gettext_args) = args.strip_prefix("_(") {
+                let Some((ir, il, _)) = first_string(gettext_args) else { continue };
+                if il == 0 {
+                    continue;
+                }
+                (file.clone(), gettext_args[ir..ir + il].to_string(), true)
+            } else if args.starts_with('"') || args.starts_with('\'') {
                 let Some((ir, il, _)) = first_string(args) else { continue };
                 if il == 0 {
                     continue;
                 }
-                (file.clone(), args[ir..ir + il].to_string())
+                (file.clone(), args[ir..ir + il].to_string(), false)
             } else {
                 let arg = args
                     .split([',', ')', ' ', '\t'])
@@ -1552,18 +1590,59 @@ fn extract_character_names(files: &[(String, String)], out: &mut Vec<TransUnit>)
                     continue;
                 }
                 match vars.get(arg) {
-                    Some((f, txt)) => (f.clone(), txt.clone()),
+                    Some((f, txt)) => (f.clone(), txt.clone(), false),
                     None => continue,
                 }
             };
             if name.trim().is_empty() || name.starts_with('[') {
                 continue; // empty or interpolated "[var]" — nothing to translate
             }
-            seen.insert(cident.to_string());
-            out.push(
-                TransUnit::new(name_file, format!("name#{cident}"), UnitKind::Name, name)
-                    .with_context(Some(cident.to_string())),
+            out.insert(
+                cident.to_string(),
+                CharacterDefinition { file: name_file, name, gettext },
             );
+        }
+    }
+    out
+}
+
+fn extract_character_names_from_defs(
+    defs: &HashMap<String, CharacterDefinition>,
+    out: &mut Vec<TransUnit>,
+) {
+    for (cident, def) in defs {
+        if def.gettext {
+            continue;
+        }
+        out.push(
+            TransUnit::new(
+                &def.file,
+                format!("name#{cident}"),
+                UnitKind::Name,
+                &def.name,
+            )
+            .with_context(Some(cident.to_string())),
+        );
+    }
+}
+
+#[cfg(test)]
+fn extract_character_names(files: &[(String, String)], out: &mut Vec<TransUnit>) {
+    extract_character_names_from_defs(&character_definitions(files), out);
+}
+
+/// Turn implementation identifiers on dialogue units into a readable UI/prompt label,
+/// preserving the original identifier in parentheses for debugging and traceability.
+fn remap_speaker_contexts(units: &mut [TransUnit], defs: &HashMap<String, CharacterDefinition>) {
+    for unit in units {
+        if unit.kind != UnitKind::Dialogue {
+            continue;
+        }
+        let Some(code) = unit.context.as_deref() else { continue };
+        let Some(def) = defs.get(code) else { continue };
+        let name = def.name.trim();
+        if !name.is_empty() && name != code {
+            unit.context = Some(format!("{name} ({code})"));
         }
     }
 }
@@ -3614,6 +3693,25 @@ define g = Character(_(\"Gwen\"))
         assert!(!units.iter().any(|u| u.source == "nope"));
         assert!(units.iter().all(|u| u.kind == UnitKind::Name));
         assert!(units.iter().all(|u| u.pointer.starts_with("name#")));
+    }
+
+    #[test]
+    fn remaps_speaker_identifiers_to_character_display_names() {
+        let definitions = "\
+define jas = Character(_(\"Jasmine\"))
+define twi = Character(_(\"Both\"))
+";
+        let files = vec![("definitions.rpy".to_string(), definitions.to_string())];
+        let defs = character_definitions(&files);
+        let mut units = extract("    jas \"Hi.\"\n    twi \"Hello.\"\n");
+
+        remap_speaker_contexts(&mut units, &defs);
+
+        let speakers: Vec<_> = units
+            .iter()
+            .map(|unit| unit.context.as_deref().unwrap())
+            .collect();
+        assert_eq!(speakers, ["Jasmine (jas)", "Both (twi)"]);
     }
 
     /// A one-character ASCII string is a key name or a flag, never player text —

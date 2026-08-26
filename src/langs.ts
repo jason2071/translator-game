@@ -17,7 +17,7 @@ export const TARGET_LANGS = [
   "Korean",
 ] as const;
 
-// Default to auto-detect: source games vary (Japanese, English, …) and the
-// model detects it, so the user rarely needs to change this.
-export const DEFAULT_SOURCE = "Auto";
+// English is the usual source for translated Ren'Py games. The extractor falls
+// back to Japanese when an English source is unavailable.
+export const DEFAULT_SOURCE = "English";
 export const DEFAULT_TARGET = "Thai";

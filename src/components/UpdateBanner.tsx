@@ -5,7 +5,9 @@ import { Icon } from "./Icon";
 
 // Auto-checks for a newer signed release on startup. If one exists, shows a banner;
 // installing downloads only the update, applies it, and relaunches — no manual
-// re-download. In dev / offline the check just fails and is ignored.
+// re-download. A dev binary must never offer to overwrite itself with a release.
+const UPDATES_ENABLED = !import.meta.env.DEV;
+
 export function UpdateBanner() {
   const [update, setUpdate] = useState<Update | null>(null);
   const [busy, setBusy] = useState(false);
@@ -13,12 +15,13 @@ export function UpdateBanner() {
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!UPDATES_ENABLED) return;
     check()
       .then((u) => {
         if (u?.available) setUpdate(u);
       })
       .catch(() => {
-        /* no updater manifest (dev) or offline — ignore */
+        /* no updater manifest or offline — ignore */
       });
   }, []);
 

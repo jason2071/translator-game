@@ -90,7 +90,7 @@ fn open_project(
     state: tauri::State<AppState>,
 ) -> Result<ProjectInfo, String> {
     let root = PathBuf::from(path);
-    let src = source_lang.unwrap_or_else(|| "auto".into());
+    let src = source_lang.unwrap_or_else(|| "English".into());
     let tgt = target_lang.unwrap_or_else(|| "Thai".into());
     let (proj, fresh) = project::open_or_create(&root, &src, &tgt).map_err(|e| e.to_string())?;
     let info = proj.info(fresh).map_err(|e| e.to_string())?;
@@ -302,16 +302,23 @@ fn glossary_lint(state: tauri::State<AppState>) -> Result<Vec<LintWarning>, Stri
 
 // --- characters (speaker → gender, for Thai gendered particles) -------------
 
+fn visible_characters(conn: &rusqlite::Connection) -> anyhow::Result<Vec<project::db::Character>> {
+    Ok(project::db::characters_list(conn)?
+        .into_iter()
+        .filter(|c| !project::db::is_non_character_speaker(&c.name))
+        .collect())
+}
+
 /// Every stored speaker→gender row, plus any dialogue speaker not yet classified
 /// (returned with an empty gender), so the panel shows the full cast in one list.
 #[tauri::command]
 fn characters_list(state: tauri::State<AppState>) -> Result<Vec<project::db::Character>, String> {
     with_project(&state, |p| {
-        let mut list = project::db::characters_list(&p.conn)?;
+        let mut list = visible_characters(&p.conn)?;
         let have: std::collections::HashSet<String> =
             list.iter().map(|c| c.name.clone()).collect();
         for name in project::db::distinct_speakers(&p.conn)? {
-            if !have.contains(&name) {
+            if !project::db::is_non_character_speaker(&name) && !have.contains(&name) {
                 list.push(project::db::Character { name, gender: String::new(), note: String::new() });
             }
         }
@@ -358,7 +365,7 @@ async fn classify_genders(
     let (todo, trusted): (Vec<(String, String)>, std::collections::HashSet<String>) = {
         let guard = state.project.lock().unwrap();
         let p = guard.as_ref().ok_or("no project open")?;
-        let have: std::collections::HashSet<String> = project::db::characters_list(&p.conn)
+        let have: std::collections::HashSet<String> = visible_characters(&p.conn)
             .map_err(|e| e.to_string())?
             .into_iter()
             .map(|c| c.name)
@@ -372,7 +379,11 @@ async fn classify_genders(
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut trusted: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut todo: Vec<(String, String)> = Vec::new();
-        let speakers = project::db::distinct_speakers(&p.conn).map_err(|e| e.to_string())?;
+        let speakers: Vec<String> = project::db::distinct_speakers(&p.conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|name| !project::db::is_non_character_speaker(name))
+            .collect();
         for n in &speakers {
             let key = n.trim().to_lowercase();
             if n.trim().is_empty() || have.contains(n.trim()) || !seen.insert(key) {
@@ -400,7 +411,7 @@ async fn classify_genders(
         (todo, trusted)
     };
     if todo.is_empty() {
-        return with_project(&state, |p| project::db::characters_list(&p.conn));
+        return with_project(&state, |p| visible_characters(&p.conn));
     }
 
     let key: Option<String> = if config.needs_key() {
@@ -444,7 +455,7 @@ async fn classify_genders(
 
     with_project_mut(&state, |p| {
         project::db::characters_set_bulk(&mut p.conn, &pairs)?;
-        project::db::characters_list(&p.conn)
+        visible_characters(&p.conn)
     })
 }
 
@@ -464,7 +475,7 @@ async fn classify_personas(
     let todo: Vec<(String, String)> = {
         let guard = state.project.lock().unwrap();
         let p = guard.as_ref().ok_or("no project open")?;
-        let have_note: std::collections::HashSet<String> = project::db::characters_list(&p.conn)
+        let have_note: std::collections::HashSet<String> = visible_characters(&p.conn)
             .map_err(|e| e.to_string())?
             .into_iter()
             .filter(|c| !c.note.trim().is_empty())
@@ -479,14 +490,18 @@ async fn classify_personas(
         let mut todo: Vec<(String, String)> = Vec::new();
         // Dialogue speakers first (they have sample lines), then any stored character
         // without a note that isn't a dialogue speaker (e.g. a Name-only entry).
-        for n in project::db::distinct_speakers(&p.conn).map_err(|e| e.to_string())? {
+        for n in project::db::distinct_speakers(&p.conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|name| !project::db::is_non_character_speaker(name))
+        {
             let key = n.trim().to_lowercase();
             if n.trim().is_empty() || have_note.contains(n.trim()) || !seen.insert(key) {
                 continue;
             }
             todo.push((n.trim().to_string(), samples.get(&n).cloned().unwrap_or_default()));
         }
-        for c in project::db::characters_list(&p.conn).map_err(|e| e.to_string())? {
+        for c in visible_characters(&p.conn).map_err(|e| e.to_string())? {
             let key = c.name.trim().to_lowercase();
             if c.name.trim().is_empty() || !c.note.trim().is_empty() || !seen.insert(key) {
                 continue;
@@ -497,7 +512,7 @@ async fn classify_personas(
         todo
     };
     if todo.is_empty() {
-        return with_project(&state, |p| project::db::characters_list(&p.conn));
+        return with_project(&state, |p| visible_characters(&p.conn));
     }
 
     let key: Option<String> = if config.needs_key() {
@@ -536,7 +551,7 @@ async fn classify_personas(
 
     with_project_mut(&state, |p| {
         project::db::characters_set_notes_bulk(&mut p.conn, &pairs)?;
-        project::db::characters_list(&p.conn)
+        visible_characters(&p.conn)
     })
 }
 
@@ -1068,7 +1083,7 @@ async fn translate_units(
         // Speaker → gender map → a Thai gendered-particle directive, and speaker → note
         // map → a persona/register directive (per-line speaker arrives via each unit's
         // `context`/`ctx`). One DB read, split into the two `(name, X)` maps.
-        let cast = project::db::characters_list(&proj.conn).unwrap_or_default();
+        let cast = visible_characters(&proj.conn).unwrap_or_default();
         let characters: Vec<(String, String)> =
             cast.iter().map(|c| (c.name.clone(), c.gender.clone())).collect();
         let personas: Vec<(String, String)> =

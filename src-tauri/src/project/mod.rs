@@ -91,7 +91,13 @@ pub fn open_or_create(
     let mut conn = conn;
     let mut freshly_extracted = false;
     if db::unit_count(&conn)? == 0 {
-        let units = eng.extract(root, &ExtractOpts::default())?;
+        let units = eng.extract(
+            root,
+            &ExtractOpts {
+                source_lang: Some(source_lang.to_string()),
+                ..ExtractOpts::default()
+            },
+        )?;
         db::insert_units(&mut conn, &units)?;
         freshly_extracted = true;
     }
@@ -125,12 +131,21 @@ pub fn open_or_create(
 pub fn rescan(project: &mut Project) -> Result<(usize, usize, usize)> {
     let eng = engine::detect(&project.root)
         .ok_or_else(|| anyhow!("the game folder is no longer recognized"))?;
-    let units = eng.extract(&project.root, &ExtractOpts::default())?;
+    let source_lang = db::get_meta(&project.conn, "source_lang")?
+        .unwrap_or_else(|| "English".to_string());
+    let units = eng.extract(
+        &project.root,
+        &ExtractOpts {
+            source_lang: Some(source_lang),
+            ..ExtractOpts::default()
+        },
+    )?;
+    let migrated_characters = db::migrate_character_contexts(&mut project.conn, &units)?;
     let (added, filled) = db::merge_units(&mut project.conn, &units)?;
     // Drop rows this extractor no longer produces and that hold no work — the
     // junk a stricter extraction pass leaves behind (see `prune_stale_units`).
     let removed = db::prune_stale_units(&mut project.conn, &units)?;
-    Ok((added, filled, removed))
+    Ok((added, filled + migrated_characters, removed))
 }
 
 impl Project {

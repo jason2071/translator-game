@@ -22,8 +22,12 @@ pub enum ParamText {
 }
 
 /// Options controlling which "risky" categories are extracted.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ExtractOpts {
+    /// Source language selected when creating the project. Engines with bundled
+    /// language trees can use this to choose the requested source instead of
+    /// silently preferring another locale.
+    pub source_lang: Option<String>,
     /// Include event comments (108/408). Often dev notes, sometimes shown.
     pub include_comments: bool,
     /// Include plugin command args (356/357). Engine/plugin specific.
@@ -38,6 +42,7 @@ impl Default for ExtractOpts {
     fn default() -> Self {
         // Conservative defaults: only clearly player-facing text.
         ExtractOpts {
+            source_lang: None,
             include_comments: false,
             include_plugin_args: false,
             include_scripts: false,

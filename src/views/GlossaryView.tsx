@@ -89,12 +89,11 @@ export default function GlossaryView() {
   );
 }
 
-/// The modal's four screens as tabs: Game context, Characters, Term suggestions,
-/// and the glossary table itself (passed in as `children`, since it owns the add
-/// form's state). Tabs rather than stacked collapsibles — each of these is a full
-/// screen's worth of controls, and having three of them fold in and out of one
-/// scroll made the modal jump around. The label carries the status the collapsed
-/// summary used to show, so nothing has to be opened to see where work is needed.
+/// The modal's four screens follow the setup flow: establish game context, define
+/// speakers, suggest terms, then review the saved glossary. Tabs rather than stacked
+/// collapsibles — each is a full screen's worth of controls, and folding them into one
+/// scroll made the modal jump around. The label carries the status summary, so nothing
+/// has to be opened to see where work is needed.
 function GlossaryTabs({
   entries,
   onAdded,
@@ -106,13 +105,13 @@ function GlossaryTabs({
 }) {
   const project = useStore((s) => s.project);
   const characters = useStore((s) => s.characters);
-  const [tab, setTab] = useState<"terms" | "context" | "characters" | "suggest">("terms");
-
   const hasContext = !!(project?.gameContext ?? "").trim();
   const noNote = characters.filter((c) => !(c.note ?? "").trim()).length;
+  const [tab, setTab] = useState<"terms" | "context" | "characters" | "suggest">(
+    !hasContext ? "context" : characters.length === 0 ? "characters" : "terms",
+  );
 
   const tabs = [
-    { id: "terms" as const, label: "Glossary terms", badge: entries.length ? String(entries.length) : "" },
     { id: "context" as const, label: "Game context", badge: hasContext ? "set" : "empty" },
     {
       id: "characters" as const,
@@ -122,6 +121,7 @@ function GlossaryTabs({
         : "",
     },
     { id: "suggest" as const, label: "Term suggestions", badge: "" },
+    { id: "terms" as const, label: "Glossary terms", badge: entries.length ? String(entries.length) : "" },
   ];
 
   return (

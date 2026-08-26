@@ -44,6 +44,7 @@ fn opt_in_toggles_extract_notes_and_scripts() {
         include_plugin_args: true,
         include_scripts: true,
         include_notes: true,
+        ..ExtractOpts::default()
     };
     let units = eng.extract(&root, &opts).unwrap();
 

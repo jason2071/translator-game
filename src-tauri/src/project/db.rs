@@ -5,7 +5,7 @@ use crate::model::{Status, TransUnit, UnitKind};
 use anyhow::{anyhow, Result};
 use rusqlite::{
     functions::{Context, FunctionFlags},
-    params, Connection,
+    params, Connection, OptionalExtension,
 };
 use serde::{Deserialize, Serialize};
 
@@ -223,9 +223,9 @@ pub fn insert_units(conn: &mut Connection, units: &[TransUnit]) -> Result<usize>
 
 /// Merge a fresh extraction into an existing project (a "rescan"): insert any new
 /// `(file, pointer)` units — e.g. a tier the engine gained since the project was created —
-/// and **backfill `context`** on existing units that have none but the fresh scan now
-/// resolves one (e.g. a speaker name), all WITHOUT touching an existing unit's
-/// translation or status. Returns `(inserted, context_filled)`.
+/// and **refresh `context`** when the extractor resolves a better speaker label, all
+/// WITHOUT touching an existing unit's translation or status. Returns
+/// `(inserted, context_updated)`.
 pub fn merge_units(conn: &mut Connection, units: &[TransUnit]) -> Result<(usize, usize)> {
     let tx = conn.transaction()?;
     let mut inserted = 0usize;
@@ -235,10 +235,12 @@ pub fn merge_units(conn: &mut Connection, units: &[TransUnit]) -> Result<(usize,
             "INSERT OR IGNORE INTO unit(file, pointer, kind, context, grp, source, translation, status)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
-        // Only fills an empty context — never overwrites one the user (or a prior scan) set.
+        // Context is extractor-owned (the UI never edits it), so a newer scan may
+        // replace an implementation id such as `jas` with `Jasmine (jas)`.
         let mut upd = tx.prepare(
             "UPDATE unit SET context = ?3
-             WHERE file = ?1 AND pointer = ?2 AND (context IS NULL OR context = '')",
+             WHERE file = ?1 AND pointer = ?2
+               AND (context IS NULL OR context = '' OR context <> ?3)",
         )?;
         for u in units {
             let n = ins.execute(params![
@@ -709,6 +711,84 @@ pub fn glossary_delete(conn: &Connection, id: i64) -> Result<()> {
 }
 
 // --- characters (speaker → gender) ------------------------------------------
+
+/// Speaker labels that describe a group, system voice, or unknown narrator rather
+/// than one person. Keep their dialogue context intact, but omit them from the
+/// character-management and AI gender/persona workflows.
+pub fn is_non_character_speaker(name: &str) -> bool {
+    let label = name
+        .trim()
+        .split(" (")
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        label.as_str(),
+        "" | "???" | "all" | "everyone" | "both" | "narrator" | "unknown" | "phone"
+            | "male voice" | "female voice"
+    )
+}
+
+/// Move stored gender/persona settings from an old extractor speaker label to its
+/// refreshed label during a rescan. Existing settings on the new label win, so a
+/// user's newer manual edit is never overwritten.
+pub fn migrate_character_contexts(conn: &mut Connection, units: &[TransUnit]) -> Result<usize> {
+    let mut lookup = conn.prepare("SELECT context FROM unit WHERE file = ?1 AND pointer = ?2")?;
+    let mut mappings: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut ambiguous: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for unit in units.iter().filter(|u| u.kind == UnitKind::Dialogue) {
+        let Some(new) = unit.context.as_deref().filter(|name| !name.trim().is_empty()) else {
+            continue;
+        };
+        let old: Option<String> = lookup
+            .query_row(params![unit.file, unit.pointer], |r| r.get(0))
+            .optional()?;
+        let Some(old) = old.filter(|name| !name.trim().is_empty() && name != new) else {
+            continue;
+        };
+        match mappings.get(&old) {
+            Some(existing) if existing != new => {
+                ambiguous.insert(old);
+            }
+            Some(_) => {}
+            None => {
+                mappings.insert(old, new.to_string());
+            }
+        }
+    }
+    drop(lookup);
+    for old in &ambiguous {
+        mappings.remove(old);
+    }
+    if mappings.is_empty() {
+        return Ok(0);
+    }
+
+    let tx = conn.transaction()?;
+    let mut moved = 0usize;
+    for (old, new) in mappings {
+        let row: Option<(String, String)> = tx
+            .query_row(
+                "SELECT gender, COALESCE(note, '') FROM character WHERE name = ?1",
+                params![old],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((gender, note)) = row else { continue };
+        tx.execute(
+            "INSERT INTO character(name, gender, note) VALUES(?1, ?2, ?3)
+             ON CONFLICT(name) DO UPDATE SET
+               gender = CASE WHEN character.gender = '' THEN excluded.gender ELSE character.gender END,
+               note = CASE WHEN COALESCE(character.note, '') = '' THEN excluded.note ELSE character.note END",
+            params![new, gender, note],
+        )?;
+        tx.execute("DELETE FROM character WHERE name = ?1", params![old])?;
+        moved += 1;
+    }
+    tx.commit()?;
+    Ok(moved)
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Character {
@@ -1385,6 +1465,39 @@ mod tests {
         let mut u = TransUnit::new(file, ptr, UnitKind::Dialogue, source);
         u.status = status;
         u
+    }
+
+    #[test]
+    fn non_character_speakers_are_filtered_but_named_people_remain() {
+        for label in ["Both (twi)", "Everyone", "Phone", "???"] {
+            assert!(is_non_character_speaker(label), "{label} should be excluded");
+        }
+        assert!(!is_non_character_speaker("Jasmine (jas)"));
+        assert!(!is_non_character_speaker("Businessman"));
+    }
+
+    #[test]
+    fn rescan_refreshes_context_and_migrates_character_settings() {
+        let mut original = unit("script.rpy", "0:2", "Hi", Status::Untranslated);
+        original.context = Some("jas".into());
+        let mut conn = mem_db(&[original]);
+        character_set(&conn, "jas", "female").unwrap();
+        character_set_note(&conn, "jas", "friendly lead").unwrap();
+
+        let mut rescanned = unit("script.rpy", "0:2", "Hi", Status::Untranslated);
+        rescanned.context = Some("Jasmine (jas)".into());
+        assert_eq!(migrate_character_contexts(&mut conn, &[rescanned.clone()]).unwrap(), 1);
+        assert_eq!(merge_units(&mut conn, &[rescanned]).unwrap(), (0, 1));
+
+        let characters = characters_list(&conn).unwrap();
+        assert_eq!(characters.len(), 1);
+        assert_eq!(characters[0].name, "Jasmine (jas)");
+        assert_eq!(characters[0].gender, "female");
+        assert_eq!(characters[0].note, "friendly lead");
+        let context: String = conn
+            .query_row("SELECT context FROM unit", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(context, "Jasmine (jas)");
     }
 
     #[test]

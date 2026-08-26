@@ -4,6 +4,8 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { api, type ProviderKind } from "../ipc";
 import { PROVIDER_LABELS, PROVIDER_KINDS, useSettings } from "../settings";
+
+const UPDATES_ENABLED = !import.meta.env.DEV;
 import { Icon } from "../components/Icon";
 
 export default function SettingsView() {
@@ -82,6 +84,11 @@ export default function SettingsView() {
   }, []);
 
   async function checkUpdate() {
+    if (!UPDATES_ENABLED) {
+      setUpState("idle");
+      setUpMsg("Updates are disabled while running the development build.");
+      return;
+    }
     setUpState("checking");
     setUpMsg("");
     setUpAvail(null);
@@ -296,13 +303,14 @@ export default function SettingsView() {
         <button
           className="btn-reset"
           onClick={checkUpdate}
-          disabled={upState === "checking"}
-          title="Check GitHub for a newer release"
+          disabled={upState === "checking" || !UPDATES_ENABLED}
+          title={UPDATES_ENABLED ? "Check GitHub for a newer release" : "Updates are disabled in development"}
         >
           <Icon name="retry" size={13} className={upState === "checking" ? "spin" : undefined} />
           {upState === "checking" ? "Checking…" : "Check for updates"}
         </button>
         {version && <span className="hint">Current: v{version}</span>}
+        {!UPDATES_ENABLED && <span className="hint">Updates are disabled in development.</span>}
         {upMsg && (
           <span className={upState === "error" ? "error" : upState === "avail" ? "ok-msg" : "hint"}>
             {upMsg}

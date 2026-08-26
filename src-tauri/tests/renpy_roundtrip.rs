@@ -85,7 +85,7 @@ fn extract_finds_dialogue_not_code() {
         .find(|u| u.source == "Hello. I'm glad you could make it.")
         .unwrap();
     assert_eq!(hi.kind, UnitKind::Dialogue);
-    assert_eq!(hi.context.as_deref(), Some("e"));
+    assert_eq!(hi.context.as_deref(), Some("Eileen (e)"));
 
     let narr = units
         .iter()
@@ -319,6 +319,69 @@ fn richer_tl_tree_still_wins_over_a_thin_base_script() {
     let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
     assert!(texts.contains(&"Hello.") && texts.contains(&"Goodbye."), "{texts:?}");
     assert!(!texts.contains(&"Привет."), "base script not used: {texts:?}");
+}
+
+#[test]
+fn explicit_english_uses_base_scripts_before_japanese_fallback() {
+    // A game can ship English base scripts plus a full Japanese localization. When
+    // the user asks for English, extracting the Japanese tree is wrong even if it
+    // contains more lines than the base script.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let game = root.join("game");
+    std::fs::create_dir_all(game.join("tl/japanese")).unwrap();
+    std::fs::write(game.join("script_version.txt"), b"8.4.0").unwrap();
+    std::fs::write(game.join("story.rpy"), "label start:\n    m \"Hello from base.\"\n").unwrap();
+    std::fs::write(
+        game.join("tl/japanese/story.rpy"),
+        "translate japanese a1:\n    m \"こんにちは。\"\n\ntranslate japanese a2:\n    m \"さようなら。\"\n",
+    )
+    .unwrap();
+
+    let eng = engine::detect(root).unwrap();
+    let units = eng
+        .extract(
+            root,
+            &ExtractOpts {
+                source_lang: Some("English".to_string()),
+                ..ExtractOpts::default()
+            },
+        )
+        .unwrap();
+    let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+    assert!(texts.contains(&"Hello from base."), "{texts:?}");
+    assert!(!texts.contains(&"こんにちは。"), "{texts:?}");
+    assert!(units.iter().all(|u| !u.file.starts_with("tl/")), "{units:?}");
+}
+
+#[test]
+fn explicit_japanese_uses_the_japanese_tl_tree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let game = root.join("game");
+    std::fs::create_dir_all(game.join("tl/japanese")).unwrap();
+    std::fs::write(game.join("script_version.txt"), b"8.4.0").unwrap();
+    std::fs::write(game.join("story.rpy"), "label start:\n    m \"Hello from base.\"\n").unwrap();
+    std::fs::write(
+        game.join("tl/japanese/story.rpy"),
+        "translate japanese a1:\n    m \"こんにちは。\"\n",
+    )
+    .unwrap();
+
+    let eng = engine::detect(root).unwrap();
+    let units = eng
+        .extract(
+            root,
+            &ExtractOpts {
+                source_lang: Some("Japanese".to_string()),
+                ..ExtractOpts::default()
+            },
+        )
+        .unwrap();
+    let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+    assert!(texts.contains(&"こんにちは。"), "{texts:?}");
+    assert!(!texts.contains(&"Hello from base."), "{texts:?}");
+    assert!(units.iter().all(|u| u.file.starts_with("tl/japanese/")), "{units:?}");
 }
 
 #[test]
