@@ -107,9 +107,7 @@ function GlossaryTabs({
   const characters = useStore((s) => s.characters);
   const hasContext = !!(project?.gameContext ?? "").trim();
   const noNote = characters.filter((c) => !(c.note ?? "").trim()).length;
-  const [tab, setTab] = useState<"terms" | "context" | "characters" | "suggest">(
-    !hasContext ? "context" : characters.length === 0 ? "characters" : "terms",
-  );
+  const [tab, setTab] = useState<"terms" | "context" | "characters" | "suggest">("context");
 
   const tabs = [
     { id: "context" as const, label: "Game context", badge: hasContext ? "set" : "empty" },
