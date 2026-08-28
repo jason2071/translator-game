@@ -7,6 +7,7 @@ use crate::engine::{self, ExtractOpts};
 use anyhow::{anyhow, Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -52,6 +53,28 @@ fn rpgtl_dir(root: &Path) -> PathBuf {
     root.join(".rpgtl")
 }
 
+/// Most engine pointers are relative to `data_dir`.  A few explicitly-scoped
+/// RPG Maker plugin adapters own files beside it (for example InnScenario's
+/// scripts and Galv Quest Log's text/config). Keep the path mapping here as
+/// well as in that engine so backup, re-export, restore and mod export all
+/// address the same real file.
+fn project_file_path(project: &Project, file: &str) -> PathBuf {
+    if project.engine_id == "rpgmaker-mvmz" && crate::engine::mvmz::is_game_root_relative_file(file)
+    {
+        project
+            .data_dir
+            .parent()
+            .unwrap_or(&project.root)
+            .join(file)
+    } else {
+        project.data_dir.join(file)
+    }
+}
+
+fn file_is_game_root_relative(project: &Project, file: &str) -> bool {
+    project.engine_id == "rpgmaker-mvmz" && crate::engine::mvmz::is_game_root_relative_file(file)
+}
+
 /// Backup directories under `.rpgtl/backups/`, oldest-first by their numeric
 /// timestamp name. The earliest backup that contains a given file holds that
 /// file's original bytes — it was saved just before the first export touched it.
@@ -78,8 +101,8 @@ pub fn open_or_create(
     source_lang: &str,
     target_lang: &str,
 ) -> Result<(Project, bool)> {
-    let eng = engine::detect(root)
-        .ok_or_else(|| anyhow!("unsupported or unrecognized game folder"))?;
+    let eng =
+        engine::detect(root).ok_or_else(|| anyhow!("unsupported or unrecognized game folder"))?;
     let desc = eng.describe(root)?;
 
     let dir = rpgtl_dir(root);
@@ -131,8 +154,8 @@ pub fn open_or_create(
 pub fn rescan(project: &mut Project) -> Result<(usize, usize, usize)> {
     let eng = engine::detect(&project.root)
         .ok_or_else(|| anyhow!("the game folder is no longer recognized"))?;
-    let source_lang = db::get_meta(&project.conn, "source_lang")?
-        .unwrap_or_else(|| "English".to_string());
+    let source_lang =
+        db::get_meta(&project.conn, "source_lang")?.unwrap_or_else(|| "English".to_string());
     let units = eng.extract(
         &project.root,
         &ExtractOpts {
@@ -155,10 +178,8 @@ impl Project {
             engine_id: self.engine_id.clone(),
             engine_name: self.engine_name.clone(),
             data_dir: self.data_dir.to_string_lossy().to_string(),
-            source_lang: db::get_meta(&self.conn, "source_lang")?
-                .unwrap_or_else(|| "auto".into()),
-            target_lang: db::get_meta(&self.conn, "target_lang")?
-                .unwrap_or_else(|| "Thai".into()),
+            source_lang: db::get_meta(&self.conn, "source_lang")?.unwrap_or_else(|| "auto".into()),
+            target_lang: db::get_meta(&self.conn, "target_lang")?.unwrap_or_else(|| "Thai".into()),
             game_context: db::get_meta(&self.conn, "game_context")?.unwrap_or_default(),
             era: db::get_meta(&self.conn, "era")?.unwrap_or_default(),
             // Default OFF: absent meta means keep the original names.
@@ -205,11 +226,17 @@ fn translate_names_on(conn: &Connection) -> Result<bool> {
 /// (`lib.rs::translate_units`); this is the export-side half of the same rule.
 /// Ren'Py doesn't use this — `renpy::export_tl` applies the filter itself and its
 /// caller needs the unfiltered list to dedupe `harvest_tl_untranslated`.
-fn drop_names_when_off(conn: &Connection, units: Vec<crate::model::TransUnit>) -> Result<Vec<crate::model::TransUnit>> {
+fn drop_names_when_off(
+    conn: &Connection,
+    units: Vec<crate::model::TransUnit>,
+) -> Result<Vec<crate::model::TransUnit>> {
     if translate_names_on(conn)? {
         return Ok(units);
     }
-    Ok(units.into_iter().filter(|u| !u.is_character_name()).collect())
+    Ok(units
+        .into_iter()
+        .filter(|u| !u.is_character_name())
+        .collect())
 }
 
 /// Back up the game files that are about to change, then patch translations
@@ -244,8 +271,8 @@ pub fn export_with_renpy_font_scale(
     // language. Falls back to in-place injection if there's no bundled launcher.
     if eng.id() == "renpy" {
         let thai_font_scale = engine::renpy::validate_thai_font_scale(thai_font_scale)?;
-        let lang = db::get_meta(&project.conn, "target_lang")?
-            .unwrap_or_else(|| "translated".to_string());
+        let lang =
+            db::get_meta(&project.conn, "target_lang")?.unwrap_or_else(|| "translated".to_string());
         let translate_names = translate_names_on(&project.conn)?;
         // The glossary rides along: a name the game shows through a variable
         // (`menu: "[Mom_name]"`) reaches neither the skeleton nor a byte-span
@@ -312,13 +339,8 @@ pub fn export_with_renpy_font_scale(
     if eng.id() == "rpgmaker-hendrix" {
         let base = engine::hendrix::game_root(&project.root)
             .ok_or_else(|| anyhow!("Hendrix sheet no longer found for this project"))?;
-        let ex = engine::hendrix::export_sheet(
-            &project.root,
-            &base,
-            &units,
-            make_backup,
-            embed_font,
-        )?;
+        let ex =
+            engine::hendrix::export_sheet(&project.root, &base, &units, make_backup, embed_font)?;
         return Ok(ExportResult {
             files_written: 1,
             units_applied: applied.len(),
@@ -338,7 +360,7 @@ pub fn export_with_renpy_font_scale(
     let companions: Vec<String> = touched
         .iter()
         .flat_map(|f| eng.stale_companions(f))
-        .filter(|c| project.data_dir.join(c).exists())
+        .filter(|c| project_file_path(project, c).exists())
         .collect();
 
     let backup_dir = if make_backup && !touched.is_empty() {
@@ -346,10 +368,12 @@ pub fn export_with_renpy_font_scale(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let dir = rpgtl_dir(&project.root).join("backups").join(ts.to_string());
+        let dir = rpgtl_dir(&project.root)
+            .join("backups")
+            .join(ts.to_string());
         std::fs::create_dir_all(&dir)?;
         for file in touched.iter().chain(companions.iter()) {
-            let src = project.data_dir.join(file);
+            let src = project_file_path(project, file);
             if src.exists() {
                 // A file path may be nested (e.g. Ren'Py `scripts/ch1.rpy`), so
                 // mirror its parent dirs under the backup folder before copying.
@@ -382,7 +406,7 @@ pub fn export_with_renpy_font_scale(
     let backups_root = rpgtl_dir(&project.root).join("backups");
     let earliest_backups = earliest_backup_dirs(&backups_root);
     for file in &touched {
-        let live = project.data_dir.join(file);
+        let live = project_file_path(project, file);
         let snap = source_dir.join(file);
         if !snap.exists() {
             // First export of this file under the snapshot scheme: capture its
@@ -402,14 +426,37 @@ pub fn export_with_renpy_font_scale(
         }
         if snap.exists() {
             // Reset the live file to its original before injecting.
-            std::fs::copy(&snap, &live)
-                .with_context(|| format!("restoring original {file}"))?;
+            std::fs::copy(&snap, &live).with_context(|| format!("restoring original {file}"))?;
         }
     }
 
+    // A rescan made after an in-place export can have read translated text and
+    // saved it as a second source row. Its byte pointer belongs to that longer
+    // translated text, not the original snapshot we inject into. Re-extract now
+    // that all touched files have been restored, and omit only rows that no
+    // longer describe an exact source location. This preserves the matching
+    // original row (and its translation) while preventing one stale duplicate
+    // from aborting the whole export.
+    let source_lang = db::get_meta(&project.conn, "source_lang")?.unwrap_or_else(|| "auto".into());
+    let valid: HashSet<(String, String, String)> = eng
+        .extract(
+            &project.root,
+            &ExtractOpts {
+                source_lang: Some(source_lang),
+                ..ExtractOpts::default()
+            },
+        )?
+        .into_iter()
+        .map(|unit| (unit.file, unit.pointer, unit.source))
+        .collect();
+    let (export_units, stale_units): (Vec<_>, Vec<_>) = units.into_iter().partition(|unit| {
+        !unit.status.is_applied()
+            || valid.contains(&(unit.file.clone(), unit.pointer.clone(), unit.source.clone()))
+    });
+
     // Inject writes patched files in place (out_dir == data_dir), now always
     // starting from the original bytes restored above.
-    eng.inject(&project.root, &units, &project.data_dir)?;
+    eng.inject(&project.root, &export_units, &project.data_dir)?;
 
     // Remove now-stale derived files so the engine rebuilds them from our edit.
     for c in &companions {
@@ -441,10 +488,23 @@ pub fn export_with_renpy_font_scale(
             }
         }
     }
+    if !stale_units.is_empty() {
+        let stale_note = format!(
+            "Skipped {} stale extracted row(s); their valid source rows were exported.",
+            stale_units.len()
+        );
+        note = Some(match note {
+            Some(existing) => format!("{existing} {stale_note}"),
+            None => stale_note,
+        });
+    }
 
     Ok(ExportResult {
         files_written: touched.len(),
-        units_applied: applied.len(),
+        units_applied: export_units
+            .iter()
+            .filter(|unit| unit.status.is_applied())
+            .count(),
         backup_dir,
         note,
         warning,
@@ -485,12 +545,12 @@ pub fn restore_original(project: &Project) -> Result<RestoreResult> {
         let rel = snap
             .strip_prefix(&source_dir)
             .with_context(|| format!("snapshot path outside source dir: {}", snap.display()))?;
-        let live = project.data_dir.join(rel);
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        let live = project_file_path(project, &rel);
         if let Some(parent) = live.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::copy(snap, &live)
-            .with_context(|| format!("restoring original {}", rel.display()))?;
+        std::fs::copy(snap, &live).with_context(|| format!("restoring original {rel}"))?;
         files_restored += 1;
     }
 
@@ -570,8 +630,8 @@ pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
     // original character names, even ones a prior Run translated.
     let units = drop_names_when_off(&project.conn, db::all_units(&project.conn)?)?;
     let applied: Vec<_> = units.iter().filter(|u| u.status.is_applied()).collect();
-    let lang = db::get_meta(&project.conn, "target_lang")?
-        .unwrap_or_else(|| "translated".to_string());
+    let lang =
+        db::get_meta(&project.conn, "target_lang")?.unwrap_or_else(|| "translated".to_string());
 
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -600,7 +660,14 @@ pub fn export_mod(project: &Project, embed_font: bool) -> Result<ModResult> {
             // Everything else (RPGMaker MV/MZ, Godot, TyranoScript, KiriKiri, Forger,
             // AC loctext) is a single-locale text/JSON engine whose `inject` writes a
             // mirrored tree — build the mod by injecting pristine originals into staging.
-            _ => build_mod_via_inject(project, eng.as_ref(), &staging, &units, &applied, embed_font),
+            _ => build_mod_via_inject(
+                project,
+                eng.as_ref(),
+                &staging,
+                &units,
+                &applied,
+                embed_font,
+            ),
         }
     })();
 
@@ -644,7 +711,10 @@ fn build_mod_via_inject(
 
     // staging/<data-rel> mirrors the game's data dir, so the zip's paths match how the
     // user overlays it onto the game root.
-    let data_rel = project.data_dir.strip_prefix(&project.root).unwrap_or(Path::new(""));
+    let data_rel = project
+        .data_dir
+        .strip_prefix(&project.root)
+        .unwrap_or(Path::new(""));
     let staging_data = staging.join(data_rel);
     std::fs::create_dir_all(&staging_data)?;
 
@@ -655,7 +725,10 @@ fn build_mod_via_inject(
     let _ = std::fs::remove_dir_all(&read_root);
     inject_res?;
 
-    let mut note = format!("Injected {} translated file(s) into the mod.", touched.len());
+    let mut note = format!(
+        "Injected {} translated file(s) into the mod.",
+        touched.len()
+    );
     let mut warning = None;
     if embed_font {
         match eng.embed_font(
@@ -687,22 +760,42 @@ fn pristine_read_root(project: &Project, files: &[String]) -> Result<PathBuf> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let root = rpgtl_dir(&project.root).join("mods").join(format!("pristine-{ts}"));
+    let root = rpgtl_dir(&project.root)
+        .join("mods")
+        .join(format!("pristine-{ts}"));
     let _ = std::fs::remove_dir_all(&root);
-    let data_rel = project.data_dir.strip_prefix(&project.root).unwrap_or(Path::new(""));
+    let data_rel = project
+        .data_dir
+        .strip_prefix(&project.root)
+        .unwrap_or(Path::new(""));
     let source_dir = rpgtl_dir(&project.root).join("source");
     for file in files {
         let snap = source_dir.join(file);
-        let live = project.data_dir.join(file);
+        let live = project_file_path(project, file);
         let src = if snap.exists() { snap } else { live };
         if !src.exists() {
             continue;
         }
-        let dst = root.join(data_rel).join(file);
+        let dst = if file_is_game_root_relative(project, file) {
+            root.join(file)
+        } else {
+            root.join(data_rel).join(file)
+        };
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::copy(&src, &dst).with_context(|| format!("staging pristine {file}"))?;
+    }
+    // `MvMzEngine::inject` detects its data directory before it knows whether the
+    // requested units are JSON or root-level InnScenario plugins. A plugin-only
+    // mod still therefore needs this harmless structural file in its temp root.
+    let system_dst = root.join(data_rel).join("System.json");
+    if !system_dst.exists() && project.data_dir.join("System.json").is_file() {
+        if let Some(parent) = system_dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(project.data_dir.join("System.json"), &system_dst)
+            .context("staging System.json for RPGMaker detection")?;
     }
     Ok(root)
 }
@@ -712,10 +805,20 @@ fn lang_slug(lang: &str) -> String {
     let s: String = lang
         .trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     let s = s.trim_matches('-').to_string();
-    if s.is_empty() { "mod".to_string() } else { format!("{s}-mod") }
+    if s.is_empty() {
+        "mod".to_string()
+    } else {
+        format!("{s}-mod")
+    }
 }
 
 /// Zip everything under `src` into `dest` (deflated), storing paths relative to `src`
@@ -729,7 +832,10 @@ fn zip_dir(src: &Path, dest: &Path) -> Result<()> {
     let file = std::fs::File::create(dest).context("creating the mod zip")?;
     let mut zip = zip::ZipWriter::new(file);
     let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    for entry in walkdir::WalkDir::new(src).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(src)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
         let rel = match path.strip_prefix(src) {
             Ok(r) if !r.as_os_str().is_empty() => r,

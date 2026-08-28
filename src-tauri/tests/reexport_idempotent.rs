@@ -8,6 +8,7 @@
 //! snapshots each file's original bytes under `.rpgtl/source/` and restores them
 //! before every injection, so re-export is idempotent.
 
+use app_lib::model::{Status, TransUnit};
 use app_lib::project::{self, db};
 use std::path::Path;
 
@@ -65,6 +66,45 @@ fn second_export_is_idempotent_and_valid() {
     project::export(&mut project, false, false).unwrap();
     let after3 = std::fs::read(&game_file).unwrap();
     assert_eq!(after1, after3, "further exports stay idempotent");
+}
+
+#[test]
+fn export_skips_a_stale_row_captured_from_a_prior_translated_export() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path();
+    write(root, "game/script.rpy", SCRIPT);
+
+    let (mut project, _) = project::open_or_create(root, "en", "Thai").unwrap();
+    let valid = db::all_units(&project.conn).unwrap();
+    for unit in &valid {
+        db::update_unit(&project.conn, unit.id, Some("คำแปล"), "Translated").unwrap();
+    }
+
+    // A rescan of an already exported game used to add rows whose source and
+    // byte span describe the Thai output, rather than the original script.
+    // Keep one such applied row in the DB: export must discard it and still
+    // write every valid original row.
+    let mut stale = TransUnit::new(
+        valid[0].file.clone(),
+        format!("{}#translated-copy", valid[0].pointer),
+        valid[0].kind,
+        "คำแปล",
+    );
+    stale.translation = Some("คำแปล".into());
+    stale.status = Status::Translated;
+    db::insert_units(&mut project.conn, &[stale]).unwrap();
+
+    let result = project::export(&mut project, true, false).unwrap();
+    assert_eq!(result.units_applied, valid.len());
+    assert!(
+        result.note.unwrap_or_default().contains("Skipped 1 stale"),
+        "stale row should be reported"
+    );
+    assert!(
+        std::fs::read_to_string(root.join("game/script.rpy"))
+            .unwrap()
+            .contains("คำแปล")
+    );
 }
 
 #[test]

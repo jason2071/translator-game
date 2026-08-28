@@ -9,7 +9,8 @@
 //! Every string is located by an RFC-6901 JSON Pointer so injection is exact.
 
 use super::codes::{
-    is_message_line, is_text_header, plugin_arg_kind, translatable_params, ExtractOpts, ParamText,
+    is_message_line, is_text_header, plugin_arg_kind, script_text_spans, template_text_spans,
+    translatable_params, unescape_js, ExtractOpts, ParamText,
 };
 use super::{DetectResult, GameEngine};
 use crate::model::{TransUnit, UnitKind};
@@ -62,10 +63,19 @@ impl GameEngine for MvMzEngine {
 
     fn extract(&self, root: &Path, opts: &ExtractOpts) -> Result<Vec<TransUnit>> {
         let dir = data_dir(root).ok_or_else(|| anyhow!("not an RPGMaker MV/MZ project"))?;
+        // InnScenario is a bundled-story convention used by some MV games. Its
+        // dialogue lives in CSV files alongside normal RPG Maker JSON, so retain
+        // the ordinary engine and add those files only when their paired data is
+        // present.
+        let inn_scenario = has_inn_scenario_data(&dir);
         let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| is_json(p))
+            .filter(|p| {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                (is_json(p) && (is_data_file(name) || (inn_scenario && is_inn_scenario_json(name))))
+                    || (inn_scenario && is_inn_scenario_csv(name))
+            })
             .collect();
         files.sort(); // deterministic unit order
 
@@ -76,17 +86,26 @@ impl GameEngine for MvMzEngine {
         let mut units = Vec::new();
         for path in files {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
-            // Only touch files we understand; skip stray copies/backups so they
-            // can't fail the import (extract_file would no-op on them anyway).
-            if !is_data_file(&name) {
-                continue;
+            if is_inn_scenario_csv(&name) {
+                let text =
+                    std::fs::read_to_string(&path).with_context(|| format!("reading {name}"))?;
+                extract_inn_scenario_csv(&name, &text, &mut units)?;
+            } else {
+                let text =
+                    std::fs::read_to_string(&path).with_context(|| format!("reading {name}"))?;
+                let val: Value =
+                    serde_json::from_str(&text).with_context(|| format!("parsing {name}"))?;
+                if is_inn_scenario_json(&name) {
+                    extract_inn_scenario_json(&name, &val, &mut units);
+                } else {
+                    extract_file(&name, &val, opts, &actors, &mut units);
+                }
             }
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {name}"))?;
-            let val: Value = serde_json::from_str(&text)
-                .with_context(|| format!("parsing {name}"))?;
-            extract_file(&name, &val, opts, &actors, &mut units);
         }
+        if inn_scenario {
+            extract_inn_scenario_plugins(&dir, &mut units)?;
+        }
+        extract_galv_quest_log(&dir, &mut units)?;
         Ok(units)
     }
 
@@ -107,19 +126,58 @@ impl GameEngine for MvMzEngine {
 
         std::fs::create_dir_all(out_dir)?;
         for (file, file_units) in by_file {
-            let src = dir.join(file);
-            let text = std::fs::read_to_string(&src)
-                .with_context(|| format!("reading {file}"))?;
-            let mut val: Value = serde_json::from_str(&text)
-                .with_context(|| format!("parsing {file}"))?;
+            let base_in = dir.parent().unwrap_or(&dir);
+            let base_out = out_dir.parent().unwrap_or(out_dir);
+            let (src, dst) = if is_game_root_relative_file(file) {
+                (base_in.join(file), base_out.join(file))
+            } else {
+                (dir.join(file), out_dir.join(file))
+            };
+            let text = std::fs::read_to_string(&src).with_context(|| format!("reading {file}"))?;
+            if is_inn_scenario_csv(file) {
+                let out = inject_inn_scenario_csv(file, &text, &file_units)?;
+                std::fs::write(dst, out).with_context(|| format!("writing {file}"))?;
+                continue;
+            }
+            if is_inn_scenario_plugin(file) {
+                let out = inject_inn_scenario_plugin(file, &text, &file_units)?;
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(dst, out).with_context(|| format!("writing {file}"))?;
+                continue;
+            }
+            if is_galv_quest_file(file) {
+                let out = inject_galv_quest_file(file, &text, &file_units)?;
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(dst, out).with_context(|| format!("writing {file}"))?;
+                continue;
+            }
+            if is_galv_quest_plugin_config(file) {
+                let out = inject_galv_quest_plugin_config(file, &text, &file_units)?;
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(dst, out).with_context(|| format!("writing {file}"))?;
+                continue;
+            }
+            let mut val: Value =
+                serde_json::from_str(&text).with_context(|| format!("parsing {file}"))?;
 
             // A script-literal unit addresses a byte range *inside* its node, so
             // several of them share one node. Apply those from the end backwards,
             // and after the plain ones, so earlier offsets stay valid.
-            let (mut spans, plain): (Vec<&TransUnit>, Vec<&TransUnit>) =
-                file_units.into_iter().partition(|u| u.pointer.contains('#'));
+            let (mut spans, plain): (Vec<&TransUnit>, Vec<&TransUnit>) = file_units
+                .into_iter()
+                .partition(|u| u.pointer.contains('#'));
             spans.sort_by_key(|u| {
-                std::cmp::Reverse(split_span_pointer(&u.pointer).map(|(_, s, _)| s).unwrap_or(0))
+                std::cmp::Reverse(
+                    split_span_pointer(&u.pointer)
+                        .map(|(_, s, _)| s)
+                        .unwrap_or(0),
+                )
             });
 
             for u in plain {
@@ -137,14 +195,21 @@ impl GameEngine for MvMzEngine {
             }
 
             for u in spans {
-                let (ptr, start, len) = split_span_pointer(&u.pointer).ok_or_else(|| {
-                    anyhow!("bad script pointer {} in {}", u.pointer, file)
-                })?;
+                let (ptr, start, len) = split_span_pointer(&u.pointer)
+                    .ok_or_else(|| anyhow!("bad script pointer {} in {}", u.pointer, file))?;
                 let node = val.pointer_mut(ptr).ok_or_else(|| {
-                    anyhow!("stale pointer {} in {} — re-extract needed", u.pointer, file)
+                    anyhow!(
+                        "stale pointer {} in {} — re-extract needed",
+                        u.pointer,
+                        file
+                    )
                 })?;
                 let Some(js) = node.as_str() else {
-                    return Err(anyhow!("script pointer {} in {} is not a string", u.pointer, file));
+                    return Err(anyhow!(
+                        "script pointer {} in {} is not a string",
+                        u.pointer,
+                        file
+                    ));
                 };
                 let end = start + len;
                 if end > js.len() || !js.is_char_boundary(start) || !js.is_char_boundary(end) {
@@ -156,7 +221,11 @@ impl GameEngine for MvMzEngine {
                 }
                 // Re-escape for the quote this literal uses — the character just
                 // before the span. Only the JS layer needs it; serde handles JSON.
-                let quote = js.as_bytes().get(start.wrapping_sub(1)).copied().unwrap_or(b'"');
+                let quote = js
+                    .as_bytes()
+                    .get(start.wrapping_sub(1))
+                    .copied()
+                    .unwrap_or(b'"');
                 let translation = super::codes::escape_js_literal(
                     &u.translation.clone().unwrap_or_default(),
                     quote,
@@ -171,8 +240,7 @@ impl GameEngine for MvMzEngine {
             // Compact form matches RPGMaker's own serialization (no spaces,
             // UTF-8 preserved, key order kept via serde_json/preserve_order).
             let out = serde_json::to_string(&val)?;
-            std::fs::write(out_dir.join(file), out)
-                .with_context(|| format!("writing {file}"))?;
+            std::fs::write(dst, out).with_context(|| format!("writing {file}"))?;
         }
         Ok(())
     }
@@ -216,8 +284,7 @@ impl GameEngine for MvMzEngine {
         std::fs::create_dir_all(&fonts_out).context("creating fonts/ dir")?;
         let font_path = fonts_out.join(FONT_FILE);
         let font_is_new = !font_path.exists();
-        std::fs::write(&font_path, font)
-            .with_context(|| format!("writing fonts/{FONT_FILE}"))?;
+        std::fs::write(&font_path, font).with_context(|| format!("writing fonts/{FONT_FILE}"))?;
         if in_place && font_is_new {
             crate::engine::font_restore::mark_added(root, &font_path);
         }
@@ -263,7 +330,9 @@ impl GameEngine for MvMzEngine {
                     std::fs::write(&sys_out, out).context("writing System.json")?;
                     format!("Embedded {FONT_FILE}, set System.json mainFontFilename (MZ).")
                 }
-                None => format!("Embedded {FONT_FILE} into fonts/, but System.json has no advanced block."),
+                None => format!(
+                    "Embedded {FONT_FILE} into fonts/, but System.json has no advanced block."
+                ),
             }
         } else {
             format!("Embedded {FONT_FILE} into fonts/, but found no font hook to repoint.")
@@ -274,10 +343,11 @@ impl GameEngine for MvMzEngine {
         // outline blobs them together (a mai-ek over a sara-ii). A tiny plugin
         // drops the outline width so the marks stay distinct. Best-effort: a
         // failure here must not fail the font embed.
-        let outline_note = match install_thin_outline_plugin(root, base_in, base_out, in_place, backup_dir) {
-            Ok(note) => note,
-            Err(e) => Some(format!("(text-outline plugin skipped: {e})")),
-        };
+        let outline_note =
+            match install_thin_outline_plugin(root, base_in, base_out, in_place, backup_dir) {
+                Ok(note) => note,
+                Err(e) => Some(format!("(text-outline plugin skipped: {e})")),
+            };
 
         Ok(Some(match outline_note {
             Some(o) => format!("{font_note} {o}"),
@@ -322,7 +392,11 @@ fn install_thin_outline_plugin(
     // base_out; fall back to the game's.
     let plugins_in = base_in.join("js").join("plugins.js");
     let plugins_out = base_out.join("js").join("plugins.js");
-    let read_from = if plugins_out.is_file() { &plugins_out } else { &plugins_in };
+    let read_from = if plugins_out.is_file() {
+        &plugins_out
+    } else {
+        &plugins_in
+    };
     if !read_from.is_file() {
         return Ok(None);
     }
@@ -332,8 +406,7 @@ fn install_thin_outline_plugin(
     std::fs::create_dir_all(&plugins_dir).context("creating js/plugins/ dir")?;
     let plugin_file = plugins_dir.join(format!("{PLUGIN_NAME}.js"));
     let plugin_is_new = !plugin_file.exists();
-    std::fs::write(&plugin_file, THIN_OUTLINE_PLUGIN)
-        .context("writing the thin-outline plugin")?;
+    std::fs::write(&plugin_file, THIN_OUTLINE_PLUGIN).context("writing the thin-outline plugin")?;
     if in_place && plugin_is_new {
         crate::engine::font_restore::mark_added(root, &plugin_file);
     }
@@ -363,7 +436,9 @@ fn install_thin_outline_plugin(
     // between the first '[' and the last ']', append our entry, and rewrite,
     // preserving the surrounding `var $plugins =` prefix and trailing `;`.
     let start = text.find('[').context("js/plugins.js: no $plugins array")?;
-    let end = text.rfind(']').context("js/plugins.js: unterminated $plugins array")?;
+    let end = text
+        .rfind(']')
+        .context("js/plugins.js: unterminated $plugins array")?;
     if end < start {
         return Err(anyhow!("js/plugins.js: malformed $plugins array"));
     }
@@ -375,9 +450,16 @@ fn install_thin_outline_plugin(
         "description": "Thinner text outline so stacked Thai marks stay legible (RPGMaker Translator).",
         "parameters": {}
     }));
-    let rebuilt = format!("{}{}{}", &text[..start], serde_json::to_string(&arr)?, &text[end + 1..]);
+    let rebuilt = format!(
+        "{}{}{}",
+        &text[..start],
+        serde_json::to_string(&arr)?,
+        &text[end + 1..]
+    );
     std::fs::write(&plugins_out, rebuilt).context("writing js/plugins.js")?;
-    Ok(Some("thinned the text outline (RPGTL_ThaiText plugin).".into()))
+    Ok(Some(
+        "thinned the text outline (RPGTL_ThaiText plugin).".into(),
+    ))
 }
 
 /// Locate the data directory: MZ uses `data/`, deployed MV uses `www/data/`.
@@ -465,7 +547,10 @@ fn detect_language_system(base: &Path) -> Option<String> {
 
 /// True for `Map001.json` .. `MapNNN.json` (but not `MapInfos.json`).
 fn is_map_file(name: &str) -> bool {
-    if let Some(mid) = name.strip_prefix("Map").and_then(|s| s.strip_suffix(".json")) {
+    if let Some(mid) = name
+        .strip_prefix("Map")
+        .and_then(|s| s.strip_suffix(".json"))
+    {
         !mid.is_empty() && mid.bytes().all(|b| b.is_ascii_digit())
     } else {
         false
@@ -482,6 +567,707 @@ fn is_data_file(name: &str) -> bool {
         "System.json" | "MapInfos.json" | "CommonEvents.json" | "Troops.json"
     ) || is_map_file(name)
         || db_fields(name).is_some()
+}
+
+/// The `InnScenario` plugin keeps the game's story outside RPG Maker's normal
+/// event JSON. Restrict this adapter to its distinctive source sheet so unrelated
+/// custom data files stay untouched.
+fn has_inn_scenario_data(dir: &Path) -> bool {
+    dir.join("ScenarioText.csv").is_file()
+}
+
+fn is_inn_scenario_csv(name: &str) -> bool {
+    matches!(name, "ScenarioText.csv" | "MiniScenarioText.csv")
+}
+
+fn is_inn_scenario_json(name: &str) -> bool {
+    matches!(
+        name,
+        "DiaryContent.json"
+            | "DiaryLayout.json"
+            | "ScenarioFlow.json"
+            | "ScenarioPresentation.json"
+            | "TraceConversations.json"
+            | "Inn15DayCore.json"
+            | "InnDailyLoop.json"
+    )
+}
+
+/// InnScenario games can also put introductory/tutorial dialogue directly in
+/// their own plugins.  The plugin names are deliberately restricted to the
+/// bundled `Inn*.js` family; treating every third-party RPG Maker plugin as
+/// prose would risk translating developer configuration and breaking it.
+fn is_inn_scenario_plugin(file: &str) -> bool {
+    let path = Path::new(file);
+    path.parent()
+        .is_some_and(|parent| parent == Path::new("js/plugins"))
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("Inn") && name.ends_with(".js"))
+}
+
+/// Files owned by the RPG Maker game root rather than its `data/` directory.
+/// This must stay in sync with `project::project_file_path`: snapshots and mod
+/// exports need to read the same files as this engine's injector.
+pub fn is_game_root_relative_file(file: &str) -> bool {
+    is_inn_scenario_plugin(file) || is_galv_quest_file(file) || is_galv_quest_plugin_config(file)
+}
+
+/// Galv's Quest Log stores its prose in a separate plain-text file and its UI
+/// labels in the plugin configuration.  It is widely used by MV games, but is
+/// deliberately opt-in: nothing under `quest/` is touched unless an enabled
+/// `Galv_QuestLog` entry points to it.
+#[derive(Clone)]
+struct GalvQuestLogConfig {
+    quest_file: String,
+    parameters: serde_json::Map<String, Value>,
+}
+
+const GALV_QUEST_PLUGIN: &str = "Galv_QuestLog";
+const GALV_QUEST_UI_PARAMS: &[&str] = &[
+    "Quest Command",
+    "Active Cmd Txt",
+    "Completed Cmd Txt",
+    "Failed Cmd Txt",
+    "Desc Txt",
+    "Objectives Txt",
+    "Difficulty Txt",
+    "No Tracked Quest",
+    "Pop New Quest",
+    "Pop Complete Quest",
+    "Pop Fail Quest",
+    "Pop New Objective",
+    "Pop Complete Objective",
+    "Pop Fail Objective",
+];
+
+fn active_galv_quest_log(dir: &Path) -> Option<GalvQuestLogConfig> {
+    let base = dir.parent().unwrap_or(dir);
+    let text = std::fs::read_to_string(base.join("js").join("plugins.js")).ok()?;
+    let start = text.find('[')?;
+    let end = text.rfind(']')?;
+    let plugins: Vec<Value> = serde_json::from_str(&text[start..=end]).ok()?;
+    let plugin = plugins.iter().find(|plugin| {
+        plugin.get("name").and_then(Value::as_str) == Some(GALV_QUEST_PLUGIN)
+            && plugin.get("status").and_then(Value::as_bool) == Some(true)
+    })?;
+    let parameters = plugin.get("parameters")?.as_object()?.clone();
+    let file_name = parameters.get("File")?.as_str()?.trim();
+    if file_name.is_empty() {
+        return None;
+    }
+    let folder = parameters
+        .get("Folder")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let mut file = PathBuf::from(folder).join(file_name);
+    if file.extension().is_none() {
+        file.set_extension("txt");
+    }
+    if !file
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(GalvQuestLogConfig {
+        quest_file: file.to_string_lossy().replace('\\', "/"),
+        parameters,
+    })
+}
+
+fn is_galv_quest_file(file: &str) -> bool {
+    file.starts_with("quest/") && file.ends_with(".txt")
+}
+
+fn is_galv_quest_plugin_config(file: &str) -> bool {
+    file == "js/plugins.js"
+}
+
+fn extract_galv_quest_log(dir: &Path, out: &mut Vec<TransUnit>) -> Result<()> {
+    let Some(config) = active_galv_quest_log(dir) else {
+        return Ok(());
+    };
+    let base = dir.parent().unwrap_or(dir);
+    let quest_path = base.join(&config.quest_file);
+    if quest_path.is_file() {
+        let text = std::fs::read_to_string(&quest_path)
+            .with_context(|| format!("reading {}", config.quest_file))?;
+        extract_galv_quest_file(&config.quest_file, &text, out);
+    }
+
+    for key in GALV_QUEST_UI_PARAMS {
+        if let Some(value) = config.parameters.get(*key).and_then(Value::as_str) {
+            if !value.is_empty() {
+                out.push(TransUnit::new(
+                    "js/plugins.js",
+                    format!("galv:{key}"),
+                    UnitKind::Term,
+                    value,
+                ));
+            }
+        }
+    }
+    if let Some(categories) = config.parameters.get("Categories").and_then(Value::as_str) {
+        for (index, category) in categories.split(',').enumerate() {
+            let label = category
+                .split_once('|')
+                .map(|(label, _)| label)
+                .unwrap_or(category);
+            if !label.is_empty() {
+                out.push(TransUnit::new(
+                    "js/plugins.js",
+                    format!("galv:Categories:{index}"),
+                    UnitKind::Term,
+                    label,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn extract_galv_quest_file(file: &str, text: &str, out: &mut Vec<TransUnit>) {
+    let mut offset = 0;
+    let mut in_quest = false;
+    while offset < text.len() {
+        let newline = text[offset..]
+            .find('\n')
+            .map(|index| offset + index)
+            .unwrap_or(text.len());
+        let line_end = if newline > offset && text.as_bytes()[newline - 1] == b'\r' {
+            newline - 1
+        } else {
+            newline
+        };
+        let line = &text[offset..line_end];
+        let trimmed = line.trim();
+        if let Some(header) = line.strip_prefix("<quest ") {
+            if let Some(colon) = header.find(':') {
+                let title_start = offset + "<quest ".len() + colon + 1;
+                let rest = &text[title_start..line_end];
+                let title_len = rest
+                    .find('|')
+                    .or_else(|| rest.find('>'))
+                    .unwrap_or(rest.len());
+                if title_len > 0 {
+                    out.push(TransUnit::new(
+                        file,
+                        format!("quest:{title_start}:{title_len}"),
+                        UnitKind::Title,
+                        &text[title_start..title_start + title_len],
+                    ));
+                }
+            }
+            in_quest = true;
+        } else if trimmed == "</quest>" {
+            in_quest = false;
+        } else if in_quest && !trimmed.is_empty() {
+            out.push(TransUnit::new(
+                file,
+                format!("quest:{offset}:{}", line_end - offset),
+                UnitKind::Description,
+                line,
+            ));
+        }
+        offset = if newline < text.len() {
+            newline + 1
+        } else {
+            text.len()
+        };
+    }
+}
+
+fn parse_galv_quest_pointer(pointer: &str) -> Option<(usize, usize)> {
+    let mut parts = pointer.split(':');
+    (parts.next()? == "quest").then_some(())?;
+    let start = parts.next()?.parse().ok()?;
+    let len = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((start, len))
+}
+
+fn inject_galv_quest_file(file: &str, text: &str, units: &[&TransUnit]) -> Result<String> {
+    let mut replacements = Vec::new();
+    for unit in units {
+        let (start, len) = parse_galv_quest_pointer(&unit.pointer)
+            .ok_or_else(|| anyhow!("bad quest pointer {} in {file}", unit.pointer))?;
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| anyhow!("bad quest pointer {} in {file}", unit.pointer))?;
+        if end > text.len()
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
+            || text[start..end] != unit.source
+        {
+            return Err(anyhow!(
+                "stale pointer {} in {file} — re-extract needed",
+                unit.pointer
+            ));
+        }
+        let translation = unit.translation.as_deref().unwrap_or_default();
+        if translation.contains(['\r', '\n']) {
+            return Err(anyhow!(
+                "quest translation {} in {file} must stay on one line",
+                unit.pointer
+            ));
+        }
+        replacements.push((start, end, translation));
+    }
+    replacements.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+    let mut out = text.to_string();
+    for (start, end, replacement) in replacements {
+        out.replace_range(start..end, replacement);
+    }
+    Ok(out)
+}
+
+fn parse_galv_plugin_pointer(pointer: &str) -> Option<(&str, Option<usize>)> {
+    let rest = pointer.strip_prefix("galv:")?;
+    if let Some(index) = rest.strip_prefix("Categories:") {
+        return index.parse().ok().map(|index| ("Categories", Some(index)));
+    }
+    (!rest.is_empty() && !rest.contains(':')).then_some((rest, None))
+}
+
+fn inject_galv_quest_plugin_config(file: &str, text: &str, units: &[&TransUnit]) -> Result<String> {
+    let start = text.find('[').context("js/plugins.js: no $plugins array")?;
+    let end = text
+        .rfind(']')
+        .context("js/plugins.js: unterminated $plugins array")?;
+    let mut plugins: Vec<Value> =
+        serde_json::from_str(&text[start..=end]).context("parsing the $plugins array")?;
+    let plugin = plugins
+        .iter_mut()
+        .find(|plugin| {
+            plugin.get("name").and_then(Value::as_str) == Some(GALV_QUEST_PLUGIN)
+                && plugin.get("status").and_then(Value::as_bool) == Some(true)
+        })
+        .ok_or_else(|| {
+            anyhow!("stale Galv_QuestLog configuration in {file} — re-extract needed")
+        })?;
+    let parameters = plugin
+        .get_mut("parameters")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| anyhow!("stale Galv_QuestLog parameters in {file} — re-extract needed"))?;
+    let mut changed = false;
+    for unit in units {
+        let (key, category_index) = parse_galv_plugin_pointer(&unit.pointer)
+            .ok_or_else(|| anyhow!("bad Galv Quest pointer {} in {file}", unit.pointer))?;
+        let current = parameters.get(key).and_then(Value::as_str).ok_or_else(|| {
+            anyhow!(
+                "stale pointer {} in {file} — re-extract needed",
+                unit.pointer
+            )
+        })?;
+        if let Some(index) = category_index {
+            let mut categories: Vec<String> = current.split(',').map(str::to_owned).collect();
+            let category = categories.get_mut(index).ok_or_else(|| {
+                anyhow!(
+                    "stale pointer {} in {file} — re-extract needed",
+                    unit.pointer
+                )
+            })?;
+            let (label, suffix) = category
+                .split_once('|')
+                .map(|(label, suffix)| (label, format!("|{suffix}")))
+                .unwrap_or((category.as_str(), String::new()));
+            if label != unit.source {
+                return Err(anyhow!(
+                    "stale pointer {} in {file} — re-extract needed",
+                    unit.pointer
+                ));
+            }
+            let translation = unit.translation.as_deref().unwrap_or_default();
+            changed |= translation != label;
+            *category = format!("{translation}{suffix}");
+            parameters.insert(key.to_string(), Value::String(categories.join(",")));
+        } else {
+            if current != unit.source {
+                return Err(anyhow!(
+                    "stale pointer {} in {file} — re-extract needed",
+                    unit.pointer
+                ));
+            }
+            let translation = unit.translation.as_deref().unwrap_or_default();
+            changed |= translation != current;
+            parameters.insert(key.to_string(), Value::String(translation.to_string()));
+        }
+    }
+    if !changed {
+        return Ok(text.to_string());
+    }
+    Ok(format!(
+        "{}{}{}",
+        &text[..start],
+        serde_json::to_string(&plugins)?,
+        &text[end + 1..]
+    ))
+}
+
+fn extract_inn_scenario_plugins(dir: &Path, out: &mut Vec<TransUnit>) -> Result<()> {
+    let base = dir.parent().unwrap_or(dir);
+    let plugin_dir = base.join("js/plugins");
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&plugin_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            path.is_file() && name.starts_with("Inn") && name.ends_with(".js")
+        })
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let file = format!("js/plugins/{name}");
+        let js = std::fs::read_to_string(&path).with_context(|| format!("reading {file}"))?;
+        let mut spans = script_text_spans(&js);
+        spans.extend(template_text_spans(&js));
+        spans.sort_unstable();
+        for (start, len) in spans {
+            let text = unescape_js(&js[start..start + len]);
+            out.push(TransUnit::new(
+                &file,
+                format!("js:{start}:{len}"),
+                UnitKind::Dialogue,
+                text,
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct CsvField<'a> {
+    raw: &'a str,
+    start: usize,
+    end: usize,
+}
+
+/// Read CSV records without normalizing their bytes. The extractor stores the
+/// decoded field value, while injection replaces only that field's raw span — so
+/// untouched commas, line endings, and quoting remain exactly as the game wrote
+/// them.
+fn csv_rows(text: &str) -> Result<Vec<Vec<CsvField<'_>>>> {
+    let bytes = text.as_bytes();
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut field_start = 0;
+    let mut in_quotes = false;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if in_quotes {
+            if bytes[i] == b'"' {
+                if bytes.get(i + 1) == Some(&b'"') {
+                    i += 2;
+                } else {
+                    in_quotes = false;
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+
+        match bytes[i] {
+            b'"' if i == field_start => {
+                in_quotes = true;
+                i += 1;
+            }
+            b',' => {
+                row.push(CsvField {
+                    raw: &text[field_start..i],
+                    start: field_start,
+                    end: i,
+                });
+                field_start = i + 1;
+                i += 1;
+            }
+            b'\n' => {
+                row.push(CsvField {
+                    raw: &text[field_start..i],
+                    start: field_start,
+                    end: i,
+                });
+                rows.push(row);
+                row = Vec::new();
+                field_start = i + 1;
+                i += 1;
+            }
+            b'\r' if bytes.get(i + 1) == Some(&b'\n') => {
+                row.push(CsvField {
+                    raw: &text[field_start..i],
+                    start: field_start,
+                    end: i,
+                });
+                rows.push(row);
+                row = Vec::new();
+                field_start = i + 2;
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+
+    if in_quotes {
+        return Err(anyhow!("unterminated quoted CSV field"));
+    }
+    if field_start < text.len() || !row.is_empty() {
+        row.push(CsvField {
+            raw: &text[field_start..],
+            start: field_start,
+            end: text.len(),
+        });
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+fn csv_value(raw: &str) -> Result<String> {
+    if raw.starts_with('"') {
+        if raw.len() < 2 || !raw.ends_with('"') {
+            return Err(anyhow!("malformed quoted CSV field"));
+        }
+        Ok(raw[1..raw.len() - 1].replace("\"\"", "\""))
+    } else {
+        Ok(raw.to_string())
+    }
+}
+
+fn csv_column(rows: &[Vec<CsvField<'_>>], name: &str) -> Result<usize> {
+    let header = rows
+        .first()
+        .ok_or_else(|| anyhow!("CSV has no header row"))?;
+    header
+        .iter()
+        .position(|field| csv_value(field.raw).ok().as_deref() == Some(name))
+        .ok_or_else(|| anyhow!("CSV has no {name:?} column"))
+}
+
+fn csv_field<'a>(rows: &'a [Vec<CsvField<'a>>], row: usize, col: usize) -> Result<CsvField<'a>> {
+    rows.get(row)
+        .and_then(|record| record.get(col))
+        .copied()
+        .ok_or_else(|| anyhow!("CSV pointer row {row}, column {col} is out of bounds"))
+}
+
+fn extract_inn_scenario_csv(file: &str, text: &str, out: &mut Vec<TransUnit>) -> Result<()> {
+    let rows = csv_rows(text).with_context(|| format!("parsing {file}"))?;
+    let cmd_col = csv_column(&rows, "cmd")?;
+    let speaker_col = csv_column(&rows, "speaker")?;
+    let text_col = csv_column(&rows, "text")?;
+
+    for row in 1..rows.len() {
+        if csv_value(csv_field(&rows, row, cmd_col)?.raw)? != "text" {
+            continue;
+        }
+        let speaker = csv_value(csv_field(&rows, row, speaker_col)?.raw)?;
+        let dialogue = csv_value(csv_field(&rows, row, text_col)?.raw)?;
+        if !speaker.is_empty() {
+            out.push(TransUnit::new(
+                file,
+                format!("csv:{row}:speaker"),
+                UnitKind::Name,
+                &speaker,
+            ));
+        }
+        if !dialogue.is_empty() {
+            out.push(
+                TransUnit::new(
+                    file,
+                    format!("csv:{row}:text"),
+                    UnitKind::Dialogue,
+                    dialogue,
+                )
+                .with_context((!speaker.is_empty()).then_some(speaker)),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn parse_csv_pointer(pointer: &str) -> Option<(usize, &str)> {
+    let mut parts = pointer.split(':');
+    (parts.next()? == "csv").then_some(())?;
+    let row = parts.next()?.parse().ok()?;
+    let column = parts.next()?;
+    (parts.next().is_none() && matches!(column, "speaker" | "text")).then_some((row, column))
+}
+
+fn csv_encode(value: &str, was_quoted: bool) -> String {
+    if was_quoted || value.contains([',', '"', '\r', '\n']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+fn inject_inn_scenario_csv(file: &str, text: &str, units: &[&TransUnit]) -> Result<String> {
+    let rows = csv_rows(text).with_context(|| format!("parsing {file}"))?;
+    let speaker_col = csv_column(&rows, "speaker")?;
+    let text_col = csv_column(&rows, "text")?;
+    let mut replacements = Vec::new();
+
+    for unit in units {
+        let (row, column) = parse_csv_pointer(&unit.pointer)
+            .ok_or_else(|| anyhow!("bad CSV pointer {} in {file}", unit.pointer))?;
+        let col = if column == "speaker" {
+            speaker_col
+        } else {
+            text_col
+        };
+        let field = csv_field(&rows, row, col)?;
+        let source = csv_value(field.raw)?;
+        if source != unit.source {
+            return Err(anyhow!(
+                "stale pointer {} in {file} — re-extract needed",
+                unit.pointer
+            ));
+        }
+        let was_quoted = field.raw.starts_with('"') && field.raw.ends_with('"');
+        replacements.push((
+            field.start,
+            field.end,
+            csv_encode(unit.translation.as_deref().unwrap_or_default(), was_quoted),
+        ));
+    }
+
+    replacements.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+    let mut out = text.to_string();
+    for (start, end, replacement) in replacements {
+        out.replace_range(start..end, &replacement);
+    }
+    Ok(out)
+}
+
+fn parse_inn_plugin_pointer(pointer: &str) -> Option<(usize, usize)> {
+    let mut parts = pointer.split(':');
+    (parts.next()? == "js").then_some(())?;
+    let start = parts.next()?.parse().ok()?;
+    let len = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((start, len))
+}
+
+/// Splice only the contents of a quoted JavaScript literal.  The raw plugin
+/// source stays otherwise byte-for-byte intact, including its formatting and
+/// executable code.
+fn inject_inn_scenario_plugin(file: &str, js: &str, units: &[&TransUnit]) -> Result<String> {
+    let template_spans = template_text_spans(js);
+    let mut replacements = Vec::new();
+    for unit in units {
+        let (start, len) = parse_inn_plugin_pointer(&unit.pointer)
+            .ok_or_else(|| anyhow!("bad plugin pointer {} in {file}", unit.pointer))?;
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| anyhow!("bad plugin pointer {} in {file}", unit.pointer))?;
+        if start == 0 || end > js.len() || !js.is_char_boundary(start) || !js.is_char_boundary(end)
+        {
+            return Err(anyhow!(
+                "stale pointer {} in {file} — re-extract needed",
+                unit.pointer
+            ));
+        }
+        // A static segment after `${value}` is preceded by `}`, not by the
+        // template's opening backtick. Recover that delimiter from the set of
+        // spans the same extractor recognizes, rather than treating it as a
+        // stale quoted-string pointer.
+        let quote = if template_spans.contains(&(start, len)) {
+            b'`'
+        } else {
+            js.as_bytes()[start - 1]
+        };
+        if !matches!(quote, b'\'' | b'"' | b'`') || unescape_js(&js[start..end]) != unit.source {
+            return Err(anyhow!(
+                "stale pointer {} in {file} — re-extract needed",
+                unit.pointer
+            ));
+        }
+        replacements.push((
+            start,
+            end,
+            super::codes::escape_js_literal(unit.translation.as_deref().unwrap_or_default(), quote),
+        ));
+    }
+
+    replacements.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+    let mut out = js.to_string();
+    for (start, end, replacement) in replacements {
+        out.replace_range(start..end, &replacement);
+    }
+    Ok(out)
+}
+
+fn inn_json_scalar_kind(key: &str) -> Option<UnitKind> {
+    match key {
+        "title" => Some(UnitKind::Title),
+        // `calendarLabel` is the player-facing guest/route name used by
+        // Inn15DayCore's room-assignment menu (for example "レオン").
+        "label" | "calendarLabel" => Some(UnitKind::Other),
+        "hint" | "text" => Some(UnitKind::Message),
+        "question" => Some(UnitKind::Choice),
+        _ => None,
+    }
+}
+
+fn inn_json_list_kind(key: &str) -> Option<UnitKind> {
+    match key {
+        "lines" | "foundLines" | "questionPreludeLines" | "questionAfterLines" => {
+            Some(UnitKind::Dialogue)
+        }
+        _ => None,
+    }
+}
+
+fn extract_inn_scenario_json(file: &str, value: &Value, out: &mut Vec<TransUnit>) {
+    fn walk(
+        file: &str,
+        value: &Value,
+        pointer: &str,
+        list_kind: Option<UnitKind>,
+        out: &mut Vec<TransUnit>,
+    ) {
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    let child_pointer = format!("{pointer}/{}", esc_ptr(key));
+                    if let (Some(kind), Some(text)) = (inn_json_scalar_kind(key), child.as_str()) {
+                        if !text.is_empty() {
+                            out.push(TransUnit::new(file, child_pointer, kind, text));
+                        }
+                    } else {
+                        walk(file, child, &child_pointer, inn_json_list_kind(key), out);
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for (index, child) in items.iter().enumerate() {
+                    let child_pointer = format!("{pointer}/{index}");
+                    if let (Some(kind), Some(text)) = (list_kind, child.as_str()) {
+                        if !text.is_empty() {
+                            out.push(TransUnit::new(file, child_pointer, kind, text));
+                        }
+                    } else {
+                        walk(file, child, &child_pointer, None, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    walk(file, value, "", None, out);
 }
 
 fn extract_file(
@@ -569,12 +1355,10 @@ fn extract_db_array(
                     continue;
                 }
                 let ptr = format!("/{i}/{field}");
-                out.push(
-                    TransUnit::new(file, ptr, *kind, s).with_context(
-                        // For a name field the context (its own value) is noise.
-                        if *field == "name" { None } else { ctx.clone() },
-                    ),
-                );
+                out.push(TransUnit::new(file, ptr, *kind, s).with_context(
+                    // For a name field the context (its own value) is noise.
+                    if *field == "name" { None } else { ctx.clone() },
+                ));
             }
         }
     }
@@ -623,7 +1407,14 @@ fn extract_system(file: &str, val: &Value, out: &mut Vec<TransUnit>) {
                             continue;
                         }
                         let ptr = format!("/terms/{key}/{i}");
-                        push_if(out, file, &ptr, UnitKind::Term, s, Some(format!("terms.{key}")));
+                        push_if(
+                            out,
+                            file,
+                            &ptr,
+                            UnitKind::Term,
+                            s,
+                            Some(format!("terms.{key}")),
+                        );
                     }
                 }
             }
@@ -761,7 +1552,12 @@ fn actor_names(dir: &Path) -> Vec<String> {
     match val.as_array() {
         Some(arr) => arr
             .iter()
-            .map(|a| a.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string())
+            .map(|a| {
+                a.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            })
             .collect(),
         None => Vec::new(),
     }
@@ -789,7 +1585,8 @@ fn name_box(text: &str, actors: &[String]) -> Option<String> {
 /// `str::strip_prefix`, but MV matches its text codes case-insensitively.
 fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     let head = s.get(..prefix.len())?;
-    head.eq_ignore_ascii_case(prefix).then(|| &s[prefix.len()..])
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &s[prefix.len()..])
 }
 
 /// Flatten the markup inside a name box to the name a player sees.
@@ -810,7 +1607,12 @@ fn resolve_name_codes(s: &str, actors: &[String]) -> Option<String> {
         let n: usize = arg[..end].trim().parse().ok()?;
         match letter.to_ascii_lowercase() {
             // The one that carries the name.
-            'n' => out.push_str(actors.get(n).map(String::as_str).filter(|s| !s.is_empty())?),
+            'n' => out.push_str(
+                actors
+                    .get(n)
+                    .map(String::as_str)
+                    .filter(|s| !s.is_empty())?,
+            ),
             // Color and icon draw something, but no text.
             'c' | 'i' => {}
             // Anything else (notably `\v[n]`) isn't knowable from the data files.
@@ -999,7 +1801,6 @@ fn split_span_pointer(p: &str) -> Option<(&str, usize, usize)> {
     Some((ptr, start.parse().ok()?, len.parse().ok()?))
 }
 
-
 fn push_if(
     out: &mut Vec<TransUnit>,
     file: &str,
@@ -1034,13 +1835,43 @@ mod tests {
     }
 
     #[test]
+    fn inn_scenario_extracts_calendar_labels_for_guest_menu() {
+        let value: Value = serde_json::json!({
+            "routes": {
+                "1": { "label": "Leon", "calendarLabel": "レオン" },
+                "4": { "calendarLabel": "商人一行" }
+            }
+        });
+        let mut units = Vec::new();
+        extract_inn_scenario_json("Inn15DayCore.json", &value, &mut units);
+
+        assert!(units.iter().any(|unit| {
+            unit.pointer == "/routes/1/calendarLabel"
+                && unit.source == "レオン"
+                && unit.kind == UnitKind::Other
+        }));
+        assert!(units.iter().any(|unit| {
+            unit.pointer == "/routes/4/calendarLabel" && unit.source == "商人一行"
+        }));
+    }
+
+    #[test]
     fn name_box_resolves_the_speaker_a_message_line_declares() {
         let actors = vec![String::new(), "Me".into(), "Linda".into(), "Julie".into()];
         // Plain, colored, and actor-referencing boxes all name someone.
         assert_eq!(name_box("\\n<Siren>Hi!", &actors).as_deref(), Some("Siren"));
-        assert_eq!(name_box("\\n<\\c[23]\\N[2]>Hi!", &actors).as_deref(), Some("Linda"));
-        assert_eq!(name_box("\\N<\\c[6]Cleo>Hi!", &actors).as_deref(), Some("Cleo"));
-        assert_eq!(name_box("\\nc<\\n[3]>Hi!", &actors).as_deref(), Some("Julie"));
+        assert_eq!(
+            name_box("\\n<\\c[23]\\N[2]>Hi!", &actors).as_deref(),
+            Some("Linda")
+        );
+        assert_eq!(
+            name_box("\\N<\\c[6]Cleo>Hi!", &actors).as_deref(),
+            Some("Cleo")
+        );
+        assert_eq!(
+            name_box("\\nc<\\n[3]>Hi!", &actors).as_deref(),
+            Some("Julie")
+        );
         // No box, a runtime variable, or an id with no actor behind it: no speaker
         // beats a wrong one.
         assert_eq!(name_box("Just a line.", &actors), None);
@@ -1052,7 +1883,11 @@ mod tests {
     fn write_plugins(base: &Path, body: &str) {
         let js = base.join("js");
         std::fs::create_dir_all(&js).unwrap();
-        std::fs::write(js.join("plugins.js"), format!("var $plugins =\n[\n{body}\n];\n")).unwrap();
+        std::fs::write(
+            js.join("plugins.js"),
+            format!("var $plugins =\n[\n{body}\n];\n"),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1090,7 +1925,10 @@ mod tests {
             tmp.path(),
             r#"{"name":"DKTools_Localization","status":true,"description":"","parameters":{}}"#,
         );
-        assert_eq!(detect_language_system(tmp.path()).as_deref(), Some("DKTools_Localization"));
+        assert_eq!(
+            detect_language_system(tmp.path()).as_deref(),
+            Some("DKTools_Localization")
+        );
     }
 
     #[test]
@@ -1153,7 +1991,13 @@ mod tests {
 
         let backup = tmp.path().join("backup");
         let note = MvMzEngine
-            .embed_font(tmp.path(), &data, &data, super::super::TARGET_FONT, Some(&backup))
+            .embed_font(
+                tmp.path(),
+                &data,
+                &data,
+                super::super::TARGET_FONT,
+                Some(&backup),
+            )
             .unwrap()
             .expect("a note");
         assert!(note.contains("MV"), "{note}");
@@ -1173,7 +2017,10 @@ mod tests {
             .embed_font(tmp.path(), &data, &data, super::super::TARGET_FONT, None)
             .unwrap();
         assert!(css2_note.is_some());
-        assert_eq!(std::fs::read_to_string(fonts.join("gamefont.css")).unwrap(), css);
+        assert_eq!(
+            std::fs::read_to_string(fonts.join("gamefont.css")).unwrap(),
+            css
+        );
     }
 
     #[test]
@@ -1255,16 +2102,29 @@ mod tests {
         // Created files listed for deletion.
         let added = std::fs::read_to_string(fr.join("added.txt")).unwrap();
         assert!(added.contains("www/fonts/Sarabun-Regular.ttf"), "{added}");
-        assert!(added.contains("www/js/plugins/RPGTL_ThaiText.js"), "{added}");
+        assert!(
+            added.contains("www/js/plugins/RPGTL_ThaiText.js"),
+            "{added}"
+        );
 
         // Simulate restore: revert snapshots + delete added → back to original.
-        std::fs::copy(fr.join("original/www/fonts/gamefont.css"), fonts.join("gamefont.css")).unwrap();
+        std::fs::copy(
+            fr.join("original/www/fonts/gamefont.css"),
+            fonts.join("gamefont.css"),
+        )
+        .unwrap();
         std::fs::copy(fr.join("original/www/js/plugins.js"), js.join("plugins.js")).unwrap();
         for rel in added.lines().filter(|l| !l.trim().is_empty()) {
             let _ = std::fs::remove_file(root.join(rel));
         }
-        assert_eq!(std::fs::read_to_string(fonts.join("gamefont.css")).unwrap(), css0);
-        assert_eq!(std::fs::read_to_string(js.join("plugins.js")).unwrap(), plugins0);
+        assert_eq!(
+            std::fs::read_to_string(fonts.join("gamefont.css")).unwrap(),
+            css0
+        );
+        assert_eq!(
+            std::fs::read_to_string(js.join("plugins.js")).unwrap(),
+            plugins0
+        );
         assert!(!fonts.join("Sarabun-Regular.ttf").exists());
         assert!(!js.join("plugins/RPGTL_ThaiText.js").exists());
     }
@@ -1277,11 +2137,19 @@ mod tests {
         let root = tmp.path();
         let data = root.join("data");
         std::fs::create_dir_all(&data).unwrap();
-        std::fs::write(data.join("System.json"), r#"{"advanced":{"mainFontFilename":"mz.woff"}}"#).unwrap();
+        std::fs::write(
+            data.join("System.json"),
+            r#"{"advanced":{"mainFontFilename":"mz.woff"}}"#,
+        )
+        .unwrap();
         let stage = tmp.path().join("stage");
         let stage_data = stage.join("data");
         std::fs::create_dir_all(&stage_data).unwrap();
-        std::fs::write(stage_data.join("System.json"), r#"{"advanced":{"mainFontFilename":"mz.woff"}}"#).unwrap();
+        std::fs::write(
+            stage_data.join("System.json"),
+            r#"{"advanced":{"mainFontFilename":"mz.woff"}}"#,
+        )
+        .unwrap();
 
         MvMzEngine
             .embed_font(root, &data, &stage_data, super::super::TARGET_FONT, None)

@@ -1,10 +1,10 @@
-// Languages offered in the source/target pickers. "Auto" is source-only
-// (let the model detect Japanese vs English, common for RPGMaker games).
+// Languages offered in the source/target pickers. "Auto" is source-only and
+// chooses an available source in this order: English, Japanese, then Chinese.
 
 export const SOURCE_LANGS = [
   "Auto",
-  "Japanese",
   "English",
+  "Japanese",
   "Chinese",
   "Korean",
 ] as const;
@@ -17,7 +17,7 @@ export const TARGET_LANGS = [
   "Korean",
 ] as const;
 
-// English is the usual source for translated Ren'Py games. The extractor falls
-// back to Japanese when an English source is unavailable.
-export const DEFAULT_SOURCE = "English";
+// New imports automatically prefer English, then Japanese, then Chinese when
+// an engine exposes multiple source locales.
+export const DEFAULT_SOURCE = "Auto";
 export const DEFAULT_TARGET = "Thai";

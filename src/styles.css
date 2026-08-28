@@ -1542,6 +1542,43 @@ code {
   flex: 1;
   min-width: 120px;
 }
+.gloss-search {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: -0.35rem 0 0.65rem;
+  max-width: 34rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 0.35rem);
+  background: var(--panel2);
+}
+.gloss-search:focus-within {
+  border-color: var(--accent);
+}
+.gloss-search-icon {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.gloss-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+}
+.gloss-search input:focus {
+  outline: 0;
+}
+.gloss-search-count {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.gloss-row-error {
+  color: var(--danger, #ef4444);
+  font-weight: 700;
+  margin-right: 0.25rem;
+}
 .gloss-table {
   width: 100%;
   border-collapse: collapse;

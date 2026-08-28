@@ -216,6 +216,40 @@ pub fn script_text_spans(js: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < b.len() {
+        // Plugin source contains normal JavaScript comments, unlike the short
+        // event-script snippets this scanner originally served. An apostrophe in
+        // a comment (for example `game's`) must not be mistaken for a quote that
+        // consumes all following dialogue literals.
+        if b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
+            i = b[i + 2..]
+                .iter()
+                .position(|&c| matches!(c, b'\n' | b'\r'))
+                .map_or(b.len(), |offset| i + 2 + offset);
+            continue;
+        }
+        if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+            i = b[i + 2..]
+                .windows(2)
+                .position(|pair| pair == b"*/")
+                .map_or(b.len(), |offset| i + 4 + offset);
+            continue;
+        }
+        // Template literals can execute expressions and are deliberately outside
+        // this byte-span extractor's safe, quote-preserving contract.
+        if b[i] == b'`' {
+            i += 1;
+            while i < b.len() {
+                if b[i] == b'\\' {
+                    i += 2;
+                } else if b[i] == b'`' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
         let q = b[i];
         if q != b'"' && q != b'\'' {
             i += 1;
@@ -241,7 +275,15 @@ pub fn script_text_spans(js: &str) -> Vec<(usize, usize)> {
         let raw = &js[start..j.min(js.len())];
         // The code just before the literal decides whether it can be text at all.
         let prefix = &js[..i];
-        let tail = &prefix[prefix.len().saturating_sub(64)..];
+        // The look-behind is measured in bytes, but a script can contain UTF-8
+        // dialogue. Advance a byte-based start past a continuation byte before
+        // slicing, otherwise a later literal can panic while the look-behind
+        // lands in the middle of an earlier Japanese character.
+        let mut tail_start = prefix.len().saturating_sub(64);
+        while tail_start < prefix.len() && !prefix.is_char_boundary(tail_start) {
+            tail_start += 1;
+        }
+        let tail = &prefix[tail_start..];
         let asset_call = SCRIPT_NON_TEXT_CALLS.iter().any(|c| tail.contains(c));
         // Only take a literal whose escaping survives a round trip. Anything
         // exotic (`A`, `\x41`, `\0`) would come back re-escaped differently
@@ -253,6 +295,109 @@ pub fn script_text_spans(js: &str) -> Vec<(usize, usize)> {
         i = j + 1;
     }
     out
+}
+
+/// Player-facing static runs inside JavaScript template literals. Dynamic
+/// expressions such as `${money}` remain executable code; only the text around
+/// them becomes a translation unit. This is needed by HUD plugins, which build
+/// labels like `` `${day}日目・所持金:${money}G` `` at runtime.
+pub fn template_text_spans(js: &str) -> Vec<(usize, usize)> {
+    let b = js.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
+            i = b[i + 2..]
+                .iter()
+                .position(|&c| matches!(c, b'\n' | b'\r'))
+                .map_or(b.len(), |offset| i + 2 + offset);
+            continue;
+        }
+        if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+            i = b[i + 2..]
+                .windows(2)
+                .position(|pair| pair == b"*/")
+                .map_or(b.len(), |offset| i + 4 + offset);
+            continue;
+        }
+        if matches!(b[i], b'\'' | b'"') {
+            i = skip_js_quote(b, i, b[i]);
+            continue;
+        }
+        if b[i] != b'`' {
+            i += 1;
+            continue;
+        }
+
+        let mut cursor = i + 1;
+        let mut segment_start = cursor;
+        while cursor < b.len() {
+            match b[cursor] {
+                b'\\' => cursor += 2,
+                b'`' => {
+                    push_template_segment(js, segment_start, cursor, &mut out);
+                    cursor += 1;
+                    break;
+                }
+                b'$' if b.get(cursor + 1) == Some(&b'{') => {
+                    push_template_segment(js, segment_start, cursor, &mut out);
+                    cursor = skip_template_expression(b, cursor + 2);
+                    segment_start = cursor;
+                }
+                _ => cursor += 1,
+            }
+        }
+        i = cursor;
+    }
+    out
+}
+
+fn push_template_segment(js: &str, start: usize, end: usize, out: &mut Vec<(usize, usize)>) {
+    if start >= end || !js.is_char_boundary(start) || !js.is_char_boundary(end) {
+        return;
+    }
+    let raw = &js[start..end];
+    let text = unescape_js(raw);
+    if escape_js_literal(&text, b'`') == raw && looks_like_player_text(&text) {
+        out.push((start, end - start));
+    }
+}
+
+fn skip_js_quote(bytes: &[u8], mut cursor: usize, quote: u8) -> usize {
+    cursor += 1;
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'\\' {
+            cursor += 2;
+        } else if bytes[cursor] == quote {
+            return cursor + 1;
+        } else {
+            cursor += 1;
+        }
+    }
+    bytes.len()
+}
+
+fn skip_template_expression(bytes: &[u8], mut cursor: usize) -> usize {
+    let mut depth = 1usize;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\'' | b'"' => cursor = skip_js_quote(bytes, cursor, bytes[cursor]),
+            b'`' => cursor = skip_js_quote(bytes, cursor, b'`'),
+            b'{' => {
+                depth += 1;
+                cursor += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                cursor += 1;
+                if depth == 0 {
+                    return cursor;
+                }
+            }
+            _ => cursor += 1,
+        }
+    }
+    bytes.len()
 }
 
 /// Resolve the JS escapes a game's dialogue actually uses. Paired with
@@ -282,7 +427,8 @@ pub fn unescape_js(s: &str) -> String {
 /// `"It's fine"` — so the result matches the source it came from.
 pub fn escape_js_literal(s: &str, quote: u8) -> String {
     let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
         match c {
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
@@ -290,6 +436,8 @@ pub fn escape_js_literal(s: &str, quote: u8) -> String {
             '\t' => out.push_str("\\t"),
             '"' if quote == b'"' => out.push_str("\\\""),
             '\'' if quote == b'\'' => out.push_str("\\'"),
+            '`' if quote == b'`' => out.push_str("\\`"),
+            '$' if quote == b'`' && chars.peek() == Some(&'{') => out.push_str("\\$"),
             _ => out.push(c),
         }
     }
@@ -350,7 +498,10 @@ mod tests {
             Some(UnitKind::PluginArg)
         );
         // Right key, config-shaped value: dropped.
-        assert_eq!(plugin_arg_kind("SomePlugin", "show", "text", "120", &o), None);
+        assert_eq!(
+            plugin_arg_kind("SomePlugin", "show", "text", "120", &o),
+            None
+        );
         assert_eq!(
             plugin_arg_kind("SomePlugin", "show", "text", "cg01_sotai_01", &o),
             None
@@ -378,7 +529,9 @@ mod tests {
         assert!(!looks_like_player_text("0"));
         assert!(!looks_like_player_text("-1.5"));
         assert!(!looks_like_player_text("true"));
-        assert!(!looks_like_player_text("[\"{\\\"FileName\\\":\\\"cg01\\\"}\"]"));
+        assert!(!looks_like_player_text(
+            "[\"{\\\"FileName\\\":\\\"cg01\\\"}\"]"
+        ));
         assert!(!looks_like_player_text("{\"a\":1}"));
         assert!(!looks_like_player_text("img/pictures/cg01.png"));
         assert!(!looks_like_player_text("PictureGrouping"));
@@ -400,7 +553,9 @@ mod tests {
 
         // A number, an identifier and a filename in the same shape are not text.
         assert!(script_text_spans(r#"$gameSwitches.setValue(3, "on");"#).is_empty());
-        assert!(script_text_spans(r#"Galv.CACHE.load("pic", "img/pictures/cg01.png");"#).is_empty());
+        assert!(
+            script_text_spans(r#"Galv.CACHE.load("pic", "img/pictures/cg01.png");"#).is_empty()
+        );
         assert!(script_text_spans(r#"AudioManager.playSe({name:"Cursor 1"});"#).is_empty());
 
         // Two literals in one command are two units.
@@ -414,10 +569,48 @@ mod tests {
         assert_eq!(&sq[sp[0].0..sp[0].0 + sp[0].1], r#"It "rained" all day."#);
 
         // Plain UTF-8 is fine — nothing to re-escape.
-        assert_eq!(script_text_spans("t(\"caf\u{e9} is open today\");").len(), 1);
+        assert_eq!(
+            script_text_spans("t(\"caf\u{e9} is open today\");").len(),
+            1
+        );
         // A `\uXXXX` escape is not reproduced byte for byte, so that literal is
         // skipped rather than risk breaking `extract → inject == source`.
         assert!(script_text_spans("t(\"caf\\u00e9 is open today\");").is_empty());
+    }
+
+    #[test]
+    fn script_text_spans_handles_utf8_before_a_later_literal() {
+        // A later quote makes the 64-byte asset-call look-behind fall inside the
+        // earlier Japanese dialogue unless its start is moved to a UTF-8 boundary.
+        let js = "$gameMessage.add('食堂でくつろいでいる客だ。'); if (this?.setWaitMode) this.setWaitMode('message');";
+        assert_eq!(script_text_spans(js).len(), 1);
+    }
+
+    #[test]
+    fn script_text_spans_skips_comments_before_dialogue() {
+        let js = "// The game's opening narration.\n$gameMessage.add(\"冬の嵐で、屋根と客室の半分が使えなくなった。\");";
+        let spans = script_text_spans(js);
+        assert_eq!(
+            spans.len(),
+            1,
+            "comment quote must not swallow dialogue: {spans:?}"
+        );
+        let (start, len) = spans[0];
+        assert_eq!(
+            &js[start..start + len],
+            "冬の嵐で、屋根と客室の半分が使えなくなった。"
+        );
+    }
+
+    #[test]
+    fn template_text_spans_take_labels_but_not_interpolation() {
+        let js = "return `${day}日目・${phase}    所持金:${money}G    残債:${debt}G`;";
+        let spans = template_text_spans(js);
+        let texts: Vec<&str> = spans
+            .iter()
+            .map(|(start, len)| &js[*start..start + len])
+            .collect();
+        assert_eq!(texts, ["日目・", "    所持金:", "G    残債:"]);
     }
 
     #[test]

@@ -41,7 +41,7 @@ export function Sidebar({
   const [version, setVersion] = useState("");
 
   // Stock game fonts often have no Thai glyphs, so offer to embed a Thai-capable font
-  // on export. Default on when translating to Thai. Shown for the engines whose
+  // on export. It stays opt-in so export never changes font files unexpectedly. Shown for the engines whose
   // `embed_font` does something (Ren'Py embeds its own font inside its tl/ path).
   const FONT_ENGINES = [
     "rpgmaker-mvmz",
@@ -60,7 +60,7 @@ export function Sidebar({
   const fontCapable = FONT_ENGINES.includes(project.engineId);
   const modCapable = MOD_ENGINES.includes(project.engineId);
   const renpyThai = project.engineId === "renpy" && /^thai$/i.test(project.targetLang.trim());
-  const [embedFont, setEmbedFont] = useState(() => /thai/i.test(project.targetLang ?? ""));
+  const [embedFont, setEmbedFont] = useState(false);
   const [thaiFontScale, setThaiFontScale] = useState(90);
 
   useEffect(() => {

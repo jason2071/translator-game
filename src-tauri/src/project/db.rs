@@ -167,7 +167,10 @@ fn add_column_if_missing(conn: &Connection, table: &str, column: &str, decl: &st
         .filter_map(|c| c.ok())
         .any(|c| c == column);
     if !exists {
-        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"), [])?;
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
+            [],
+        )?;
     }
     Ok(())
 }
@@ -244,7 +247,14 @@ pub fn merge_units(conn: &mut Connection, units: &[TransUnit]) -> Result<(usize,
         )?;
         for u in units {
             let n = ins.execute(params![
-                u.file, u.pointer, u.kind.as_str(), u.context, u.group, u.source, u.translation, u.status.as_str()
+                u.file,
+                u.pointer,
+                u.kind.as_str(),
+                u.context,
+                u.group,
+                u.source,
+                u.translation,
+                u.status.as_str()
             ])?;
             inserted += n;
             if n == 0 {
@@ -281,7 +291,11 @@ pub fn prune_stale_units(conn: &mut Connection, fresh: &[TransUnit]) -> Result<u
                 AND status IN ('Untranslated', 'Failed')",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         })?;
         rows.filter_map(|r| r.ok())
             .filter(|(_, f, p)| !keep.contains(&(f.as_str(), p.as_str())))
@@ -473,14 +487,16 @@ pub fn units_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<TransUnit>> {
     if ids.is_empty() {
         return Ok(vec![]);
     }
-    let placeholders = std::iter::repeat("?").take(ids.len()).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat("?")
+        .take(ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
     let sql = format!(
         "SELECT id, file, pointer, kind, context, grp, source, translation, status
            FROM unit WHERE id IN ({placeholders}) ORDER BY id"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::ToSql> =
-        ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+    let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
     let rows = stmt.query_map(params.as_slice(), row_to_unit)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
@@ -498,11 +514,19 @@ pub fn all_units(conn: &Connection) -> Result<Vec<TransUnit>> {
 /// unit `Failed` after an AI attempt without clobbering any existing text.
 pub fn set_status(conn: &Connection, id: i64, status: &str) -> Result<()> {
     let status = Status::from_str(status).as_str();
-    conn.execute("UPDATE unit SET status = ?1 WHERE id = ?2", params![status, id])?;
+    conn.execute(
+        "UPDATE unit SET status = ?1 WHERE id = ?2",
+        params![status, id],
+    )?;
     Ok(())
 }
 
-pub fn update_unit(conn: &Connection, id: i64, translation: Option<&str>, status: &str) -> Result<()> {
+pub fn update_unit(
+    conn: &Connection,
+    id: i64,
+    translation: Option<&str>,
+    status: &str,
+) -> Result<()> {
     // Normalize the status so an unknown string can never poison stats()/export.
     let status = Status::from_str(status).as_str();
     conn.execute(
@@ -537,9 +561,7 @@ pub struct Stats {
 pub fn stats(conn: &Connection) -> Result<Stats> {
     let mut s = Stats::default();
     let mut stmt = conn.prepare("SELECT status, COUNT(*) FROM unit GROUP BY status")?;
-    let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-    })?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
     for row in rows {
         let (status, n) = row?;
         s.total += n;
@@ -564,8 +586,7 @@ pub struct FileCount {
 }
 
 pub fn files_with_counts(conn: &Connection) -> Result<Vec<FileCount>> {
-    let mut stmt =
-        conn.prepare("SELECT file, COUNT(*) FROM unit GROUP BY file ORDER BY file")?;
+    let mut stmt = conn.prepare("SELECT file, COUNT(*) FROM unit GROUP BY file ORDER BY file")?;
     let rows = stmt.query_map([], |r| {
         Ok(FileCount {
             file: r.get(0)?,
@@ -725,8 +746,15 @@ pub fn is_non_character_speaker(name: &str) -> bool {
         .to_ascii_lowercase();
     matches!(
         label.as_str(),
-        "" | "???" | "all" | "everyone" | "both" | "narrator" | "unknown" | "phone"
-            | "male voice" | "female voice"
+        "" | "???"
+            | "all"
+            | "everyone"
+            | "both"
+            | "narrator"
+            | "unknown"
+            | "phone"
+            | "male voice"
+            | "female voice"
     )
 }
 
@@ -738,7 +766,11 @@ pub fn migrate_character_contexts(conn: &mut Connection, units: &[TransUnit]) ->
     let mut mappings: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut ambiguous: std::collections::HashSet<String> = std::collections::HashSet::new();
     for unit in units.iter().filter(|u| u.kind == UnitKind::Dialogue) {
-        let Some(new) = unit.context.as_deref().filter(|name| !name.trim().is_empty()) else {
+        let Some(new) = unit
+            .context
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+        else {
             continue;
         };
         let old: Option<String> = lookup
@@ -804,7 +836,11 @@ pub fn characters_list(conn: &Connection) -> Result<Vec<Character>> {
     let mut stmt =
         conn.prepare("SELECT name, gender, COALESCE(note, '') FROM character ORDER BY name")?;
     let rows = stmt.query_map([], |r| {
-        Ok(Character { name: r.get(0)?, gender: r.get(1)?, note: r.get(2)? })
+        Ok(Character {
+            name: r.get(0)?,
+            gender: r.get(1)?,
+            note: r.get(2)?,
+        })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
@@ -879,7 +915,10 @@ pub fn characters_set_bulk(
 /// preserving each existing row's gender (a brand-new speaker row gets an empty gender).
 /// Used by the AI persona-fill pass so it never overwrites a manually chosen gender.
 /// Skips blank names and blank notes.
-pub fn characters_set_notes_bulk(conn: &mut Connection, items: &[(String, String)]) -> Result<usize> {
+pub fn characters_set_notes_bulk(
+    conn: &mut Connection,
+    items: &[(String, String)],
+) -> Result<usize> {
     let tx = conn.transaction()?;
     let mut n = 0usize;
     {
@@ -902,7 +941,7 @@ pub fn characters_set_notes_bulk(conn: &mut Connection, items: &[(String, String
 
 /// Delete every stored character→gender row (a fresh start before re-classifying).
 pub fn characters_clear(conn: &Connection) -> Result<usize> {
-    Ok(conn.execute("DELETE FROM character", [])? )
+    Ok(conn.execute("DELETE FROM character", [])?)
 }
 
 /// Distinct speaker names seen on Dialogue units (the `context` field), so the UI
@@ -926,9 +965,7 @@ pub fn speaker_samples(conn: &Connection, per: usize) -> Result<Vec<(String, Str
            AND source IS NOT NULL AND source <> ''
          ORDER BY context, id",
     )?;
-    let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     // Group in order; keep the first `per` lines per speaker.
     let mut out: Vec<(String, String)> = Vec::new();
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -951,7 +988,13 @@ pub fn speaker_samples(conn: &Connection, per: usize) -> Result<Vec<(String, Str
     // start a second entry; merge any splits so each speaker appears once.
     let mut merged: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for (n, s) in out {
-        merged.entry(n).and_modify(|e| { e.push('\n'); e.push_str(&s); }).or_insert(s);
+        merged
+            .entry(n)
+            .and_modify(|e| {
+                e.push('\n');
+                e.push_str(&s);
+            })
+            .or_insert(s);
     }
     Ok(merged.into_iter().collect())
 }
@@ -964,7 +1007,9 @@ pub fn glossary_add_bulk(conn: &mut Connection, items: &[(String, String)]) -> R
     let mut seen: std::collections::HashSet<String> = {
         let mut stmt = conn.prepare("SELECT term FROM glossary")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        rows.filter_map(|r| r.ok()).map(|t| t.trim().to_lowercase()).collect()
+        rows.filter_map(|r| r.ok())
+            .map(|t| t.trim().to_lowercase())
+            .collect()
     };
     let tx = conn.transaction()?;
     let mut added = 0usize;
@@ -1068,8 +1113,7 @@ pub fn sample_text_for_mining(conn: &Connection, max_lines: i64) -> Result<Vec<S
 
 /// The unit kinds that carry free narrative text worth sampling for AI context /
 /// glossary work (as a SQL `IN (...)` list).
-const NARRATIVE_KINDS: &str =
-    "'Dialogue','ScrollText','Choice','Description','Profile','MapName'";
+const NARRATIVE_KINDS: &str = "'Dialogue','ScrollText','Choice','Description','Profile','MapName'";
 
 /// Build a diverse, code-stripped text sample for AI game-context drafting. Unlike
 /// [`sample_text_for_mining`] (frequency-ranked, which over-weights repeated UI
@@ -1080,7 +1124,11 @@ const NARRATIVE_KINDS: &str =
 /// short / UI lines (<3 words) dropped, and interleaved round-robin so all three
 /// buckets survive the `char_budget` cap that keeps the sample inside a small
 /// context window.
-pub fn sample_corpus(conn: &Connection, engine_id: &str, char_budget: usize) -> Result<Vec<String>> {
+pub fn sample_corpus(
+    conn: &Connection,
+    engine_id: &str,
+    char_budget: usize,
+) -> Result<Vec<String>> {
     let per_bucket = 600usize;
     let total: i64 = conn.query_row(
         &format!("SELECT COUNT(*) FROM unit WHERE source<>'' AND kind IN ({NARRATIVE_KINDS})"),
@@ -1306,7 +1354,12 @@ fn proper_nouns(line: &str) -> Vec<(String, bool)> {
         } else {
             if !cur.is_empty() {
                 let cap = cur.chars().next().unwrap().is_uppercase();
-                words.push(W { text: std::mem::take(&mut cur), cap, ss: sentence_start, joinable });
+                words.push(W {
+                    text: std::mem::take(&mut cur),
+                    cap,
+                    ss: sentence_start,
+                    joinable,
+                });
                 sentence_start = false;
                 gap_clean = true;
             }
@@ -1320,7 +1373,12 @@ fn proper_nouns(line: &str) -> Vec<(String, bool)> {
     }
     if !cur.is_empty() {
         let cap = cur.chars().next().unwrap().is_uppercase();
-        words.push(W { text: cur, cap, ss: sentence_start, joinable });
+        words.push(W {
+            text: cur,
+            cap,
+            ss: sentence_start,
+            joinable,
+        });
     }
 
     let mut out = Vec::new();
@@ -1370,22 +1428,193 @@ fn proper_nouns(line: &str) -> Vec<(String, bool)> {
 /// Common English words that are capitalized only because they start a sentence
 /// (or are pronouns/particles) — never glossary terms.
 const STOPWORDS: &[&str] = &[
-    "a", "about", "after", "again", "against", "ah", "all", "also", "always", "am", "an", "and",
-    "another", "any", "anything", "are", "as", "at", "away", "be", "because", "been", "before",
-    "being", "but", "by", "came", "can", "cannot", "come", "could", "did", "do", "does", "doing",
-    "don", "done", "down", "each", "even", "ever", "every", "everyone", "everything", "few", "for",
-    "from", "get", "give", "go", "going", "good", "got", "had", "has", "have", "he", "hello", "her",
-    "here", "hers", "herself", "hey", "hi", "him", "himself", "his", "how", "however", "i", "if",
-    "in", "into", "is", "it", "its", "itself", "just", "keep", "know", "let", "like", "look",
-    "made", "make", "many", "may", "maybe", "me", "might", "mine", "more", "most", "much", "must",
-    "my", "myself", "never", "new", "no", "not", "nothing", "now", "of", "off", "oh", "ok", "okay",
-    "on", "once", "one", "only", "onto", "or", "other", "our", "ours", "out", "over", "please",
-    "really", "said", "say", "see", "she", "should", "since", "so", "some", "someone", "something",
-    "sorry", "still", "such", "sure", "take", "than", "thank", "thanks", "that", "the", "their",
-    "theirs", "them", "then", "there", "these", "they", "thing", "things", "this", "those",
-    "though", "through", "thus", "to", "together", "too", "up", "upon", "us", "very", "want", "was",
-    "way", "we", "well", "were", "what", "when", "where", "which", "while", "who", "whom", "whose",
-    "why", "will", "with", "without", "would", "yeah", "yes", "yet", "you", "your", "yours",
+    "a",
+    "about",
+    "after",
+    "again",
+    "against",
+    "ah",
+    "all",
+    "also",
+    "always",
+    "am",
+    "an",
+    "and",
+    "another",
+    "any",
+    "anything",
+    "are",
+    "as",
+    "at",
+    "away",
+    "be",
+    "because",
+    "been",
+    "before",
+    "being",
+    "but",
+    "by",
+    "came",
+    "can",
+    "cannot",
+    "come",
+    "could",
+    "did",
+    "do",
+    "does",
+    "doing",
+    "don",
+    "done",
+    "down",
+    "each",
+    "even",
+    "ever",
+    "every",
+    "everyone",
+    "everything",
+    "few",
+    "for",
+    "from",
+    "get",
+    "give",
+    "go",
+    "going",
+    "good",
+    "got",
+    "had",
+    "has",
+    "have",
+    "he",
+    "hello",
+    "her",
+    "here",
+    "hers",
+    "herself",
+    "hey",
+    "hi",
+    "him",
+    "himself",
+    "his",
+    "how",
+    "however",
+    "i",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "itself",
+    "just",
+    "keep",
+    "know",
+    "let",
+    "like",
+    "look",
+    "made",
+    "make",
+    "many",
+    "may",
+    "maybe",
+    "me",
+    "might",
+    "mine",
+    "more",
+    "most",
+    "much",
+    "must",
+    "my",
+    "myself",
+    "never",
+    "new",
+    "no",
+    "not",
+    "nothing",
+    "now",
+    "of",
+    "off",
+    "oh",
+    "ok",
+    "okay",
+    "on",
+    "once",
+    "one",
+    "only",
+    "onto",
+    "or",
+    "other",
+    "our",
+    "ours",
+    "out",
+    "over",
+    "please",
+    "really",
+    "said",
+    "say",
+    "see",
+    "she",
+    "should",
+    "since",
+    "so",
+    "some",
+    "someone",
+    "something",
+    "sorry",
+    "still",
+    "such",
+    "sure",
+    "take",
+    "than",
+    "thank",
+    "thanks",
+    "that",
+    "the",
+    "their",
+    "theirs",
+    "them",
+    "then",
+    "there",
+    "these",
+    "they",
+    "thing",
+    "things",
+    "this",
+    "those",
+    "though",
+    "through",
+    "thus",
+    "to",
+    "together",
+    "too",
+    "up",
+    "upon",
+    "us",
+    "very",
+    "want",
+    "was",
+    "way",
+    "we",
+    "well",
+    "were",
+    "what",
+    "when",
+    "where",
+    "which",
+    "while",
+    "who",
+    "whom",
+    "whose",
+    "why",
+    "will",
+    "with",
+    "without",
+    "would",
+    "yeah",
+    "yes",
+    "yet",
+    "you",
+    "your",
+    "yours",
     "yourself",
 ];
 
@@ -1470,7 +1699,10 @@ mod tests {
     #[test]
     fn non_character_speakers_are_filtered_but_named_people_remain() {
         for label in ["Both (twi)", "Everyone", "Phone", "???"] {
-            assert!(is_non_character_speaker(label), "{label} should be excluded");
+            assert!(
+                is_non_character_speaker(label),
+                "{label} should be excluded"
+            );
         }
         assert!(!is_non_character_speaker("Jasmine (jas)"));
         assert!(!is_non_character_speaker("Businessman"));
@@ -1486,7 +1718,10 @@ mod tests {
 
         let mut rescanned = unit("script.rpy", "0:2", "Hi", Status::Untranslated);
         rescanned.context = Some("Jasmine (jas)".into());
-        assert_eq!(migrate_character_contexts(&mut conn, &[rescanned.clone()]).unwrap(), 1);
+        assert_eq!(
+            migrate_character_contexts(&mut conn, &[rescanned.clone()]).unwrap(),
+            1
+        );
         assert_eq!(merge_units(&mut conn, &[rescanned]).unwrap(), (0, 1));
 
         let characters = characters_list(&conn).unwrap();
@@ -1504,32 +1739,62 @@ mod tests {
     fn count_units_matches_filters_and_list() {
         let units: Vec<_> = (0..250)
             .map(|i| {
-                let status = if i % 5 == 0 { Status::Failed } else { Status::Untranslated };
+                let status = if i % 5 == 0 {
+                    Status::Failed
+                } else {
+                    Status::Untranslated
+                };
                 let file = if i < 100 { "A.json" } else { "B.json" };
                 unit(file, &format!("/p/{i}"), &format!("line {i}"), status)
             })
             .collect();
         let conn = mem_db(&units);
-        let big = |f: UnitFilter| UnitFilter { limit: Some(10_000), ..f };
+        let big = |f: UnitFilter| UnitFilter {
+            limit: Some(10_000),
+            ..f
+        };
 
         // Whole-table count.
         assert_eq!(count_units(&conn, &UnitFilter::default()).unwrap(), 250);
         // Status / file counts, and each agrees with list_units.
         for f in [
-            UnitFilter { status: Some("Failed".into()), ..Default::default() },
-            UnitFilter { file: Some("A.json".into()), ..Default::default() },
-            UnitFilter { search: Some("line 1".into()), ..Default::default() },
+            UnitFilter {
+                status: Some("Failed".into()),
+                ..Default::default()
+            },
+            UnitFilter {
+                file: Some("A.json".into()),
+                ..Default::default()
+            },
+            UnitFilter {
+                search: Some("line 1".into()),
+                ..Default::default()
+            },
         ] {
             let c = count_units(&conn, &f).unwrap();
             let n = list_units(&conn, &big(f)).unwrap().len() as i64;
             assert_eq!(c, n, "count_units must match list_units row count");
         }
         assert_eq!(
-            count_units(&conn, &UnitFilter { status: Some("Failed".into()), ..Default::default() }).unwrap(),
+            count_units(
+                &conn,
+                &UnitFilter {
+                    status: Some("Failed".into()),
+                    ..Default::default()
+                }
+            )
+            .unwrap(),
             50
         );
         assert_eq!(
-            count_units(&conn, &UnitFilter { file: Some("A.json".into()), ..Default::default() }).unwrap(),
+            count_units(
+                &conn,
+                &UnitFilter {
+                    file: Some("A.json".into()),
+                    ..Default::default()
+                }
+            )
+            .unwrap(),
             100
         );
     }
@@ -1538,7 +1803,12 @@ mod tests {
     fn search_fields_and_context_filter() {
         // Three units where "Alice" appears in a different column each time, so a
         // field-targeted search must be able to tell them apart.
-        let mut in_source = unit("A.json", "/p/1", "Alice draws her sword", Status::Untranslated);
+        let mut in_source = unit(
+            "A.json",
+            "/p/1",
+            "Alice draws her sword",
+            Status::Untranslated,
+        );
         in_source.context = Some("Narrator".into());
 
         let mut in_trans = unit("A.json", "/p/2", "he swings", Status::Draft);
@@ -1554,25 +1824,47 @@ mod tests {
 
         // Default (no search_fields) = legacy source OR translation → the source hit
         // and the translation hit, but NOT the context-only hit.
-        assert_eq!(count(UnitFilter { search: Some("Alice".into()), ..Default::default() }), 2);
+        assert_eq!(
+            count(UnitFilter {
+                search: Some("Alice".into()),
+                ..Default::default()
+            }),
+            2
+        );
         // Empty search_fields behaves like the default too.
         assert_eq!(
-            count(UnitFilter { search: Some("Alice".into()), search_fields: fields(&[]), ..Default::default() }),
+            count(UnitFilter {
+                search: Some("Alice".into()),
+                search_fields: fields(&[]),
+                ..Default::default()
+            }),
             2
         );
         // Source only → excludes the translation-only hit.
         assert_eq!(
-            count(UnitFilter { search: Some("Alice".into()), search_fields: fields(&["source"]), ..Default::default() }),
+            count(UnitFilter {
+                search: Some("Alice".into()),
+                search_fields: fields(&["source"]),
+                ..Default::default()
+            }),
             1
         );
         // Translation only → just the translation hit.
         assert_eq!(
-            count(UnitFilter { search: Some("Alice".into()), search_fields: fields(&["translation"]), ..Default::default() }),
+            count(UnitFilter {
+                search: Some("Alice".into()),
+                search_fields: fields(&["translation"]),
+                ..Default::default()
+            }),
             1
         );
         // Context only → just the speaker hit.
         assert_eq!(
-            count(UnitFilter { search: Some("Alice".into()), search_fields: fields(&["context"]), ..Default::default() }),
+            count(UnitFilter {
+                search: Some("Alice".into()),
+                search_fields: fields(&["context"]),
+                ..Default::default()
+            }),
             1
         );
         // All three columns → every unit mentioning "Alice".
@@ -1586,14 +1878,36 @@ mod tests {
         );
         // An all-unknown field list falls back to the default rather than erroring.
         assert_eq!(
-            count(UnitFilter { search: Some("Alice".into()), search_fields: fields(&["bogus"]), ..Default::default() }),
+            count(UnitFilter {
+                search: Some("Alice".into()),
+                search_fields: fields(&["bogus"]),
+                ..Default::default()
+            }),
             2
         );
 
         // Exact character filter → only that speaker's lines, regardless of text.
-        assert_eq!(count(UnitFilter { context: Some("Alice".into()), ..Default::default() }), 1);
-        assert_eq!(count(UnitFilter { context: Some("Bob".into()), ..Default::default() }), 1);
-        assert_eq!(count(UnitFilter { context: Some("Nobody".into()), ..Default::default() }), 0);
+        assert_eq!(
+            count(UnitFilter {
+                context: Some("Alice".into()),
+                ..Default::default()
+            }),
+            1
+        );
+        assert_eq!(
+            count(UnitFilter {
+                context: Some("Bob".into()),
+                ..Default::default()
+            }),
+            1
+        );
+        assert_eq!(
+            count(UnitFilter {
+                context: Some("Nobody".into()),
+                ..Default::default()
+            }),
+            0
+        );
         // Character filter AND a text query combine.
         assert_eq!(
             count(UnitFilter {
@@ -1613,29 +1927,61 @@ mod tests {
         );
 
         // count_units must always agree with list_units row count.
-        let f = UnitFilter { search: Some("Alice".into()), search_fields: fields(&["context"]), limit: Some(1000), ..Default::default() };
-        assert_eq!(count_units(&conn, &f).unwrap(), list_units(&conn, &f).unwrap().len() as i64);
+        let f = UnitFilter {
+            search: Some("Alice".into()),
+            search_fields: fields(&["context"]),
+            limit: Some(1000),
+            ..Default::default()
+        };
+        assert_eq!(
+            count_units(&conn, &f).unwrap(),
+            list_units(&conn, &f).unwrap().len() as i64
+        );
     }
 
     #[test]
     fn search_can_match_case_and_whole_words() {
         let units = [
             unit("A.json", "/p/1", "Alice meets ALICE", Status::Untranslated),
-            unit("A.json", "/p/2", "Malice is unrelated", Status::Untranslated),
+            unit(
+                "A.json",
+                "/p/2",
+                "Malice is unrelated",
+                Status::Untranslated,
+            ),
             unit("A.json", "/p/3", "Alice's plan", Status::Untranslated),
-            unit("A.json", "/p/4", "Alicea is unrelated", Status::Untranslated),
+            unit(
+                "A.json",
+                "/p/4",
+                "Alicea is unrelated",
+                Status::Untranslated,
+            ),
             unit("A.json", "/p/5", "เขามาหาฉัน", Status::Untranslated),
         ];
         let conn = mem_db(&units);
         let count = |f: UnitFilter| count_units(&conn, &f).unwrap();
 
-        assert_eq!(count(UnitFilter { search: Some("alice".into()), ..Default::default() }), 4);
         assert_eq!(
-            count(UnitFilter { search: Some("Alice".into()), match_case: Some(true), ..Default::default() }),
+            count(UnitFilter {
+                search: Some("alice".into()),
+                ..Default::default()
+            }),
+            4
+        );
+        assert_eq!(
+            count(UnitFilter {
+                search: Some("Alice".into()),
+                match_case: Some(true),
+                ..Default::default()
+            }),
             3
         );
         assert_eq!(
-            count(UnitFilter { search: Some("alice".into()), match_whole_word: Some(true), ..Default::default() }),
+            count(UnitFilter {
+                search: Some("alice".into()),
+                match_whole_word: Some(true),
+                ..Default::default()
+            }),
             2
         );
         assert_eq!(
@@ -1661,7 +2007,14 @@ mod tests {
     #[test]
     fn list_units_windows_are_ordered_and_cover_everything() {
         let units: Vec<_> = (0..500)
-            .map(|i| unit("A.json", &format!("/p/{i}"), &format!("s{i}"), Status::Untranslated))
+            .map(|i| {
+                unit(
+                    "A.json",
+                    &format!("/p/{i}"),
+                    &format!("s{i}"),
+                    Status::Untranslated,
+                )
+            })
             .collect();
         let conn = mem_db(&units);
         assert_eq!(count_units(&conn, &UnitFilter::default()).unwrap(), 500);
@@ -1670,12 +2023,19 @@ mod tests {
         let mut seen: Vec<i64> = Vec::new();
         let mut off = 0i64;
         loop {
-            let f = UnitFilter { limit: Some(120), offset: Some(off), ..Default::default() };
+            let f = UnitFilter {
+                limit: Some(120),
+                offset: Some(off),
+                ..Default::default()
+            };
             let page = list_units(&conn, &f).unwrap();
             if page.is_empty() {
                 break;
             }
-            assert!(page.windows(2).all(|w| w[0].id < w[1].id), "page must be id-ordered");
+            assert!(
+                page.windows(2).all(|w| w[0].id < w[1].id),
+                "page must be id-ordered"
+            );
             seen.extend(page.iter().map(|u| u.id));
             off += 120;
         }
@@ -1734,9 +2094,24 @@ mod tests {
     fn mine_glossary_candidates_surfaces_names_not_stopwords() {
         // "Karen" recurs (count 3 ⇒ ≥ MIN_TERM_FREQ); the "The end." line yields none.
         let units = vec![
-            unit("A.json", "/1", "I met Karen at the tower.", Status::Untranslated),
-            unit("A.json", "/2", "Later, Karen smiled warmly.", Status::Untranslated),
-            unit("A.json", "/3", "Everyone trusted Karen deeply.", Status::Untranslated),
+            unit(
+                "A.json",
+                "/1",
+                "I met Karen at the tower.",
+                Status::Untranslated,
+            ),
+            unit(
+                "A.json",
+                "/2",
+                "Later, Karen smiled warmly.",
+                Status::Untranslated,
+            ),
+            unit(
+                "A.json",
+                "/3",
+                "Everyone trusted Karen deeply.",
+                Status::Untranslated,
+            ),
             unit("A.json", "/4", "The end.", Status::Untranslated),
         ];
         let conn = mem_db(&units);
@@ -1759,7 +2134,9 @@ mod tests {
             unit("A.json", "/3", "カレンは行く。", Status::Untranslated),
         ];
         let conn = mem_db(&units);
-        assert!(mine_glossary_candidates(&conn, "rpgmaker-mvmz", 50).unwrap().is_empty());
+        assert!(mine_glossary_candidates(&conn, "rpgmaker-mvmz", 50)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1787,13 +2164,20 @@ mod tests {
         ];
         let conn = mem_db(&units);
         let got = mine_glossary_candidates(&conn, "rpgmaker-mvmz", 50).unwrap();
-        let haruka = got.iter().find(|c| c.term == "ハルカ").expect("speaker name mined");
+        let haruka = got
+            .iter()
+            .find(|c| c.term == "ハルカ")
+            .expect("speaker name mined");
         assert_eq!(haruka.count, 3);
-        assert!(haruka.mid >= 3, "a named speaker ranks like a mid-sentence hit");
+        assert!(
+            haruka.mid >= 3,
+            "a named speaker ranks like a mid-sentence hit"
+        );
         assert!(got.iter().any(|c| c.term == "部長"));
         // A speaker that is only an actor-ref code must not become a candidate.
         assert!(
-            !got.iter().any(|c| c.term.contains('\\') || c.term.contains("N[1]")),
+            !got.iter()
+                .any(|c| c.term.contains('\\') || c.term.contains("N[1]")),
             "control-code speaker leaked: {:?}",
             got.iter().map(|c| &c.term).collect::<Vec<_>>()
         );
@@ -1804,8 +2188,18 @@ mod tests {
         let mut units = vec![
             unit("A.json", "/s1", "OK", Status::Untranslated), // <3 words → dropped
             unit("A.json", "/s2", "Back", Status::Untranslated), // dropped
-            unit("A.json", "/dup1", "The rain fell all night.", Status::Untranslated),
-            unit("A.json", "/dup2", "the rain fell all night.", Status::Untranslated), // case dup
+            unit(
+                "A.json",
+                "/dup1",
+                "The rain fell all night.",
+                Status::Untranslated,
+            ),
+            unit(
+                "A.json",
+                "/dup2",
+                "the rain fell all night.",
+                Status::Untranslated,
+            ), // case dup
             unit(
                 "A.json",
                 "/long",
@@ -1814,22 +2208,42 @@ mod tests {
             ),
             // CJK has no spaces: the whole sentence is one whitespace-"word", so it
             // must survive on letter count, not word count.
-            unit("A.json", "/cjk", "拥有高透气性的亚麻制服装", Status::Untranslated),
+            unit(
+                "A.json",
+                "/cjk",
+                "拥有高透气性的亚麻制服装",
+                Status::Untranslated,
+            ),
         ];
         for i in 0..40 {
-            units.push(unit("A.json", &format!("/m{i}"), &format!("Spread narrative line number {i}."), Status::Untranslated));
+            units.push(unit(
+                "A.json",
+                &format!("/m{i}"),
+                &format!("Spread narrative line number {i}."),
+                Status::Untranslated,
+            ));
         }
         let conn = mem_db(&units);
 
         let big = sample_corpus(&conn, "rpgmaker-mvmz", 100_000).unwrap();
         // Short UI labels dropped by letter count (works for CJK, which has no
         // spaces); substantial lines kept.
-        assert!(big.iter().all(|l| l.chars().filter(|c| c.is_alphabetic()).count() >= 6));
+        assert!(big
+            .iter()
+            .all(|l| l.chars().filter(|c| c.is_alphabetic()).count() >= 6));
         assert!(!big.iter().any(|l| l == "OK" || l == "Back"));
         // A spaceless CJK sentence survives — the bug that produced "no sampled text".
-        assert!(big.iter().any(|l| l.contains("拥有高透气性")), "CJK line must survive");
+        assert!(
+            big.iter().any(|l| l.contains("拥有高透气性")),
+            "CJK line must survive"
+        );
         // Case-insensitive dedup: the rain line appears once.
-        assert_eq!(big.iter().filter(|l| l.to_lowercase() == "the rain fell all night.").count(), 1);
+        assert_eq!(
+            big.iter()
+                .filter(|l| l.to_lowercase() == "the rain fell all night.")
+                .count(),
+            1
+        );
         // The longest line is present (longest bucket).
         assert!(big.iter().any(|l| l.contains("ruined city at dawn")));
 
@@ -1840,4 +2254,3 @@ mod tests {
         assert!(chars <= 80 + 80, "budget roughly respected: {chars}");
     }
 }
-

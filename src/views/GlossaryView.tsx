@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { api, type Character, type GlossaryEntry, type ProviderKind } from "../ipc";
 import { PROVIDER_LABELS, PROVIDER_KINDS, useSettings } from "../settings";
@@ -14,6 +14,17 @@ export default function GlossaryView() {
   const [translation, setTranslation] = useState("");
   const [note, setNote] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const filteredEntries = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase();
+    if (!query) return entries;
+    return entries.filter((entry) =>
+      [entry.term, entry.translation, entry.note ?? ""].some((value) =>
+        value.toLocaleLowerCase().includes(query),
+      ),
+    );
+  }, [entries, search]);
 
   async function reload() {
     setEntries(await api.glossaryList());
@@ -36,7 +47,6 @@ export default function GlossaryView() {
     <div className="glossary">
       <GlossaryAiBar />
       <GlossaryTabs entries={entries} onAdded={reload}>
-
         <div className="gloss-add">
           <input placeholder="Source term" value={term} onChange={(e) => setTerm(e.target.value)} />
           <input
@@ -62,6 +72,30 @@ export default function GlossaryView() {
           </button>
         </div>
 
+        <div className="gloss-search">
+          <Icon name="search" size={15} className="gloss-search-icon" />
+          <input
+            type="search"
+            role="searchbox"
+            aria-label="Search glossary terms"
+            placeholder="Search term, translation, or note…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {search && (
+            <button
+              type="button"
+              className="search-clear"
+              aria-label="Clear glossary search"
+              title="Clear search"
+              onClick={() => setSearch("")}
+            >
+              <Icon name="close" size={14} />
+            </button>
+          )}
+          {search && <span className="gloss-search-count">{filteredEntries.length} shown</span>}
+        </div>
+
         <table className="gloss-table">
           <thead>
             <tr>
@@ -72,13 +106,13 @@ export default function GlossaryView() {
             </tr>
           </thead>
           <tbody>
-            {entries.map((g) => (
+            {filteredEntries.map((g) => (
               <GlossRow key={g.id} entry={g} onChanged={reload} />
             ))}
-            {entries.length === 0 && (
+            {filteredEntries.length === 0 && (
               <tr>
                 <td colSpan={4} className="empty">
-                  No glossary entries yet.
+                  {entries.length === 0 ? "No glossary entries yet." : "No glossary entries match this search."}
                 </td>
               </tr>
             )}
@@ -762,15 +796,43 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
 }
 
 function GlossRow({ entry, onChanged }: { entry: GlossaryEntry; onChanged: () => void }) {
+  const glossaryConfig = useSettings((s) => s.glossaryConfig);
+  const glossaryPhase = useTranslation((s) => s.glossary.phase);
   const [term, setTerm] = useState(entry.term);
   const [translation, setTranslation] = useState(entry.translation);
   const [note, setNote] = useState(entry.note ?? "");
+  const [retranslating, setRetranslating] = useState(false);
+  const [translateError, setTranslateError] = useState<string | null>(null);
 
   async function save() {
     if (term === entry.term && translation === entry.translation && (note || null) === entry.note)
       return;
     await api.glossaryUpdate(entry.id, term, translation, note || undefined, entry.caseSensitive);
     onChanged();
+  }
+
+  async function retranslate() {
+    const source = term.trim();
+    if (!source || retranslating || useTranslation.getState().glossary.phase !== "idle") return;
+    setRetranslating(true);
+    setTranslateError(null);
+    try {
+      const [next] = await useTranslation
+        .getState()
+        .enqueue("glossary", () => api.translateTexts([source], glossaryConfig()));
+      if (!next) {
+        setTranslateError("No translation returned.");
+        return;
+      }
+      setTranslation(next);
+      await api.glossaryUpdate(entry.id, source, next, note.trim() || undefined, entry.caseSensitive);
+      await api.rememberTexts([[source, next]]);
+      onChanged();
+    } catch (e) {
+      setTranslateError(String(e));
+    } finally {
+      setRetranslating(false);
+    }
   }
 
   return (
@@ -785,6 +847,16 @@ function GlossRow({ entry, onChanged }: { entry: GlossaryEntry; onChanged: () =>
         <input value={note} onChange={(e) => setNote(e.target.value)} onBlur={save} />
       </td>
       <td>
+        {translateError && <span className="gloss-row-error" title={translateError}>!</span>}
+        <button
+          className="iconbtn"
+          aria-label={`Re-translate glossary term ${term} with AI`}
+          title="Re-translate this term with AI"
+          onClick={retranslate}
+          disabled={!term.trim() || retranslating || glossaryPhase !== "idle"}
+        >
+          <Icon name="retry" size={15} />
+        </button>
         <button
           className="iconbtn"
           aria-label={`Delete glossary term ${entry.term}`}
