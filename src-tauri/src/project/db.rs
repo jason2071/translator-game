@@ -226,9 +226,8 @@ pub fn insert_units(conn: &mut Connection, units: &[TransUnit]) -> Result<usize>
 
 /// Merge a fresh extraction into an existing project (a "rescan"): insert any new
 /// `(file, pointer)` units — e.g. a tier the engine gained since the project was created —
-/// and **refresh `context`** when the extractor resolves a better speaker label, all
-/// WITHOUT touching an existing unit's translation or status. Returns
-/// `(inserted, context_updated)`.
+/// and refresh extractor-owned metadata (`kind`, `context`, and `group`) without
+/// touching an existing unit's translation or status. Returns `(inserted, metadata_updated)`.
 pub fn merge_units(conn: &mut Connection, units: &[TransUnit]) -> Result<(usize, usize)> {
     let tx = conn.transaction()?;
     let mut inserted = 0usize;
@@ -238,12 +237,15 @@ pub fn merge_units(conn: &mut Connection, units: &[TransUnit]) -> Result<(usize,
             "INSERT OR IGNORE INTO unit(file, pointer, kind, context, grp, source, translation, status)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
-        // Context is extractor-owned (the UI never edits it), so a newer scan may
-        // replace an implementation id such as `jas` with `Jasmine (jas)`.
+        // These fields are extractor-owned (the UI never edits them), so a newer
+        // scan may replace an implementation id such as `jas` with `Jasmine (jas)`
+        // or reclassify a formerly generic string as narrative dialogue. `IS NOT`
+        // deliberately treats NULL as a value: GameCreator's old extractor stored
+        // a locale key as context, and the corrected extractor must be able to clear it.
         let mut upd = tx.prepare(
-            "UPDATE unit SET context = ?3
+            "UPDATE unit SET kind = ?3, context = ?4, grp = ?5
              WHERE file = ?1 AND pointer = ?2
-               AND (context IS NULL OR context = '' OR context <> ?3)",
+               AND (kind IS NOT ?3 OR context IS NOT ?4 OR grp IS NOT ?5)",
         )?;
         for u in units {
             let n = ins.execute(params![
@@ -258,10 +260,13 @@ pub fn merge_units(conn: &mut Connection, units: &[TransUnit]) -> Result<(usize,
             ])?;
             inserted += n;
             if n == 0 {
-                // Existing row: backfill its context if the fresh scan resolved one.
-                if let Some(ctx) = u.context.as_deref().filter(|c| !c.trim().is_empty()) {
-                    filled += upd.execute(params![u.file, u.pointer, ctx])?;
-                }
+                filled += upd.execute(params![
+                    u.file,
+                    u.pointer,
+                    u.kind.as_str(),
+                    u.context,
+                    u.group
+                ])?;
             }
         }
     }
@@ -1800,6 +1805,24 @@ mod tests {
             .query_row("SELECT context FROM unit", [], |row| row.get(0))
             .unwrap();
         assert_eq!(context, "Jasmine (jas)");
+    }
+
+    #[test]
+    fn rescan_reclassifies_units_and_clears_stale_extractor_context() {
+        let mut original = TransUnit::new("table.json", "7:5", UnitKind::Term, "Maki runs.");
+        original.context = Some("真希跑了。".into());
+        let mut conn = mem_db(&[original]);
+
+        let rescanned = TransUnit::new("table.json", "7:5", UnitKind::Dialogue, "Maki runs.");
+        assert_eq!(merge_units(&mut conn, &[rescanned]).unwrap(), (0, 1));
+
+        let (kind, context): (String, Option<String>) = conn
+            .query_row("SELECT kind, context FROM unit", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(kind, "Dialogue");
+        assert_eq!(context, None);
     }
 
     #[test]

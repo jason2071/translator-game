@@ -91,12 +91,12 @@ fn extract_pairs_headers_with_value_lines() {
     assert!(texts.contains(&"Are you Anthousa?"));
     assert!(texts.contains(&"{I am looking to hire a <i>misthios</i>.}"));
 
-    // The hex id is carried as context; everything is Dialogue.
+    // The hex id is an internal key, never a speaker context; everything is Dialogue.
     let anth = units
         .iter()
         .find(|u| u.source == "Are you Anthousa?")
         .unwrap();
-    assert_eq!(anth.context.as_deref(), Some("000D19DE"));
+    assert_eq!(anth.context, None);
     assert!(units.iter().all(|u| u.kind == UnitKind::Dialogue));
 }
 

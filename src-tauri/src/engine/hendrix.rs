@@ -94,11 +94,11 @@ impl GameEngine for HendrixEngine {
                 .name
                 .map(|c| cols.field(rec, c))
                 .filter(|s| !s.trim().is_empty());
-            let kind = if name.is_some() {
-                UnitKind::Dialogue
-            } else {
-                UnitKind::Other
-            };
+            // The Name column is an optional speaker label; a blank one does not
+            // make the Original text non-narrative. Keeping every translatable row
+            // as Dialogue lets Game Context and AI glossary mining see narration,
+            // choices and UI rows that this sheet does not attribute to a speaker.
+            let kind = UnitKind::Dialogue;
             units.push(
                 TransUnit::new(SHEET, format!("row:{i}"), kind, source)
                     .with_context(name.map(str::to_string)),
@@ -590,7 +590,8 @@ mod tests {
         assert_eq!(hi.context.as_deref(), Some("アリス"));
         assert_eq!(hi.pointer, "row:1"); // header is row 0
         let yes = &units[1];
-        assert_eq!(yes.kind, UnitKind::Other); // no speaker
+        assert_eq!(yes.kind, UnitKind::Dialogue); // narration/choice without speaker
+        assert_eq!(yes.context, None);
         assert_eq!(yes.pointer, "row:4");
     }
 

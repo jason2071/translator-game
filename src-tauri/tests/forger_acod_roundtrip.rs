@@ -109,12 +109,12 @@ fn extract_reads_records_and_skips_empty_and_non_records() {
     assert_eq!(units.len(), 5);
     assert!(!texts.iter().any(|t| t.is_empty()));
 
-    // HEXID is carried as context; everything is Dialogue.
+    // HEXID is an implementation key, never a speaker context; everything is Dialogue.
     let anth = units
         .iter()
         .find(|u| u.source == "Are you Anthousa?")
         .unwrap();
-    assert_eq!(anth.context.as_deref(), Some("000D19DE"));
+    assert_eq!(anth.context, None);
     assert!(units.iter().all(|u| u.kind == UnitKind::Dialogue));
 }
 

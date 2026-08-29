@@ -69,14 +69,12 @@ impl GameEngine for GameCreatorEngine {
             .into_iter()
             .filter(|entry| looks_translatable(&entry.value))
             .map(|entry| {
-                let context = (entry.key != entry.value).then_some(entry.key);
                 TransUnit::new(
                     &file,
                     format!("{}:{}", entry.value_start, entry.value_len),
-                    UnitKind::Term,
+                    gamecreator_kind(&entry.value),
                     entry.value,
                 )
-                .with_context(context)
             })
             .collect())
     }
@@ -218,7 +216,6 @@ fn parse_pointer(pointer: &str) -> Option<(usize, usize)> {
 }
 
 struct LanguageEntry {
-    key: String,
     value: String,
     value_start: usize,
     value_len: usize,
@@ -272,7 +269,6 @@ fn parse_language_entries(content: &str) -> Result<Vec<LanguageEntry>> {
         i = skip_ws(bytes, i + 1);
         let value = parse_json_string(content, i).ok_or_else(|| anyhow!("invalid JSON value"))?;
         entries.push(LanguageEntry {
-            key: key.value,
             value: value.value,
             value_start: value.inner_start,
             value_len: value.inner_len,
@@ -358,6 +354,31 @@ fn looks_like_asset_path(value: &str) -> bool {
     )
 }
 
+/// The locale key is the original Chinese string, **not** a speaker label.  Keeping
+/// it as `context` made every line look like a separate character and, because all
+/// values were also marked `Term`, left the game-context and AI glossary samplers
+/// with no narrative corpus at all.  Rich text is how GameCreator displays dialogue;
+/// unmarked multi-word/sentence-like strings are narrative too.  Short labels remain
+/// terms so the regular glossary panel can still offer them directly.
+fn gamecreator_kind(value: &str) -> UnitKind {
+    if value.contains("<span") || value.contains("</span>") || value.contains('\n') {
+        return UnitKind::Dialogue;
+    }
+    let letters = value.chars().filter(|c| c.is_alphabetic()).count();
+    let words = value
+        .split_whitespace()
+        .filter(|word| word.chars().any(|c| c.is_alphabetic()))
+        .count();
+    let has_sentence_signal = value
+        .chars()
+        .any(|c| matches!(c, '.' | '!' | '?' | ',' | ':' | ';' | '…'));
+    if (words >= 3 && letters >= 10) || (has_sentence_signal && letters >= 8) {
+        UnitKind::Dialogue
+    } else {
+        UnitKind::Term
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +439,15 @@ mod tests {
         ));
         assert!(looks_translatable("Retry"));
         assert!(looks_translatable("Hello, hero"));
+    }
+
+    #[test]
+    fn classifies_narrative_text_without_misusing_locale_key_as_speaker() {
+        assert_eq!(gamecreator_kind("Retry"), UnitKind::Term);
+        assert_eq!(gamecreator_kind("Hello, hero!"), UnitKind::Dialogue);
+        assert_eq!(
+            gamecreator_kind("<span style='color:#fff'>Maki runs home.</span>"),
+            UnitKind::Dialogue
+        );
     }
 }

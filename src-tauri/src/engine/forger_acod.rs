@@ -214,8 +214,9 @@ fn key_value_start(line: &str) -> Option<usize> {
 
 /// Parse one `.acod` file's decoded UTF-8 `content`, pushing a [`TransUnit`] per
 /// non-empty `HEXID=value` line. `pointer` is the value's `"start:len"` byte span
-/// into `content`; the `HEXID` becomes the unit's context. Non-record lines and
-/// empty values are skipped (and so stay byte-identical on inject).
+/// into `content`. The HEXID is an implementation identifier, not a speaker, so it
+/// is intentionally not exposed as unit context. Non-record lines and empty values
+/// are skipped (and so stay byte-identical on inject).
 fn extract_acod(file: &str, content: &str, units: &mut Vec<TransUnit>) {
     let bytes = content.as_bytes();
     let len = content.len();
@@ -233,12 +234,8 @@ fn extract_acod(file: &str, content: &str, units: &mut Vec<TransUnit>) {
             let value_start = i + vstart;
             let value = &content[value_start..content_end];
             if !value.is_empty() {
-                let hexid = &content[i..i + 8];
                 let pointer = format!("{}:{}", value_start, content_end - value_start);
-                units.push(
-                    TransUnit::new(file, pointer, UnitKind::Dialogue, value)
-                        .with_context(Some(hexid.to_string())),
-                );
+                units.push(TransUnit::new(file, pointer, UnitKind::Dialogue, value));
             }
         }
         i = match nl {
@@ -312,8 +309,7 @@ mod tests {
         assert!(sources
             .iter()
             .any(|s| s.contains("<font face='DINPro_Bold'>")));
-        // HEXID is carried as context.
-        assert_eq!(units[1].context.as_deref(), Some("000D1792"));
+        assert_eq!(units[1].context, None);
         assert!(units.iter().all(|u| u.kind == UnitKind::Dialogue));
     }
 

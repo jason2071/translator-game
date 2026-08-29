@@ -67,6 +67,16 @@ fn detects_gamecreator_and_extracts_only_preferred_runtime_table() {
     assert!(!source.contains("img/pictures/hero.png"));
     assert!(!source.contains("こんにちは、勇者"));
     assert!(units.iter().all(|unit| unit.file.ends_with("English.json")));
+    assert_eq!(
+        units
+            .iter()
+            .find(|unit| unit.source == "Hello, hero")
+            .unwrap()
+            .kind
+            .as_str(),
+        "Dialogue"
+    );
+    assert!(units.iter().all(|unit| unit.context.is_none()));
 }
 
 #[test]

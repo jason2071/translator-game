@@ -65,7 +65,7 @@ fn extract_reads_po_msgstr_and_csv_first_column() {
     let units = eng.extract(d.path(), &ExtractOpts::default()).unwrap();
     let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
 
-    // PO: populated msgstr values, with the msgid carried as context.
+    // PO: populated msgstr values; short labels retain their msgid as context.
     assert!(texts.contains(&"\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}"));
     assert!(texts.contains(&"You have %d gold"));
     // CSV: first locale column (en) only.
@@ -86,7 +86,8 @@ fn extract_reads_po_msgstr_and_csv_first_column() {
     assert_eq!(greeting.kind, UnitKind::Term);
     assert_eq!(greeting.context.as_deref(), Some("GREETING"));
     let hello = units.iter().find(|u| u.source == "Hello, hero").unwrap();
-    assert_eq!(hello.context.as_deref(), Some("GREET \u{b7} en"));
+    assert_eq!(hello.kind, UnitKind::Dialogue);
+    assert_eq!(hello.context, None);
 }
 
 #[test]

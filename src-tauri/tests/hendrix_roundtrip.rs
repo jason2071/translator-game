@@ -68,7 +68,8 @@ fn extracts_original_column_with_speaker_and_skips_excluded() {
     assert_eq!(hi.kind, UnitKind::Dialogue);
     assert_eq!(hi.context.as_deref(), Some("アリス"));
     let yes = units.iter().find(|u| u.source == "はい").unwrap();
-    assert_eq!(yes.kind, UnitKind::Other); // no speaker
+    assert_eq!(yes.kind, UnitKind::Dialogue); // narration/choice without speaker
+    assert_eq!(yes.context, None);
 }
 
 #[test]

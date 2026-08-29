@@ -208,9 +208,9 @@ fn id_line(line: &str) -> Option<&str> {
 
 /// Parse one aclocexport file's `content`, pushing a [`TransUnit`] per record. A
 /// record is an `Id: [0x…]` header line immediately followed by its (single) value
-/// line; `pointer` is the value's `"start:len"` byte span, the hex id becomes the
-/// unit's context. The blank separator lines and the header lines are never part
-/// of any span, so they stay byte-identical on inject.
+/// line; `pointer` is the value's `"start:len"` byte span. The hex id is an internal
+/// key, not a speaker, so it is never unit context. The blank separator lines and
+/// the header lines are never part of any span, so they stay byte-identical on inject.
 fn extract_loctext(file: &str, content: &str, units: &mut Vec<TransUnit>) {
     let bytes = content.as_bytes();
     let len = content.len();
@@ -231,15 +231,12 @@ fn extract_loctext(file: &str, content: &str, units: &mut Vec<TransUnit>) {
             // A new header. (If a value never arrived for a prior header — malformed
             // input — we simply drop it; real exports always pair header+value.)
             pending = Some(hex.to_string());
-        } else if let Some(hex) = pending.take() {
+        } else if pending.take().is_some() {
             // The line right after a header is its value.
             let value = &content[i..content_end];
             if !value.is_empty() {
                 let pointer = format!("{}:{}", i, content_end - i);
-                units.push(
-                    TransUnit::new(file, pointer, UnitKind::Dialogue, value)
-                        .with_context(Some(hex)),
-                );
+                units.push(TransUnit::new(file, pointer, UnitKind::Dialogue, value));
             }
         }
         // else: a blank separator or stray line between records — ignore.
@@ -317,7 +314,7 @@ mod tests {
             .unwrap();
         assert_eq!(units.len(), 3);
         assert_eq!(units[0].source, "You must choose, Quick!");
-        assert_eq!(units[0].context.as_deref(), Some("000D1792"));
+        assert_eq!(units[0].context, None);
         assert!(units.iter().all(|u| u.kind == UnitKind::Dialogue));
         // The pointer really addresses the value bytes in the file.
         let content = std::fs::read_to_string(root.join("subs.txt")).unwrap();

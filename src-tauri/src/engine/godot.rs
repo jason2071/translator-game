@@ -8,13 +8,14 @@
 //!
 //!   - **`.po`** (gettext): each entry is `msgid "key/source"` / `msgstr "text"`.
 //!     The player-facing string is the **`msgstr`**, so that is what we translate
-//!     in place; the `msgid` is carried as `context` for the AI/translator. Entries
+//!     in place. Short UI labels retain their `msgid` as translator context; prose
+//!     has no synthetic context, because a catalog key is not a speaker. Entries
 //!     with an empty `msgstr` (an untranslated template) and the header entry
 //!     (`msgid ""`) are skipped. Only single-line `msgstr "..."` is handled.
 //!   - **`.csv`** (Godot translation CSV): a `keys,<locale>,...` header then one
 //!     row per key. We translate the **first locale column (index 1) in place** —
-//!     the canonical source column — carrying `key · locale` as context. Other
-//!     locale columns are left untouched.
+//!     the canonical source column. Short labels carry `key · locale` as context;
+//!     other locale columns are left untouched.
 //!
 //! Detection requires a Godot fingerprint (`project.godot`) alongside a `.po`/`.csv`
 //! so a plain gettext project isn't mistaken for a game. Compiled `.translation`
@@ -253,14 +254,11 @@ fn extract_po(file: &str, content: &str, out: &mut Vec<TransUnit>) {
             if let (Some((rel, len)), Some(msgid)) = (quoted_span(raw), last_msgid.take()) {
                 if len > 0 && !msgid.is_empty() {
                     let abs = line_start + rel;
+                    let source = &raw[rel..rel + len];
+                    let kind = godot_kind(source);
                     out.push(
-                        TransUnit::new(
-                            file,
-                            format!("{abs}:{len}"),
-                            UnitKind::Term,
-                            &raw[rel..rel + len],
-                        )
-                        .with_context(Some(msgid)),
+                        TransUnit::new(file, format!("{abs}:{len}"), kind, source)
+                            .with_context((kind == UnitKind::Term).then_some(msgid)),
                     );
                 }
             }
@@ -384,15 +382,36 @@ fn extract_csv(file: &str, content: &str, out: &mut Vec<TransUnit>) {
             (false, true) => Some(key.to_string()),
             (false, false) => Some(format!("{key} · {locale}")),
         };
+        let kind = godot_kind(source);
         out.push(
-            TransUnit::new(
-                file,
-                format!("{}:{}", value.start, value.len),
-                UnitKind::Term,
-                source,
-            )
-            .with_context(ctx),
+            TransUnit::new(file, format!("{}:{}", value.start, value.len), kind, source)
+                // A catalog key is useful for a short label, but must never become
+                // the apparent speaker of a narrative line.
+                .with_context((kind == UnitKind::Term).then_some(ctx).flatten()),
         );
+    }
+}
+
+/// Catalogs mix labels and whole sentences in one flat table. Narrative prose
+/// must be `Dialogue` so shared Game Context / AI glossary / character mining can
+/// read it; short labels stay `Term` for the regular glossary. Keys and locales
+/// deliberately never decide this — they are identifiers, not speakers.
+fn godot_kind(value: &str) -> UnitKind {
+    if value.contains('\n') {
+        return UnitKind::Dialogue;
+    }
+    let letters = value.chars().filter(|c| c.is_alphabetic()).count();
+    let words = value
+        .split_whitespace()
+        .filter(|word| word.chars().any(|c| c.is_alphabetic()))
+        .count();
+    let has_sentence_signal = value
+        .chars()
+        .any(|c| matches!(c, '.' | '!' | '?' | ',' | ':' | ';' | '…'));
+    if (words >= 3 && letters >= 10) || (has_sentence_signal && letters >= 8) {
+        UnitKind::Dialogue
+    } else {
+        UnitKind::Term
     }
 }
 
@@ -456,7 +475,8 @@ msgstr \"\"
         assert!(!texts.iter().any(|t| *t == "GREET" || *t == "BYE"));
 
         let greet = units.iter().find(|u| u.source == "Hello, there").unwrap();
-        assert_eq!(greet.context.as_deref(), Some("GREET \u{b7} en"));
+        assert_eq!(greet.kind, UnitKind::Dialogue);
+        assert_eq!(greet.context, None);
         let (s, l) = parse_pointer(&greet.pointer).unwrap();
         assert_eq!(&src[s..s + l], "Hello, there");
     }
@@ -486,6 +506,13 @@ msgstr \"\"
         extract_csv("t.csv", src, &mut units);
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].source, "Text");
+    }
+
+    #[test]
+    fn prose_is_dialogue_but_short_catalog_labels_remain_terms() {
+        assert_eq!(godot_kind("Retry"), UnitKind::Term);
+        assert_eq!(godot_kind("Maki runs home!"), UnitKind::Dialogue);
+        assert_eq!(godot_kind("First line\nSecond line"), UnitKind::Dialogue);
     }
 
     #[test]
