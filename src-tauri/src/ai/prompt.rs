@@ -9,6 +9,13 @@ use crate::ai::BatchReq;
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
+/// Instruction used for standalone glossary entries. Unlike game dialogue, a
+/// glossary term has no trustworthy scene, speaker, or neighbouring line, so
+/// the model must not invent one to make the wording sound more natural.
+pub fn glossary_term_directive() -> &'static str {
+    "The supplied items are standalone glossary terms, not dialogue. Translate them directly and literally as far as the source permits. Do not invent an unprovided scene, speaker, or conversational context."
+}
+
 /// Build the (system, user) message pair for a batch.
 pub fn build_messages(req: &BatchReq) -> (String, String) {
     let mut sys = String::new();
@@ -694,6 +701,18 @@ mod tests {
         assert!(sys.contains("⟦0⟧")); // placeholder rule, shown because the item has a code
         assert!(sys.contains("HP => พลังชีวิต"));
         assert!(user.contains("Hello ⟦0⟧"));
+    }
+
+    #[test]
+    fn glossary_term_directive_requires_literal_standalone_translation() {
+        let mut r = req(vec!["Anyhow shoot"]);
+        r.glossary.clear();
+        r.extra_system = Some(glossary_term_directive().into());
+        let (sys, user) = build_messages(&r);
+        assert!(sys.contains("standalone glossary terms"));
+        assert!(sys.contains("directly and literally"));
+        assert!(sys.contains("Do not invent"));
+        assert!(user.contains("Anyhow shoot"));
     }
 
     #[test]

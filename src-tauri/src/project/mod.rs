@@ -159,8 +159,9 @@ pub fn rescan(project: &mut Project) -> Result<(usize, usize, usize)> {
     // An in-place export deliberately changes the live game files. Re-scanning
     // those bytes would then insert the Thai output as a new *source* row (and
     // its shifted byte offsets), even though `.rpgtl/source` has the original.
-    // For MV/MZ, scan a short-lived mirror overlaid with those originals instead.
-    let scan_root = mvmz_pristine_rescan_root(project)?;
+    // Scan a short-lived mirror overlaid with those originals instead for engines
+    // whose in-place export replaces their source table.
+    let scan_root = pristine_rescan_root(project)?;
     let extract_root = scan_root.as_deref().unwrap_or(&project.root);
     let extracted = eng.extract(
         extract_root,
@@ -761,6 +762,16 @@ fn build_mod_via_inject(
     Ok((touched.len(), note, warning))
 }
 
+/// Build a temporary game root for re-extraction from the original snapshots.
+/// Only engines whose in-place export replaces their source table need this.
+fn pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
+    match project.engine_id.as_str() {
+        "rpgmaker-mvmz" => mvmz_pristine_rescan_root(project),
+        "gamecreator" => gamecreator_pristine_rescan_root(project),
+        _ => Ok(None),
+    }
+}
+
 /// Make a temporary MV/MZ game root for re-extraction. Its normal data files are
 /// copied from the live game, then each file that has an original snapshot (or
 /// an older export backup) is overlaid by [`pristine_read_root`]. This prevents a
@@ -793,6 +804,48 @@ fn mvmz_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
         for entry in walkdir::WalkDir::new(&dir)
             .into_iter()
             .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            if let Ok(rel) = entry.path().strip_prefix(&dir) {
+                files.insert(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    if files.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(pristine_read_root(
+        project,
+        &files.into_iter().collect::<Vec<_>>(),
+    )?))
+}
+
+/// GameCreator's source is a runtime localization JSON under
+/// `asset/orzi/languages/`. Export replaces that table in place, so a subsequent
+/// rescan must see the snapshot, not the live Thai output. Its detector also
+/// needs one root-level runtime marker alongside the language table.
+fn gamecreator_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
+    let source_dir = rpgtl_dir(&project.root).join("source");
+    let backup_dirs = earliest_backup_dirs(&rpgtl_dir(&project.root).join("backups"));
+    if !source_dir.is_dir() && backup_dirs.is_empty() {
+        return Ok(None);
+    }
+
+    let mut files = BTreeSet::new();
+    for marker in ["script.js", "index.html"] {
+        if project.root.join(marker).is_file() {
+            files.insert(marker.to_string());
+        }
+    }
+    for dir in std::iter::once(source_dir).chain(backup_dirs) {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(&dir)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
         {
             if !entry.file_type().is_file() {
                 continue;

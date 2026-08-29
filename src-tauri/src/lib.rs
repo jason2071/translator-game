@@ -1606,8 +1606,10 @@ async fn translate_units(
     Ok(summary)
 }
 
-/// Translate arbitrary strings (e.g. glossary candidates) and return the
-/// results aligned to the input, without touching the project DB.
+/// Translate standalone glossary terms and return the results aligned to the
+/// input, without touching the project DB. Terms deliberately receive a
+/// literal/no-context instruction: unlike dialogue, a locale dictionary does
+/// not reliably say where a term appears in the game.
 ///
 /// Shares the Run pipeline's progress + cancel: it resets the same cancel flag,
 /// emits `translate://progress` after every item (one at a time), and honours
@@ -1700,7 +1702,7 @@ async fn translate_texts(
             source_lang: source_lang.clone(),
             target_lang: target_lang.clone(),
             tone: config.tone.clone().unwrap_or_else(|| "casual".into()),
-            extra_system: None,
+            extra_system: Some(ai::prompt::glossary_term_directive().into()),
             model: config.model.clone(),
             temperature: config.temperature(),
             max_tokens: config.max_tokens(),

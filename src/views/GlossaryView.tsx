@@ -782,7 +782,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
                   onClick={() => translateOne(c.term, glossaryConfig())}
                   disabled={glossBusy}
                   aria-label={`${done ? "Re-translate" : "Translate"} ${c.term} with AI`}
-                  title={done ? "Re-translate this term with AI" : "Translate this term with AI"}
+                  title={done ? "Re-translate this term literally with AI" : "Translate this term literally with AI"}
                 >
                   <Icon name="retry" size={14} />
                 </button>
@@ -851,7 +851,7 @@ function GlossRow({ entry, onChanged }: { entry: GlossaryEntry; onChanged: () =>
         <button
           className="iconbtn"
           aria-label={`Re-translate glossary term ${term} with AI`}
-          title="Re-translate this term with AI"
+          title="Re-translate this term literally with AI"
           onClick={retranslate}
           disabled={!term.trim() || retranslating || glossaryPhase !== "idle"}
         >
