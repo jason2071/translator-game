@@ -21,6 +21,7 @@ recipes built on top of that research.
 | Guide | Game / engine | What it covers |
 |-------|---------------|----------------|
 | [[translate-ac-origins]] | Assassin's Creed Origins (`ac-loctext`) | Full loop: extract text from the game (Forge/DATA tools + aclocexport) → translate in the app → repack + install |
+| [[translate-unity-xunity]] | Unity (`xunity`) | XUnity cache → translate in the app → reload Thai in the game; Mono and IL2CPP setup |
 
 ## ดูเพิ่ม
 
