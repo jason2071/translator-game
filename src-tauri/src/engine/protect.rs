@@ -113,6 +113,10 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         // KiriKiri shares TyranoScript's KAG tag syntax, so it masks the same way.
         "tyrano" | "kirikiri" => mask_tyrano(input),
         "godot" => mask_godot(input),
+        // GameCreator locale values use HTML spans plus the same placeholder
+        // shapes as other JavaScript runtimes. Its U+0005 command payloads are
+        // masked whole so a manual unit can never translate their internals.
+        "gamecreator" => mask_gamecreator(input),
         // Forger `.acod` uses HTML-ish angle tags plus `{}`/`[]`/`%` placeholders.
         "forger-acod" => mask_forger(input),
         // AC Origins aclocexport text: angle tags + `[…]` audio cues only.
@@ -314,6 +318,35 @@ pub fn mask_godot(input: &str) -> Masked {
             text.push(OPEN);
             text.push_str(&idx.to_string());
             text.push(CLOSE);
+            i += len;
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap();
+        text.push(ch);
+        i += ch.len_utf8();
+    }
+    Masked { text, tokens }
+}
+
+/// Mask GameCreator localization markup. Runtime labels use HTML-like `<span>`
+/// tags and ordinary `{}` / `[]` / printf placeholders; `\u{0005}…\u{0005}` wraps
+/// serialized command data, which must remain byte-for-byte unchanged.
+pub fn mask_gamecreator(input: &str) -> Masked {
+    let mut text = String::with_capacity(input.len());
+    let mut tokens: Vec<String> = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < input.len() {
+        let len = match bytes[i] {
+            0x05 => input[i + 1..].find('\u{0005}').map(|end| end + 2),
+            b'<' => angle_tag_len(&input[i..]),
+            b'{' => bracket_len(&input[i..], b'{', b'}'),
+            b'[' => bracket_len(&input[i..], b'[', b']'),
+            b'%' => printf_len(&input[i..]),
+            _ => None,
+        };
+        if let Some(len) = len {
+            push_token(&mut text, &mut tokens, &input[i..i + len]);
             i += len;
             continue;
         }
@@ -965,6 +998,8 @@ mod tests {
         // Godot masks format braces and printf conversions.
         assert!(!mask_for("godot", "Level {0}").is_plain());
         assert!(!mask_for("godot", "You have %d gold").is_plain());
+        // GameCreator masks HTML spans and placeholders in its locale JSON.
+        assert!(!mask_for("gamecreator", "<span>Level {0}</span>").is_plain());
         // Forger masks angle tags and `{}` variables.
         assert!(!mask_for("forger-acod", "<font face='X'>hi</font>").is_plain());
         assert!(!mask_for("forger-acod", "Hello {PlayerName}").is_plain());
