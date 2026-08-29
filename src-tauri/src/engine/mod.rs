@@ -15,6 +15,7 @@ pub mod ac_loctext;
 pub mod codes;
 pub mod encoding;
 pub mod forger_acod;
+pub mod gamecreator;
 pub mod godot;
 pub mod hendrix;
 pub mod kirikiri;
@@ -176,6 +177,10 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // Godot needs its own `project.godot` fingerprint, so it never overlaps
         // the others; order is immaterial.
         Box::new(godot::GodotEngine),
+        // GameCreator games ship their runtime localization tables in the
+        // distinctive `asset/orzi/languages/` tree. It does not overlap the
+        // JSON-based RPGMaker engine (which requires `data/System.json`).
+        Box::new(gamecreator::GameCreatorEngine),
         // Forger `.acod` string tables (Assassin's Creed). Unique extension +
         // UTF-16LE BOM fingerprint, so it never overlaps the others; order is
         // immaterial. Kept last as the most specialized/niche target.
