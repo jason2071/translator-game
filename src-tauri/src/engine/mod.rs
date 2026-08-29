@@ -21,8 +21,8 @@ pub mod kirikiri;
 pub mod mvmz;
 pub mod protect;
 pub mod renpy;
-pub mod rpa;
 pub mod renpy_tl;
+pub mod rpa;
 pub mod tyrano;
 pub mod unrpyc;
 pub mod xunity;
@@ -60,7 +60,9 @@ pub mod font_restore {
     /// `.rpgtl/source/` (translation-data files) — at embed time they already hold
     /// translated bytes, and `source/` reverts them correctly.
     pub fn snapshot_original(root: &Path, abs: &Path) {
-        let Ok(rel) = abs.strip_prefix(root) else { return };
+        let Ok(rel) = abs.strip_prefix(root) else {
+            return;
+        };
         let snap = dir(root).join("original").join(rel);
         if snap.exists() || !abs.exists() {
             return;
@@ -73,7 +75,9 @@ pub mod font_restore {
 
     /// Record a newly-created file (inside `root`) so restore deletes it. Deduped.
     pub fn mark_added(root: &Path, abs: &Path) {
-        let Ok(rel) = abs.strip_prefix(root) else { return };
+        let Ok(rel) = abs.strip_prefix(root) else {
+            return;
+        };
         let rel = rel.to_string_lossy().replace('\\', "/");
         let list = dir(root).join("added.txt");
         if let Some(p) = list.parent() {

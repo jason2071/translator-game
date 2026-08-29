@@ -106,7 +106,12 @@ async fn ai_translate(
         let end = (start + batch).min(texts.len());
         let req = BatchReq {
             items: (start..end)
-                .map(|i| BatchItem { id: i as i64, text: masks[i].text.clone(), context: None, neighbors: None })
+                .map(|i| BatchItem {
+                    id: i as i64,
+                    text: masks[i].text.clone(),
+                    context: None,
+                    neighbors: None,
+                })
                 .collect(),
             glossary: vec![],
             source_lang: src.into(),
@@ -118,8 +123,7 @@ async fn ai_translate(
             max_tokens: 4096,
             thinking: Some(false),
         };
-        let res =
-            ai::translate_batch_or_split(provider.as_ref(), &client, None, &req).await;
+        let res = ai::translate_batch_or_split(provider.as_ref(), &client, None, &req).await;
         for (off, r) in res.into_iter().enumerate() {
             out.push(r.and_then(|m| protect::restore(&m, &masks[start + off].tokens).ok()));
         }
@@ -136,8 +140,14 @@ fn open_db(path: &str) -> Connection {
 /// Read source/target languages from a project.db (fallback Japanese -> Thai).
 fn langs(conn: &Connection) -> (String, String) {
     (
-        db::get_meta(conn, "source_lang").ok().flatten().unwrap_or_else(|| "Japanese".into()),
-        db::get_meta(conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into()),
+        db::get_meta(conn, "source_lang")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "Japanese".into()),
+        db::get_meta(conn, "target_lang")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "Thai".into()),
     )
 }
 
@@ -156,7 +166,12 @@ fn cmd_extract(rest: &[String]) {
         return println!("NOT DETECTED");
     };
     let d = eng.describe(&root).unwrap();
-    println!("engine={}  data_dir={}  json_files={}", eng.id(), d.data_dir, d.file_count);
+    println!(
+        "engine={}  data_dir={}  json_files={}",
+        eng.id(),
+        d.data_dir,
+        d.file_count
+    );
 
     let units = eng.extract(&root, &ExtractOpts::default()).unwrap();
     println!("units: {}", units.len());
@@ -230,7 +245,9 @@ fn cmd_stats(rest: &[String]) {
         .unwrap();
     let saved = tot - dis;
     let pct = if tot > 0 { 100 * saved / tot } else { 0 };
-    println!("untranslated units={tot}  distinct sources={dis}  dedup saves {saved} AI calls ({pct}%)");
+    println!(
+        "untranslated units={tot}  distinct sources={dis}  dedup saves {saved} AI calls ({pct}%)"
+    );
 }
 
 async fn cmd_ai(rest: &[String]) {
@@ -252,10 +269,18 @@ async fn cmd_ai(rest: &[String]) {
         .collect();
 
     let texts: Vec<String> = picks.iter().map(|u| u.source.clone()).collect();
-    println!("[{}] translating {} lines via {model}…\n", eng.id(), texts.len());
+    println!(
+        "[{}] translating {} lines via {model}…\n",
+        eng.id(),
+        texts.len()
+    );
     let out = ai_translate(eng.id(), model, &texts, "auto", "Thai").await;
     for (i, u) in picks.iter().enumerate() {
-        println!("SRC: {}\nTH:  {}\n", u.source, out[i].clone().unwrap_or_else(|| "[FAILED]".into()));
+        println!(
+            "SRC: {}\nTH:  {}\n",
+            u.source,
+            out[i].clone().unwrap_or_else(|| "[FAILED]".into())
+        );
     }
 }
 
@@ -268,9 +293,15 @@ async fn cmd_glossary(rest: &[String]) {
 
     let conn = open_db(dbp);
     let (src, tgt) = langs(&conn);
-    let engine = db::get_meta(&conn, "engine_id").ok().flatten().unwrap_or_default();
+    let engine = db::get_meta(&conn, "engine_id")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     let cands = db::suggest_glossary(&conn).unwrap();
-    println!("suggest_glossary: {} candidates. Translating first {n} ({src}->{tgt})…\n", cands.len());
+    println!(
+        "suggest_glossary: {} candidates. Translating first {n} ({src}->{tgt})…\n",
+        cands.len()
+    );
     let pick: Vec<_> = cands.into_iter().take(n).collect();
 
     let texts: Vec<String> = pick.iter().map(|c| c.term.clone()).collect();
@@ -278,7 +309,10 @@ async fn cmd_glossary(rest: &[String]) {
     for (i, c) in pick.iter().enumerate() {
         let prefill = c.translation.clone().unwrap_or_else(|| "-".into());
         let ai = out[i].clone().unwrap_or_else(|| "[FAILED]".into());
-        println!("{:<22} {:<9} x{:<3} prefill={:<10} AI={}", c.term, c.kind, c.count, prefill, ai);
+        println!(
+            "{:<22} {:<9} x{:<3} prefill={:<10} AI={}",
+            c.term, c.kind, c.count, prefill, ai
+        );
     }
 }
 
@@ -313,7 +347,10 @@ fn cmd_export(rest: &[String]) {
     println!("applied files: {}", touched.len());
 
     let r1 = app_lib::project::export(&mut project, true, false).expect("export #1");
-    println!("export #1: files_written={} units_applied={}", r1.files_written, r1.units_applied);
+    println!(
+        "export #1: files_written={} units_applied={}",
+        r1.files_written, r1.units_applied
+    );
     let after1: BTreeMap<String, Vec<u8>> = touched
         .iter()
         .map(|f| (f.clone(), std::fs::read(data.join(f)).unwrap_or_default()))
@@ -350,7 +387,10 @@ fn cmd_export(rest: &[String]) {
             if invalid == 0 { "OK" } else { "FAIL" }
         );
     }
-    println!("snapshot dir created: {}", root.join(".rpgtl/source").exists());
+    println!(
+        "snapshot dir created: {}",
+        root.join(".rpgtl/source").exists()
+    );
 }
 
 /// Reconcile a project's DB against the CURRENT (fixed) extractor: find units the
@@ -399,7 +439,10 @@ fn cmd_reconcile(rest: &[String]) {
         bogus.len()
     );
     for u in bogus.iter().take(25) {
-        println!("  BOGUS {}@{}  src={:?}  tr={:?}", u.file, u.pointer, u.source, u.translation);
+        println!(
+            "  BOGUS {}@{}  src={:?}  tr={:?}",
+            u.file, u.pointer, u.source, u.translation
+        );
     }
 
     if !apply {
@@ -411,7 +454,10 @@ fn cmd_reconcile(rest: &[String]) {
     }
     println!("\nreverted {} bogus units to Untranslated", bogus.len());
     let r = app_lib::project::export(&mut project, true, false).expect("re-export");
-    println!("re-exported: files_written={} units_applied={}", r.files_written, r.units_applied);
+    println!(
+        "re-exported: files_written={} units_applied={}",
+        r.files_written, r.units_applied
+    );
 }
 
 /// Validate the Ren'Py translation-identifier parser against a ground-truth
@@ -444,7 +490,11 @@ fn cmd_tlcheck(rest: &[String]) {
 
     let (mut total, mut matched, mut mism_files) = (0usize, 0usize, 0usize);
     for p in &files {
-        let rel = p.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = p
+            .strip_prefix(&dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         let content = match std::fs::read_to_string(p) {
             Ok(c) => c,
             Err(_) => continue,
@@ -465,9 +515,16 @@ fn cmd_tlcheck(rest: &[String]) {
             // Report the first divergence.
             let n = mine.len().min(orc_ids.len());
             let first = (0..n).find(|&i| mine[i] != orc_ids[i]);
-            println!("MISMATCH {rel}: mine={} oracle={}", mine.len(), orc_ids.len());
+            println!(
+                "MISMATCH {rel}: mine={} oracle={}",
+                mine.len(),
+                orc_ids.len()
+            );
             if let Some(i) = first {
-                println!("  first diff at #{i}: mine={:?} oracle={:?}", mine[i], orc_ids[i]);
+                println!(
+                    "  first diff at #{i}: mine={:?} oracle={:?}",
+                    mine[i], orc_ids[i]
+                );
             }
             matched += (0..n).filter(|&i| mine[i] == orc_ids[i]).count();
         }
@@ -478,7 +535,11 @@ fn cmd_tlcheck(rest: &[String]) {
         mism_files,
         total,
         matched,
-        if total > 0 { 100.0 * matched as f64 / total as f64 } else { 100.0 }
+        if total > 0 {
+            100.0 * matched as f64 / total as f64
+        } else {
+            100.0
+        }
     );
 }
 
@@ -494,7 +555,10 @@ fn cmd_tlfill(rest: &[String]) {
     let dir = engine::renpy::game_dir(&root).expect("not a Ren'Py game");
     let tl = dir.join("tl").join(lang);
     if !tl.is_dir() {
-        return eprintln!("no {} — run `<game>.exe <dir> translate {lang}` first", tl.display());
+        return eprintln!(
+            "no {} — run `<game>.exe <dir> translate {lang}` first",
+            tl.display()
+        );
     }
 
     let conn = open_db(root.join(".rpgtl/project.db").to_str().unwrap());
@@ -539,7 +603,10 @@ fn cmd_tlexport(rest: &[String]) {
     };
     let root = PathBuf::from(game);
     let conn = open_db(root.join(".rpgtl/project.db").to_str().unwrap());
-    let lang = db::get_meta(&conn, "target_lang").ok().flatten().unwrap_or_else(|| "thai".into());
+    let lang = db::get_meta(&conn, "target_lang")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "thai".into());
     let units = db::all_units(&conn).unwrap();
     let data_dir = engine::renpy::game_dir(&root).expect("not a Ren'Py game");
     // Same glossary the app passes: names the game shows through a variable are
@@ -549,9 +616,17 @@ fn cmd_tlexport(rest: &[String]) {
         .into_iter()
         .map(|g| (g.term, g.translation))
         .collect();
-    println!("target_lang={lang}  units={}  glossary={}", units.len(), glossary.len());
+    println!(
+        "target_lang={lang}  units={}  glossary={}",
+        units.len(),
+        glossary.len()
+    );
     match engine::renpy::export_tl(&root, &data_dir, &units, &lang, true, &glossary) {
-        Ok(Some(tl)) => println!("OK: filled {} tl files under {}", tl.files, tl.dir.display()),
+        Ok(Some(tl)) => println!(
+            "OK: filled {} tl files under {}",
+            tl.files,
+            tl.dir.display()
+        ),
         Ok(None) => println!("no bundled Ren'Py launcher — would fall back to in-place inject"),
         Err(e) => println!("ERROR: {e:#}"),
     }
@@ -583,11 +658,18 @@ async fn cmd_one(rest: &[String]) {
     let model = arg(rest, 1).unwrap_or("gemma4:12b");
     let conn = open_db(dbp);
     let (src, tgt) = langs(&conn);
-    let engine = db::get_meta(&conn, "engine_id").ok().flatten().unwrap_or_default();
+    let engine = db::get_meta(&conn, "engine_id")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
 
     let candidates = db::list_units(
         &conn,
-        &UnitFilter { untranslated_only: Some(true), limit: Some(200), ..Default::default() },
+        &UnitFilter {
+            untranslated_only: Some(true),
+            limit: Some(200),
+            ..Default::default()
+        },
     )
     .unwrap();
     let Some(unit) = candidates

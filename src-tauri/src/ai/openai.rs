@@ -64,7 +64,11 @@ impl OpenAiCompat {
         max_tokens: u32,
         thinking: Option<bool>,
     ) -> Option<String> {
-        let root = self.base.strip_suffix("/v1").unwrap_or(&self.base).trim_end_matches('/');
+        let root = self
+            .base
+            .strip_suffix("/v1")
+            .unwrap_or(&self.base)
+            .trim_end_matches('/');
         let url = format!("{root}/api/chat");
         let mut body = json!({
             "model": model,
@@ -110,7 +114,15 @@ impl TranslationProvider for OpenAiCompat {
         // it isn't Ollama (e.g. LM Studio) or the call fails.
         if self.is_local {
             if let Some(content) = self
-                .ollama_chat(client, &sys, &user, &req.model, req.temperature, req.max_tokens, req.thinking)
+                .ollama_chat(
+                    client,
+                    &sys,
+                    &user,
+                    &req.model,
+                    req.temperature,
+                    req.max_tokens,
+                    req.thinking,
+                )
                 .await
             {
                 return parse_batch_response(&content, req.items.len());
@@ -162,8 +174,8 @@ impl TranslationProvider for OpenAiCompat {
                 .await
                 .map_err(|e| CallError::Retryable(e.into()))?;
             if status.is_success() {
-                let v: serde_json::Value = serde_json::from_str(&text)
-                    .map_err(|e| CallError::Fatal(e.into()))?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| CallError::Fatal(e.into()))?;
                 v["choices"][0]["message"]["content"]
                     .as_str()
                     .map(str::to_string)
@@ -236,9 +248,15 @@ impl TranslationProvider for OpenAiCompat {
                     .header("HTTP-Referer", "https://github.com/rpgtl")
                     .header("X-Title", "RPGMaker Translator");
             }
-            let resp = rb.send().await.map_err(|e| CallError::Retryable(e.into()))?;
+            let resp = rb
+                .send()
+                .await
+                .map_err(|e| CallError::Retryable(e.into()))?;
             let status = resp.status();
-            let text = resp.text().await.map_err(|e| CallError::Retryable(e.into()))?;
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| CallError::Retryable(e.into()))?;
             if status.is_success() {
                 let v: serde_json::Value =
                     serde_json::from_str(&text).map_err(|e| CallError::Fatal(e.into()))?;

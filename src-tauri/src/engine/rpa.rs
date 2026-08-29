@@ -74,11 +74,7 @@ pub fn extract_rpyc(archive: &Path, out_dir: &Path) -> Result<usize> {
 /// Extract every archive entry whose name satisfies `keep` into `out_dir`,
 /// re-creating the internal directory structure and never clobbering an existing
 /// file. Backs [`extract_rpy`] / [`extract_rpyc`]. Returns how many were written.
-fn extract_matching(
-    archive: &Path,
-    out_dir: &Path,
-    keep: impl Fn(&str) -> bool,
-) -> Result<usize> {
+fn extract_matching(archive: &Path, out_dir: &Path, keep: impl Fn(&str) -> bool) -> Result<usize> {
     let index = read_index(archive)?;
     let mut f = File::open(archive).with_context(|| format!("opening {}", archive.display()))?;
     let mut written = 0usize;
@@ -86,8 +82,7 @@ fn extract_matching(
         if !keep(name) {
             continue;
         }
-        let rel = safe_relative(name)
-            .ok_or_else(|| anyhow!("unsafe path in archive: {name}"))?;
+        let rel = safe_relative(name).ok_or_else(|| anyhow!("unsafe path in archive: {name}"))?;
         let dest = out_dir.join(&rel);
         if dest.exists() {
             continue;
@@ -170,7 +165,9 @@ fn parse_index(value: Value, key: u64) -> Result<Index> {
         let Value::List(entries) = v else { continue };
         let mut segments = Vec::with_capacity(entries.len());
         for entry in entries {
-            let Value::Tuple(fields) = entry else { continue };
+            let Value::Tuple(fields) = entry else {
+                continue;
+            };
             if fields.len() < 2 {
                 continue;
             }
@@ -377,8 +374,14 @@ mod tests {
         assert!(safe_relative("../evil.rpy").is_none());
         assert!(safe_relative("a/../../evil.rpy").is_none());
         assert!(safe_relative("/etc/passwd").is_some()); // leading slash → relative
-        assert_eq!(safe_relative("/etc/passwd").unwrap(), PathBuf::from("etc/passwd"));
+        assert_eq!(
+            safe_relative("/etc/passwd").unwrap(),
+            PathBuf::from("etc/passwd")
+        );
         assert!(safe_relative("C:\\windows\\x.rpy").is_none()); // drive letter
-        assert_eq!(safe_relative("a/b/c.rpy").unwrap(), PathBuf::from("a/b/c.rpy"));
+        assert_eq!(
+            safe_relative("a/b/c.rpy").unwrap(),
+            PathBuf::from("a/b/c.rpy")
+        );
     }
 }

@@ -6,7 +6,12 @@ fn main() {
     let root = std::path::PathBuf::from(std::env::args().nth(1).expect("usage: probe <game root>"));
     let eng = engine::detect(&root).expect("no engine detected");
     let d = eng.describe(&root).unwrap();
-    println!("engine={} name={} files={}", eng.id(), d.engine_name, d.file_count);
+    println!(
+        "engine={} name={} files={}",
+        eng.id(),
+        d.engine_name,
+        d.file_count
+    );
     let units = eng.extract(&root, &ExtractOpts::default()).unwrap();
     println!("units={}", units.len());
     let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
@@ -31,7 +36,11 @@ fn main() {
     if needles.is_empty() {
         println!("--- samples ---");
         for u in units.iter().take(8) {
-            println!("[{:?}] {}", u.kind, u.source.chars().take(60).collect::<String>());
+            println!(
+                "[{:?}] {}",
+                u.kind,
+                u.source.chars().take(60).collect::<String>()
+            );
         }
     } else {
         println!("--- lookups ---");

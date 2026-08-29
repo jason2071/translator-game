@@ -73,10 +73,16 @@ fn open_edit_export_reopen() {
 
     // The game's System.json now carries the translation...
     let patched = read_json(&root.join("data").join("System.json"));
-    assert_eq!(patched.pointer("/gameTitle").unwrap().as_str().unwrap(), "ทดสอบเควส");
+    assert_eq!(
+        patched.pointer("/gameTitle").unwrap().as_str().unwrap(),
+        "ทดสอบเควส"
+    );
     // ...and a pristine backup of the original still says "Test Quest".
     let backed = read_json(&Path::new(&backup_dir).join("System.json"));
-    assert_eq!(backed.pointer("/gameTitle").unwrap().as_str().unwrap(), "Test Quest");
+    assert_eq!(
+        backed.pointer("/gameTitle").unwrap().as_str().unwrap(),
+        "Test Quest"
+    );
 
     // Reopen: not fresh, and the edit persisted.
     drop(proj);
@@ -104,8 +110,13 @@ fn export_mod_zips_the_translation_without_touching_the_game() {
     )
     .unwrap();
     let title = units.iter().find(|u| u.pointer == "/gameTitle").unwrap();
-    project::db::update_unit(&proj.conn, title.id, Some("ทดสอบเควส"), Status::Translated.as_str())
-        .unwrap();
+    project::db::update_unit(
+        &proj.conn,
+        title.id,
+        Some("ทดสอบเควส"),
+        Status::Translated.as_str(),
+    )
+    .unwrap();
 
     let sys = root.join("data").join("System.json");
     let before = std::fs::read(&sys).unwrap();
@@ -117,16 +128,25 @@ fn export_mod_zips_the_translation_without_touching_the_game() {
     assert_eq!(r.units_applied, 1);
 
     // The game itself is untouched by a mod export.
-    assert_eq!(std::fs::read(&sys).unwrap(), before, "mod export must not modify the game");
+    assert_eq!(
+        std::fs::read(&sys).unwrap(),
+        before,
+        "mod export must not modify the game"
+    );
 
     // The zip carries data/System.json with the translated title.
     let f = std::fs::File::open(zip_path).unwrap();
     let mut zip = zip::ZipArchive::new(f).unwrap();
-    let mut entry = zip.by_name("data/System.json").expect("data/System.json in the mod zip");
+    let mut entry = zip
+        .by_name("data/System.json")
+        .expect("data/System.json in the mod zip");
     let mut buf = String::new();
     entry.read_to_string(&mut buf).unwrap();
     let val: serde_json::Value = serde_json::from_str(&buf).unwrap();
-    assert_eq!(val.pointer("/gameTitle").unwrap().as_str().unwrap(), "ทดสอบเควส");
+    assert_eq!(
+        val.pointer("/gameTitle").unwrap().as_str().unwrap(),
+        "ทดสอบเควส"
+    );
 }
 
 /// A minimal Godot project (byte-span text engine) for the generic mod path.
@@ -135,7 +155,11 @@ fn godot_game() -> (tempfile::TempDir, PathBuf) {
     let root = tmp.path().join("game");
     std::fs::create_dir_all(root.join("loc")).unwrap();
     std::fs::write(root.join("project.godot"), b"config_version=5\n").unwrap();
-    std::fs::write(root.join("loc").join("ui.csv"), b"keys,en\nGREET,Hello\nBYE,Goodbye\n").unwrap();
+    std::fs::write(
+        root.join("loc").join("ui.csv"),
+        b"keys,en\nGREET,Hello\nBYE,Goodbye\n",
+    )
+    .unwrap();
     (tmp, root)
 }
 
@@ -143,7 +167,9 @@ fn zip_entry(zip_path: &str, name: &str) -> String {
     use std::io::Read;
     let f = std::fs::File::open(zip_path).unwrap();
     let mut zip = zip::ZipArchive::new(f).unwrap();
-    let mut e = zip.by_name(name).unwrap_or_else(|_| panic!("{name} in zip"));
+    let mut e = zip
+        .by_name(name)
+        .unwrap_or_else(|_| panic!("{name} in zip"));
     let mut s = String::new();
     e.read_to_string(&mut s).unwrap();
     s
@@ -155,8 +181,13 @@ fn export_mod_byte_span_engine_leaves_the_game_untouched() {
     let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
     let units = project::db::list_units(&proj.conn, &UnitFilter::default()).unwrap();
     let greet = units.iter().find(|u| u.source == "Hello").unwrap();
-    project::db::update_unit(&proj.conn, greet.id, Some("สวัสดี"), Status::Translated.as_str())
-        .unwrap();
+    project::db::update_unit(
+        &proj.conn,
+        greet.id,
+        Some("สวัสดี"),
+        Status::Translated.as_str(),
+    )
+    .unwrap();
 
     let csv = root.join("loc").join("ui.csv");
     let before = std::fs::read(&csv).unwrap();
@@ -166,7 +197,11 @@ fn export_mod_byte_span_engine_leaves_the_game_untouched() {
     let s = zip_entry(&r.zip_path, "loc/ui.csv");
     assert!(s.contains("GREET,สวัสดี"), "mod carries the translation");
     assert!(s.contains("BYE,Goodbye"), "untranslated row intact");
-    assert_eq!(std::fs::read(&csv).unwrap(), before, "mod export must not touch the game");
+    assert_eq!(
+        std::fs::read(&csv).unwrap(),
+        before,
+        "mod export must not touch the game"
+    );
 }
 
 #[test]
@@ -175,8 +210,13 @@ fn export_mod_reads_pristine_bytes_after_a_prior_inplace_export() {
     let (mut proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
     let units = project::db::list_units(&proj.conn, &UnitFilter::default()).unwrap();
     let greet = units.iter().find(|u| u.source == "Hello").unwrap();
-    project::db::update_unit(&proj.conn, greet.id, Some("สวัสดี"), Status::Translated.as_str())
-        .unwrap();
+    project::db::update_unit(
+        &proj.conn,
+        greet.id,
+        Some("สวัสดี"),
+        Status::Translated.as_str(),
+    )
+    .unwrap();
 
     // In-place export first: the game CSV is now translated (byte layout changed).
     project::export(&mut proj, true, false).unwrap();
@@ -189,6 +229,10 @@ fn export_mod_reads_pristine_bytes_after_a_prior_inplace_export() {
     let s = zip_entry(&r.zip_path, "loc/ui.csv");
     assert!(s.contains("GREET,สวัสดี"), "mod carries the translation");
     assert!(s.contains("BYE,Goodbye"), "untranslated row intact");
-    assert_eq!(s.matches("สวัสดี").count(), 1, "exactly one clean splice (no doubling/corruption)");
+    assert_eq!(
+        s.matches("สวัสดี").count(),
+        1,
+        "exactly one clean splice (no doubling/corruption)"
+    );
     // The result is valid UTF-8 already (read_to_string above would have failed otherwise).
 }

@@ -1215,7 +1215,7 @@ fn inn_json_scalar_kind(key: &str) -> Option<UnitKind> {
         // `calendarLabel` is the player-facing guest/route name used by
         // Inn15DayCore's room-assignment menu (for example "レオン").
         "label" | "calendarLabel" => Some(UnitKind::Other),
-        "hint" | "text" => Some(UnitKind::Message),
+        "hint" | "text" | "notebookLine" => Some(UnitKind::Message),
         "question" => Some(UnitKind::Choice),
         _ => None,
     }
@@ -1223,9 +1223,17 @@ fn inn_json_scalar_kind(key: &str) -> Option<UnitKind> {
 
 fn inn_json_list_kind(key: &str) -> Option<UnitKind> {
     match key {
-        "lines" | "foundLines" | "questionPreludeLines" | "questionAfterLines" => {
-            Some(UnitKind::Dialogue)
-        }
+        // These files are a small custom scenario format. Besides the ordinary
+        // scene lines, several player-facing descriptions are stored as bare
+        // string arrays rather than named JSON scalars.
+        "lines"
+        | "foundLines"
+        | "questionPreludeLines"
+        | "questionAfterLines"
+        | "publicProfile"
+        | "workLines"
+        | "preludeLines"
+        | "aftermathLines" => Some(UnitKind::Dialogue),
         _ => None,
     }
 }
@@ -1852,6 +1860,47 @@ mod tests {
         }));
         assert!(units.iter().any(|unit| {
             unit.pointer == "/routes/4/calendarLabel" && unit.source == "商人一行"
+        }));
+    }
+
+    #[test]
+    fn inn_scenario_extracts_profile_and_scene_line_arrays() {
+        let value: Value = serde_json::json!({
+            "routes": {
+                "1": { "publicProfile": ["若い騎士。礼儀正しく、落ち着いた物腰の客だ。"] }
+            },
+            "areas": [{ "workLines": ["帳場を拭いた。"] }],
+            "main": {
+                "leon_1": {
+                    "preludeLines": ["レオンはエレナを呼び出した。"],
+                    "aftermathLines": ["夜明け前、扉が閉じた。"]
+                }
+            },
+            "groups": { "L-E": { "notebookLine": "エレナは何も話さなかった。" } }
+        });
+        let mut units = Vec::new();
+        extract_inn_scenario_json("Inn15DayCore.json", &value, &mut units);
+
+        for (pointer, source) in [
+            (
+                "/routes/1/publicProfile/0",
+                "若い騎士。礼儀正しく、落ち着いた物腰の客だ。",
+            ),
+            ("/areas/0/workLines/0", "帳場を拭いた。"),
+            (
+                "/main/leon_1/preludeLines/0",
+                "レオンはエレナを呼び出した。",
+            ),
+            ("/main/leon_1/aftermathLines/0", "夜明け前、扉が閉じた。"),
+        ] {
+            assert!(units.iter().any(|unit| {
+                unit.pointer == pointer && unit.source == source && unit.kind == UnitKind::Dialogue
+            }));
+        }
+        assert!(units.iter().any(|unit| {
+            unit.pointer == "/groups/L-E/notebookLine"
+                && unit.source == "エレナは何も話さなかった。"
+                && unit.kind == UnitKind::Message
         }));
     }
 

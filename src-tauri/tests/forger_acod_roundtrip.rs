@@ -56,9 +56,15 @@ fn game() -> tempfile::TempDir {
         root,
         "Kassandra_UI.acod",
         &acod(&[
-            ("07270E50", "<font face='DINPro_Bold'>I wish I could retire.</font>"),
+            (
+                "07270E50",
+                "<font face='DINPro_Bold'>I wish I could retire.</font>",
+            ),
             ("000D1792", "Choose now, hurry!"),
-            ("00093521", "Your save is corrupt.<br/>Overwrite and restart?"),
+            (
+                "00093521",
+                "Your save is corrupt.<br/>Overwrite and restart?",
+            ),
             ("DEADBEEF", ""), // valid key, empty value → not a unit
         ]),
     );
@@ -95,14 +101,19 @@ fn extract_reads_records_and_skips_empty_and_non_records() {
     assert!(texts.contains(&"Your save is corrupt.<br/>Overwrite and restart?"));
     assert!(texts.contains(&"Are you Anthousa?"));
     assert!(texts.contains(&"Where did they go, {PlayerName}?"));
-    assert!(texts.iter().any(|t| t.contains("<font face='DINPro_Bold'>")));
+    assert!(texts
+        .iter()
+        .any(|t| t.contains("<font face='DINPro_Bold'>")));
 
     // Empty-value record is skipped; there are exactly five units.
     assert_eq!(units.len(), 5);
     assert!(!texts.iter().any(|t| t.is_empty()));
 
     // HEXID is carried as context; everything is Dialogue.
-    let anth = units.iter().find(|u| u.source == "Are you Anthousa?").unwrap();
+    let anth = units
+        .iter()
+        .find(|u| u.source == "Are you Anthousa?")
+        .unwrap();
     assert_eq!(anth.context.as_deref(), Some("000D19DE"));
     assert!(units.iter().all(|u| u.kind == UnitKind::Dialogue));
 }
@@ -147,7 +158,8 @@ fn inject_replaces_only_the_value_span() {
     u.status = Status::Translated;
 
     let out = tempfile::tempdir().unwrap();
-    eng.inject(root, std::slice::from_ref(&u), out.path()).unwrap();
+    eng.inject(root, std::slice::from_ref(&u), out.path())
+        .unwrap();
 
     let bytes = std::fs::read(out.path().join(&u.file)).unwrap();
     let text = read_utf16le(&bytes);

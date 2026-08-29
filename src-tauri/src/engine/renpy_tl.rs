@@ -268,9 +268,29 @@ fn last_quoted(line: &str) -> Option<(usize, usize)> {
 fn is_say_statement(trimmed: &str) -> bool {
     !matches!(
         trimmed.split_whitespace().next().unwrap_or(""),
-        "voice" | "play" | "queue" | "stop" | "show" | "hide" | "scene" | "with"
-            | "window" | "pause" | "nvl" | "camera" | "call" | "jump" | "return"
-            | "$" | "python" | "pass" | "if" | "elif" | "else" | "while" | "for"
+        "voice"
+            | "play"
+            | "queue"
+            | "stop"
+            | "show"
+            | "hide"
+            | "scene"
+            | "with"
+            | "window"
+            | "pause"
+            | "nvl"
+            | "camera"
+            | "call"
+            | "jump"
+            | "return"
+            | "$"
+            | "python"
+            | "pass"
+            | "if"
+            | "elif"
+            | "else"
+            | "while"
+            | "for"
     )
 }
 
@@ -351,7 +371,11 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
                 if let Some(old) = pending_old.take() {
                     if let Some(tr) = lookup(&old) {
                         let tr = escape_percent_like(&old, &decode_escapes(&tr));
-                        push_line(&mut out, &format!("{indent}new \"{}\"", quote_unicode(&tr)), nl);
+                        push_line(
+                            &mut out,
+                            &format!("{indent}new \"{}\"", quote_unicode(&tr)),
+                            nl,
+                        );
                         continue;
                     }
                 }
@@ -379,7 +403,10 @@ pub fn fill_tl(content: &str, lookup: &impl Fn(&str) -> Option<String>) -> Strin
                 if let Some(tr) = lookup(src) {
                     let mut rebuilt = String::new();
                     rebuilt.push_str(&body[..s - 1]); // up to and incl. the opening quote's position
-                    rebuilt.push_str(&encode_say_string(&escape_percent_like(src, &decode_escapes(&tr))));
+                    rebuilt.push_str(&encode_say_string(&escape_percent_like(
+                        src,
+                        &decode_escapes(&tr),
+                    )));
                     rebuilt.push_str(&body[s + l + 1..]); // after the closing quote
                     push_line(&mut out, &rebuilt, nl);
                     continue;
@@ -544,8 +571,10 @@ mod tests {
     }
 
     fn fill(content: &str, pairs: &[(&str, &str)]) -> String {
-        let map: std::collections::HashMap<String, String> =
-            pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let map: std::collections::HashMap<String, String> = pairs
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
         fill_tl(content, &|s: &str| map.get(s).cloned())
     }
 
@@ -569,21 +598,29 @@ translate thai start_abc:
         // It must ship as a single `\n` escape, not `\\n` (which renders literally).
         let skel = "translate thai x_1:\n\n    # e \"a\\nb\"\n    e \"a\\nb\"\n";
         let got = fill(skel, &[("a\\nb", "ก\\nข")]);
-        assert!(got.contains("    e \"ก\\nข\""), "single newline escape: {got}");
+        assert!(
+            got.contains("    e \"ก\\nข\""),
+            "single newline escape: {got}"
+        );
         assert!(!got.contains("\\\\n"), "no doubled backslash: {got}");
     }
 
     #[test]
     fn fill_two_arg_replaces_only_dialogue() {
-        let skel = "translate thai x_1:\n\n    # \"Bob\" \"Hi there.\"\n    \"Bob\" \"Hi there.\"\n";
-        let got = fill(skel, &[("Hi there.", "\u{e2a}\u{e27}\u{e31}\u{e2a}\u{e14}\u{e35}")]);
+        let skel =
+            "translate thai x_1:\n\n    # \"Bob\" \"Hi there.\"\n    \"Bob\" \"Hi there.\"\n";
+        let got = fill(
+            skel,
+            &[("Hi there.", "\u{e2a}\u{e27}\u{e31}\u{e2a}\u{e14}\u{e35}")],
+        );
         // Speaker "Bob" stays; only the dialogue string is translated.
         assert!(got.contains("    \"Bob\" \"\u{e2a}\u{e27}\u{e31}\u{e2a}\u{e14}\u{e35}\""));
     }
 
     #[test]
     fn fill_strings_block() {
-        let skel = "translate thai strings:\n\n    # game/x.rpy:3\n    old \"Start\"\n    new \"Start\"\n";
+        let skel =
+            "translate thai strings:\n\n    # game/x.rpy:3\n    old \"Start\"\n    new \"Start\"\n";
         let got = fill(skel, &[("Start", "\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}")]);
         assert!(got.contains("    old \"Start\""));
         assert!(got.contains("    new \"\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}\""));
@@ -599,9 +636,21 @@ translate thai lily_1:
     # m \"Not yet, sorry.\"
     m \"\u{e22}\u{e31}\u{e07}\u{e40}\u{e25}\u{e22}\u{e04}\u{e48}\u{e30}\"
 ";
-        let got = fill(skel, &[("Not yet, sorry.", "\u{e22}\u{e31}\u{e07}\u{e40}\u{e25}\u{e22}")]);
-        assert!(got.contains("    m \"\u{e22}\u{e31}\u{e07}\u{e40}\u{e25}\u{e22}\""), "{got}");
-        assert!(got.contains("    # m \"Not yet, sorry.\""), "comment untouched: {got}");
+        let got = fill(
+            skel,
+            &[(
+                "Not yet, sorry.",
+                "\u{e22}\u{e31}\u{e07}\u{e40}\u{e25}\u{e22}",
+            )],
+        );
+        assert!(
+            got.contains("    m \"\u{e22}\u{e31}\u{e07}\u{e40}\u{e25}\u{e22}\""),
+            "{got}"
+        );
+        assert!(
+            got.contains("    # m \"Not yet, sorry.\""),
+            "comment untouched: {got}"
+        );
     }
 
     #[test]
@@ -617,9 +666,21 @@ translate thai kumiko_1:
     voice \"voice/P_007_KUMI_010.ogg\"
     k \"Oh, Souichi... Did something happen?\"
 ";
-        let got = fill(skel, &[("Oh, Souichi... Did something happen?", "\u{e2d}\u{e49}\u{e32}\u{e27}")]);
-        assert!(got.contains("    voice \"voice/P_007_KUMI_010.ogg\""), "voice kept: {got}");
-        assert!(got.contains("    k \"\u{e2d}\u{e49}\u{e32}\u{e27}\""), "say translated: {got}");
+        let got = fill(
+            skel,
+            &[(
+                "Oh, Souichi... Did something happen?",
+                "\u{e2d}\u{e49}\u{e32}\u{e27}",
+            )],
+        );
+        assert!(
+            got.contains("    voice \"voice/P_007_KUMI_010.ogg\""),
+            "voice kept: {got}"
+        );
+        assert!(
+            got.contains("    k \"\u{e2d}\u{e49}\u{e32}\u{e27}\""),
+            "say translated: {got}"
+        );
     }
 
     #[test]
@@ -634,9 +695,21 @@ translate thai kumiko_1:
     voice \"\u{e2d}\u{e49}\u{e32}\u{e27}\"
     k \"Oh, Souichi... Did something happen?\"
 ";
-        let got = fill(skel, &[("Oh, Souichi... Did something happen?", "\u{e2d}\u{e49}\u{e32}\u{e27}")]);
-        assert!(got.contains("    voice \"voice/P_007_KUMI_010.ogg\""), "voice restored: {got}");
-        assert!(got.contains("    k \"\u{e2d}\u{e49}\u{e32}\u{e27}\""), "say translated: {got}");
+        let got = fill(
+            skel,
+            &[(
+                "Oh, Souichi... Did something happen?",
+                "\u{e2d}\u{e49}\u{e32}\u{e27}",
+            )],
+        );
+        assert!(
+            got.contains("    voice \"voice/P_007_KUMI_010.ogg\""),
+            "voice restored: {got}"
+        );
+        assert!(
+            got.contains("    k \"\u{e2d}\u{e49}\u{e32}\u{e27}\""),
+            "say translated: {got}"
+        );
     }
 
     #[test]
@@ -659,7 +732,10 @@ translate thai kumiko_1:
         // strftime / screen-label sources are consumed raw — keep `%` single, or the
         // phone clock renders the literal text `%%H:%%M`.
         assert_eq!(escape_percent_like("%H:%M", "%H:%M น."), "%H:%M น.");
-        assert_eq!(escape_percent_like("Opacity ([o]%)", "ความทึบ ([o]%)"), "ความทึบ ([o]%)");
+        assert_eq!(
+            escape_percent_like("Opacity ([o]%)", "ความทึบ ([o]%)"),
+            "ความทึบ ([o]%)"
+        );
         // A source with no bare `%` (say text, escaped `%%`) still gets the escaping.
         assert_eq!(escape_percent_like("Now 50%% off", "ลด 50%"), "ลด 50%%");
         assert_eq!(escape_percent_like("Hello", "ลด 50%"), "ลด 50%%");

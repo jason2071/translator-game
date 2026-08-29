@@ -125,11 +125,7 @@ fn decode_utf16(bytes: &[u8], le: bool) -> String {
 fn encode_utf16(text: &str, le: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len() * 2);
     for u in text.encode_utf16() {
-        let b = if le {
-            u.to_le_bytes()
-        } else {
-            u.to_be_bytes()
-        };
+        let b = if le { u.to_le_bytes() } else { u.to_be_bytes() };
         out.extend_from_slice(&b);
     }
     out
@@ -163,12 +159,22 @@ mod tests {
     #[test]
     fn decode_encode_round_trips_each_encoding() {
         let text = "森へ行く。こんにちは[l][r]";
-        for enc in [Enc::Utf8, Enc::Utf8Bom, Enc::Utf16Le, Enc::Utf16Be, Enc::ShiftJis] {
+        for enc in [
+            Enc::Utf8,
+            Enc::Utf8Bom,
+            Enc::Utf16Le,
+            Enc::Utf16Be,
+            Enc::ShiftJis,
+        ] {
             let bytes = encode(text, enc);
             assert_eq!(detect(&bytes), enc, "detect {enc:?}");
             assert_eq!(decode(&bytes, enc), text, "decode {enc:?}");
             // encode(decode(bytes)) == bytes — the identity guarantee.
-            assert_eq!(encode(&decode(&bytes, enc), enc), bytes, "re-encode {enc:?}");
+            assert_eq!(
+                encode(&decode(&bytes, enc), enc),
+                bytes,
+                "re-encode {enc:?}"
+            );
         }
     }
 

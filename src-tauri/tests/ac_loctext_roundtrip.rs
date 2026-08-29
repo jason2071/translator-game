@@ -92,7 +92,10 @@ fn extract_pairs_headers_with_value_lines() {
     assert!(texts.contains(&"{I am looking to hire a <i>misthios</i>.}"));
 
     // The hex id is carried as context; everything is Dialogue.
-    let anth = units.iter().find(|u| u.source == "Are you Anthousa?").unwrap();
+    let anth = units
+        .iter()
+        .find(|u| u.source == "Are you Anthousa?")
+        .unwrap();
     assert_eq!(anth.context.as_deref(), Some("000D19DE"));
     assert!(units.iter().all(|u| u.kind == UnitKind::Dialogue));
 }
@@ -137,7 +140,8 @@ fn inject_replaces_only_the_value_line() {
     u.status = Status::Translated;
 
     let out = tempfile::tempdir().unwrap();
-    eng.inject(root, std::slice::from_ref(&u), out.path()).unwrap();
+    eng.inject(root, std::slice::from_ref(&u), out.path())
+        .unwrap();
 
     let text = std::fs::read_to_string(out.path().join(&u.file)).unwrap();
     // Target value replaced; its header + blank separator intact.

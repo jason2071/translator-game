@@ -74,19 +74,29 @@ fn req(texts: &[&str]) -> BatchReq {
 
 #[tokio::test]
 async fn split_fallback_recovers_every_item() {
-    let p = MockProvider { fail_multi: true, bad: "\u{0}" };
+    let p = MockProvider {
+        fail_multi: true,
+        bad: "\u{0}",
+    };
     let client = reqwest::Client::new();
     let out = translate_batch_or_split(&p, &client, None, &req(&["a", "b", "c"])).await;
     assert_eq!(
         out,
-        vec![Some("T[a]".into()), Some("T[b]".into()), Some("T[c]".into())]
+        vec![
+            Some("T[a]".into()),
+            Some("T[b]".into()),
+            Some("T[c]".into())
+        ]
     );
 }
 
 #[tokio::test]
 async fn split_isolates_the_bad_item() {
     // Whole batch fails, and on the per-item retry only "b" fails.
-    let p = MockProvider { fail_multi: true, bad: "b" };
+    let p = MockProvider {
+        fail_multi: true,
+        bad: "b",
+    };
     let client = reqwest::Client::new();
     let out = translate_batch_or_split(&p, &client, None, &req(&["a", "b", "c"])).await;
     assert_eq!(out, vec![Some("T[a]".into()), None, Some("T[c]".into())]);
@@ -94,7 +104,10 @@ async fn split_isolates_the_bad_item() {
 
 #[tokio::test]
 async fn single_item_failure_yields_none() {
-    let p = MockProvider { fail_multi: false, bad: "x" };
+    let p = MockProvider {
+        fail_multi: false,
+        bad: "x",
+    };
     let client = reqwest::Client::new();
     let out = translate_batch_or_split(&p, &client, None, &req(&["x"])).await;
     assert_eq!(out, vec![None]);
@@ -102,7 +115,10 @@ async fn single_item_failure_yields_none() {
 
 #[tokio::test]
 async fn happy_multi_passes_through() {
-    let p = MockProvider { fail_multi: false, bad: "\u{0}" };
+    let p = MockProvider {
+        fail_multi: false,
+        bad: "\u{0}",
+    };
     let client = reqwest::Client::new();
     let out = translate_batch_or_split(&p, &client, None, &req(&["a", "b"])).await;
     assert_eq!(out, vec![Some("T[a]".into()), Some("T[b]".into())]);

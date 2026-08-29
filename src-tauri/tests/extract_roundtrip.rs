@@ -50,7 +50,10 @@ fn extract_finds_expected_units() {
         "A young warrior from the village."
     );
     assert!(opt("Actors.json", "/1/note").is_none());
-    assert_eq!(find("Items.json", "/1/description").source, "Restores 50 HP.");
+    assert_eq!(
+        find("Items.json", "/1/description").source,
+        "Restores 50 HP."
+    );
 
     // Names / map labels.
     assert_eq!(find("MapInfos.json", "/1/name").source, "Town");
@@ -61,12 +64,24 @@ fn extract_finds_expected_units() {
     assert_eq!(d1.source, "Welcome, \\C[2]hero\\C[0]!");
     assert_eq!(d1.context.as_deref(), Some("Narrator"));
     let d2 = find("CommonEvents.json", "/1/list/2/parameters/0");
-    assert!(d1.group.is_some() && d1.group == d2.group, "401 lines should share a group");
+    assert!(
+        d1.group.is_some() && d1.group == d2.group,
+        "401 lines should share a group"
+    );
 
     // Choices + When[choice].
-    assert_eq!(find("CommonEvents.json", "/1/list/3/parameters/0/0").source, "Yes");
-    assert_eq!(find("CommonEvents.json", "/1/list/3/parameters/0/1").source, "No");
-    assert_eq!(find("CommonEvents.json", "/1/list/4/parameters/1").source, "Yes");
+    assert_eq!(
+        find("CommonEvents.json", "/1/list/3/parameters/0/0").source,
+        "Yes"
+    );
+    assert_eq!(
+        find("CommonEvents.json", "/1/list/3/parameters/0/1").source,
+        "No"
+    );
+    assert_eq!(
+        find("CommonEvents.json", "/1/list/4/parameters/1").source,
+        "Yes"
+    );
 
     // Map NPC dialogue with speaker context.
     let npc = find("Map001.json", "/events/1/pages/0/list/1/parameters/0");
@@ -116,14 +131,21 @@ fn inject_applies_only_target() {
     title.status = Status::Translated;
 
     let out = tempfile::tempdir().unwrap();
-    eng.inject(&root, std::slice::from_ref(&title), out.path()).unwrap();
+    eng.inject(&root, std::slice::from_ref(&title), out.path())
+        .unwrap();
 
     let patched: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(out.path().join("System.json")).unwrap())
             .unwrap();
-    assert_eq!(patched.pointer("/gameTitle").unwrap().as_str().unwrap(), "ทดสอบเควส");
+    assert_eq!(
+        patched.pointer("/gameTitle").unwrap().as_str().unwrap(),
+        "ทดสอบเควส"
+    );
     // A sibling node must be untouched.
-    assert_eq!(patched.pointer("/currencyUnit").unwrap().as_str().unwrap(), "G");
+    assert_eq!(
+        patched.pointer("/currencyUnit").unwrap().as_str().unwrap(),
+        "G"
+    );
 }
 
 /// Build a throwaway MZ game whose story is told through plugin commands (357),
@@ -161,18 +183,33 @@ fn plugin_command_text_is_extracted_and_config_args_are_not() {
     let notify = by_ptr("/1/list/0/parameters/3/message").expect("notify message extracted");
     assert_eq!(notify.source, "「バレちゃったか……♡」");
     assert_eq!(notify.kind, UnitKind::Dialogue);
-    assert_eq!(notify.context.as_deref(), Some("TorigoyaMZ_NotifyMessage notify"));
+    assert_eq!(
+        notify.context.as_deref(),
+        Some("TorigoyaMZ_NotifyMessage notify")
+    );
     // Dynamic text pictures too.
     assert_eq!(
         by_ptr("/1/list/1/parameters/3/text").map(|u| u.source.as_str()),
         Some("所持金")
     );
     // Config args of the same commands are not text.
-    assert!(by_ptr("/1/list/0/parameters/3/icon").is_none(), "icon is config");
-    assert!(by_ptr("/1/list/0/parameters/3/note").is_none(), "note is config");
-    assert!(by_ptr("/1/list/1/parameters/3/fontSize").is_none(), "font size is config");
+    assert!(
+        by_ptr("/1/list/0/parameters/3/icon").is_none(),
+        "icon is config"
+    );
+    assert!(
+        by_ptr("/1/list/0/parameters/3/note").is_none(),
+        "note is config"
+    );
+    assert!(
+        by_ptr("/1/list/1/parameters/3/fontSize").is_none(),
+        "font size is config"
+    );
     // A wholly non-text plugin contributes nothing (serialized struct arg).
-    assert!(by_ptr("/1/list/2/parameters/3/pictureList").is_none(), "struct arg skipped");
+    assert!(
+        by_ptr("/1/list/2/parameters/3/pictureList").is_none(),
+        "struct arg skipped"
+    );
     // The ordinary Show Text line still comes through, with its speaker.
     let say = by_ptr("/1/list/4/parameters/0").expect("401 still extracted");
     assert_eq!(say.source, "ふつうの本文。");
@@ -211,17 +248,26 @@ fn plugin_command_text_injects_and_round_trips() {
     notify.translation = Some("「โดนจับได้แล้วสินะ♡」".to_string());
     notify.status = Status::Translated;
     let out2 = tempfile::tempdir().unwrap();
-    eng.inject(root, std::slice::from_ref(&notify), out2.path()).unwrap();
+    eng.inject(root, std::slice::from_ref(&notify), out2.path())
+        .unwrap();
     let patched: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(out2.path().join("CommonEvents.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(
-        patched.pointer("/1/list/0/parameters/3/message").unwrap().as_str().unwrap(),
+        patched
+            .pointer("/1/list/0/parameters/3/message")
+            .unwrap()
+            .as_str()
+            .unwrap(),
         "「โดนจับได้แล้วสินะ♡」"
     );
     assert_eq!(
-        patched.pointer("/1/list/0/parameters/3/icon").unwrap().as_str().unwrap(),
+        patched
+            .pointer("/1/list/0/parameters/3/icon")
+            .unwrap()
+            .as_str()
+            .unwrap(),
         "16"
     );
 }
@@ -258,10 +304,19 @@ fn script_command_prose_is_extracted_but_not_its_code() {
 
     let sources: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
     assert!(sources.contains(&"I can't be wasting time."), "{sources:?}");
-    assert!(sources.contains(&"The church is closed."), "655 continuation too: {sources:?}");
+    assert!(
+        sources.contains(&"The church is closed."),
+        "655 continuation too: {sources:?}"
+    );
     // An asset load and a flag value in the same shape are not text.
-    assert!(!sources.iter().any(|s| s.contains("img/pictures")), "{sources:?}");
-    assert!(!sources.contains(&"on"), "a switch value is not dialogue: {sources:?}");
+    assert!(
+        !sources.iter().any(|s| s.contains("img/pictures")),
+        "{sources:?}"
+    );
+    assert!(
+        !sources.contains(&"on"),
+        "a switch value is not dialogue: {sources:?}"
+    );
     // The JS itself never becomes a unit.
     assert!(
         !sources.iter().any(|s| s.contains("$gameVariables")),
@@ -269,8 +324,15 @@ fn script_command_prose_is_extracted_but_not_its_code() {
     );
 
     // The pointer addresses a byte span inside the command's parameter.
-    let u = units.iter().find(|u| u.source == "I can't be wasting time.").unwrap();
-    assert!(u.pointer.contains('#'), "span pointer expected, got {}", u.pointer);
+    let u = units
+        .iter()
+        .find(|u| u.source == "I can't be wasting time.")
+        .unwrap();
+    assert!(
+        u.pointer.contains('#'),
+        "span pointer expected, got {}",
+        u.pointer
+    );
 }
 
 #[test]
@@ -315,10 +377,13 @@ fn script_command_prose_injects_in_place_and_round_trips() {
         &std::fs::read_to_string(out2.path().join("CommonEvents.json")).unwrap(),
     )
     .unwrap();
-    let js = patched.pointer("/1/list/0/parameters/0").unwrap().as_str().unwrap();
+    let js = patched
+        .pointer("/1/list/0/parameters/0")
+        .unwrap()
+        .as_str()
+        .unwrap();
     assert_eq!(
-        js,
-        r#"$gameVariables.setValue(21, "ไม่มีเวลาแล้ว 'รีบ' หน่อย");"#,
+        js, r#"$gameVariables.setValue(21, "ไม่มีเวลาแล้ว 'รีบ' หน่อย");"#,
         "only the literal changes"
     );
 }

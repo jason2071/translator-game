@@ -148,7 +148,9 @@ fn collect_loctext(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -279,7 +281,11 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
         // A generic .txt that isn't an aclocexport table.
-        write(root, "notes.txt", b"just some notes\r\nId: [0x000D1792]\r\n");
+        write(
+            root,
+            "notes.txt",
+            b"just some notes\r\nId: [0x000D1792]\r\n",
+        );
         assert!(
             !AcLocTextEngine.detect(root),
             "an Id: line mid-file must not match — header must be first"
@@ -326,7 +332,10 @@ mod tests {
         let original = loctext_bytes(&[
             ("000D1792", "You must choose, Quick!"),
             ("000D19EF", "We're here in <i>peace</i>!"),
-            ("000D1A04", "[&scoff]Who walks around with a name like the \"Monger\"?"),
+            (
+                "000D1A04",
+                "[&scoff]Who walks around with a name like the \"Monger\"?",
+            ),
         ]);
         write(root, "subs.txt", &original);
 
@@ -340,7 +349,10 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         AcLocTextEngine.inject(root, &units, out.path()).unwrap();
         let produced = std::fs::read(out.path().join("subs.txt")).unwrap();
-        assert_eq!(produced, original, "unchanged units round-trip byte-identical");
+        assert_eq!(
+            produced, original,
+            "unchanged units round-trip byte-identical"
+        );
     }
 
     #[test]

@@ -122,7 +122,9 @@ fn is_kirikiri(root: &Path) -> bool {
     let mut has_sig = false;
     let mut stack = vec![root.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -155,7 +157,9 @@ fn collect_ks(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -198,7 +202,11 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
         // Only `.ks`, no engine fingerprint → not KiriKiri (that's TyranoScript).
-        write(root, "scenario/first.ks", "*start\nこんにちは[l]\n".as_bytes());
+        write(
+            root,
+            "scenario/first.ks",
+            "*start\nこんにちは[l]\n".as_bytes(),
+        );
         assert!(!is_kirikiri(root));
         // Add the `.tjs` fingerprint → now it fingerprints as KiriKiri.
         write(root, "startup.tjs", b"// KAG boot\n");

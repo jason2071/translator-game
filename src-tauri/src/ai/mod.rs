@@ -147,7 +147,12 @@ pub async fn translate_batch_or_split(
         Ok(v) => v
             .into_iter()
             .enumerate()
-            .map(|(i, t)| Some(align_outer_whitespace(req.items.get(i).map(|it| it.text.as_str()).unwrap_or(""), &t)))
+            .map(|(i, t)| {
+                Some(align_outer_whitespace(
+                    req.items.get(i).map(|it| it.text.as_str()).unwrap_or(""),
+                    &t,
+                ))
+            })
             .collect(),
         Err(_) if req.items.len() <= 1 => vec![None; req.items.len()],
         Err(_) => {
@@ -308,7 +313,10 @@ pub async fn list_models(
 /// Ollama's native model list: `GET {host}/api/tags` → `models[].name`.
 async fn ollama_tags(client: &reqwest::Client, base: &str) -> Result<Vec<String>> {
     // base is typically http://localhost:11434/v1 — the tags API lives at the host.
-    let host = base.strip_suffix("/v1").unwrap_or(base).trim_end_matches('/');
+    let host = base
+        .strip_suffix("/v1")
+        .unwrap_or(base)
+        .trim_end_matches('/');
     let url = format!("{host}/api/tags");
     let v = get_json(client.get(&url), &url).await?;
     Ok(v["models"]

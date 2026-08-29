@@ -37,8 +37,13 @@ fn tm_propagates_to_duplicate_sources() {
     assert_eq!(yes.len(), 2, "expected two 'Yes' units");
 
     // Translate exactly one of them.
-    project::db::update_unit(&proj.conn, yes[0].id, Some("ใช่"), Status::Translated.as_str())
-        .unwrap();
+    project::db::update_unit(
+        &proj.conn,
+        yes[0].id,
+        Some("ใช่"),
+        Status::Translated.as_str(),
+    )
+    .unwrap();
     // Confirmed translation should have been remembered in TM.
     app_lib::project::db::tm_upsert(&proj.conn, "Yes", "ใช่").unwrap();
 
@@ -69,26 +74,45 @@ fn opening_a_project_trims_padding_a_model_invented() {
         project::db::tm_upsert(&proj.conn, "Yes", " ใช่").unwrap();
         // A source that pads on purpose keeps its translation's padding.
         project::db::tm_upsert(&proj.conn, "  Menu", "  เมนู").unwrap();
-        let yes = all(&proj.conn).into_iter().find(|u| u.source == "Yes").unwrap();
-        project::db::update_unit(&proj.conn, yes.id, Some(" ใช่ "), Status::Translated.as_str())
+        let yes = all(&proj.conn)
+            .into_iter()
+            .find(|u| u.source == "Yes")
             .unwrap();
+        project::db::update_unit(
+            &proj.conn,
+            yes.id,
+            Some(" ใช่ "),
+            Status::Translated.as_str(),
+        )
+        .unwrap();
     }
     assert!(db_path.is_file());
 
     // Re-open: the migration runs on every open.
     let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
     assert_eq!(
-        project::db::tm_lookup(&proj.conn, "Yes").unwrap().as_deref(),
+        project::db::tm_lookup(&proj.conn, "Yes")
+            .unwrap()
+            .as_deref(),
         Some("ใช่"),
         "invented padding trimmed"
     );
     assert_eq!(
-        project::db::tm_lookup(&proj.conn, "  Menu").unwrap().as_deref(),
+        project::db::tm_lookup(&proj.conn, "  Menu")
+            .unwrap()
+            .as_deref(),
         Some("  เมนู"),
         "a padded source keeps its padding"
     );
-    let yes = all(&proj.conn).into_iter().find(|u| u.source == "Yes").unwrap();
-    assert_eq!(yes.translation.as_deref(), Some("ใช่"), "unit rows are cleaned too");
+    let yes = all(&proj.conn)
+        .into_iter()
+        .find(|u| u.source == "Yes")
+        .unwrap();
+    assert_eq!(
+        yes.translation.as_deref(),
+        Some("ใช่"),
+        "unit rows are cleaned too"
+    );
 }
 
 #[test]
@@ -97,8 +121,8 @@ fn glossary_crud_and_lint() {
     let (proj, _) = project::open_or_create(&root, "auto", "Thai").unwrap();
 
     // CRUD.
-    let id = project::db::glossary_add(&proj.conn, "Potion", "ยา", Some("consumable"), false)
-        .unwrap();
+    let id =
+        project::db::glossary_add(&proj.conn, "Potion", "ยา", Some("consumable"), false).unwrap();
     assert_eq!(project::db::glossary_list(&proj.conn).unwrap().len(), 1);
     project::db::glossary_update(&proj.conn, id, "Potion", "ยาฟื้นฟู", None, false).unwrap();
     assert_eq!(
@@ -111,12 +135,19 @@ fn glossary_crud_and_lint() {
         .into_iter()
         .find(|u| u.file == "Items.json" && u.pointer == "/1/name")
         .unwrap();
-    project::db::update_unit(&proj.conn, potion.id, Some("โพชั่น"), Status::Translated.as_str())
-        .unwrap();
+    project::db::update_unit(
+        &proj.conn,
+        potion.id,
+        Some("โพชั่น"),
+        Status::Translated.as_str(),
+    )
+    .unwrap();
 
     let warns = project::db::glossary_lint(&proj.conn).unwrap();
     assert!(
-        warns.iter().any(|w| w.unit_id == potion.id && w.term == "Potion"),
+        warns
+            .iter()
+            .any(|w| w.unit_id == potion.id && w.term == "Potion"),
         "lint should flag the missing glossary term"
     );
 
@@ -140,8 +171,8 @@ fn glossary_bulk_add_skips_empties() {
         &mut proj.conn,
         &[
             ("A".into(), "ก".into()),
-            ("".into(), "x".into()),      // empty term — skipped
-            ("B".into(), "  ".into()),    // blank translation — skipped
+            ("".into(), "x".into()),   // empty term — skipped
+            ("B".into(), "  ".into()), // blank translation — skipped
             ("C".into(), "ค".into()),
         ],
     )
@@ -166,8 +197,13 @@ fn suggest_glossary_mines_names_and_terms() {
         .into_iter()
         .find(|u| u.file == "Actors.json" && u.pointer == "/1/nickname")
         .unwrap();
-    project::db::update_unit(&proj.conn, brave.id, Some("ผู้กล้า"), Status::Translated.as_str())
-        .unwrap();
+    project::db::update_unit(
+        &proj.conn,
+        brave.id,
+        Some("ผู้กล้า"),
+        Status::Translated.as_str(),
+    )
+    .unwrap();
     let cands2 = project::db::suggest_glossary(&proj.conn).unwrap();
     let c = cands2.iter().find(|c| c.term == "The Brave").unwrap();
     assert_eq!(c.translation.as_deref(), Some("ผู้กล้า"));
@@ -211,15 +247,31 @@ fn rescan_drops_stale_untranslated_units_but_keeps_work() {
     project::db::merge_units(
         &mut proj.conn,
         &[
-            TransUnit::new("gone.rpy", "1:10", UnitKind::Dialogue, "images/GYM/Training 1/4.jpg"),
-            TransUnit::new("gone.rpy", "2:10", UnitKind::Dialogue, "images/GYM/Training 1/5.jpg"),
+            TransUnit::new(
+                "gone.rpy",
+                "1:10",
+                UnitKind::Dialogue,
+                "images/GYM/Training 1/4.jpg",
+            ),
+            TransUnit::new(
+                "gone.rpy",
+                "2:10",
+                UnitKind::Dialogue,
+                "images/GYM/Training 1/5.jpg",
+            ),
             TransUnit::new("gone.rpy", "3:10", UnitKind::Dialogue, "Real line"),
         ],
     )
     .unwrap();
-    let failed = all(&proj.conn).into_iter().find(|u| u.pointer == "2:10").unwrap();
+    let failed = all(&proj.conn)
+        .into_iter()
+        .find(|u| u.pointer == "2:10")
+        .unwrap();
     project::db::set_status(&proj.conn, failed.id, "Failed").unwrap();
-    let kept = all(&proj.conn).into_iter().find(|u| u.pointer == "3:10").unwrap();
+    let kept = all(&proj.conn)
+        .into_iter()
+        .find(|u| u.pointer == "3:10")
+        .unwrap();
     project::db::update_unit(&proj.conn, kept.id, Some("บรรทัดจริง"), "Translated").unwrap();
 
     let before = all(&proj.conn).len();
@@ -229,7 +281,9 @@ fn rescan_drops_stale_untranslated_units_but_keeps_work() {
     let after = all(&proj.conn);
     assert_eq!(after.len(), before - 2);
     assert!(
-        after.iter().any(|u| u.pointer == "3:10" && u.translation.as_deref() == Some("บรรทัดจริง")),
+        after
+            .iter()
+            .any(|u| u.pointer == "3:10" && u.translation.as_deref() == Some("บรรทัดจริง")),
         "a translated row is kept even though the extractor no longer produces it"
     );
     assert!(!after.iter().any(|u| u.pointer == "1:10"));
@@ -269,15 +323,25 @@ fn glossary_candidates_and_entries_are_trimmed() {
         .iter()
         .find(|c| c.term == "(attributes)")
         .expect("the candidate is offered without its padding");
-    assert_eq!(c.translation.as_deref(), Some("(คุณสมบัติ)"), "prefill trimmed too");
+    assert_eq!(
+        c.translation.as_deref(),
+        Some("(คุณสมบัติ)"),
+        "prefill trimmed too"
+    );
 
     // Adding stores the trimmed form, whichever path is used.
     project::db::glossary_add(&proj.conn, "  Dagger ", "  กริช  ", None, false).unwrap();
     project::db::glossary_add_bulk(&mut proj.conn, &[("  Sword ".into(), " ดาบ ".into())]).unwrap();
     let entries = project::db::glossary_list(&proj.conn).unwrap();
-    let dagger = entries.iter().find(|g| g.term == "Dagger").expect("trimmed on add");
+    let dagger = entries
+        .iter()
+        .find(|g| g.term == "Dagger")
+        .expect("trimmed on add");
     assert_eq!(dagger.translation, "กริช");
-    let sword = entries.iter().find(|g| g.term == "Sword").expect("trimmed on bulk add");
+    let sword = entries
+        .iter()
+        .find(|g| g.term == "Sword")
+        .expect("trimmed on bulk add");
     assert_eq!(sword.translation, "ดาบ");
 
     // The unit itself keeps its padding — only the glossary view trims.

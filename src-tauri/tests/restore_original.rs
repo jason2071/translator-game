@@ -34,7 +34,11 @@ fn restore_puts_original_game_files_back() {
 
     // Translate every unit so export actually changes the file.
     let units = db::all_units(&project.conn).unwrap();
-    assert!(units.len() >= 3, "expected the 3 say/narration lines, got {}", units.len());
+    assert!(
+        units.len() >= 3,
+        "expected the 3 say/narration lines, got {}",
+        units.len()
+    );
     for u in &units {
         let tr = format!("\u{e41}\u{e1b}\u{e25} \u{2014} {}", u.source); // "แปล — <src>"
         db::update_unit(&project.conn, u.id, Some(&tr), "Translated").unwrap();
@@ -45,14 +49,27 @@ fn restore_puts_original_game_files_back() {
     // Export in place: the file changes and the original is snapshotted.
     project::export(&mut project, true, false).unwrap();
     let translated = std::fs::read(&game_file).unwrap();
-    assert_ne!(translated, original, "export should have changed the game file");
-    assert!(root.join(".rpgtl/source/script.rpy").exists(), "original snapshotted");
+    assert_ne!(
+        translated, original,
+        "export should have changed the game file"
+    );
+    assert!(
+        root.join(".rpgtl/source/script.rpy").exists(),
+        "original snapshotted"
+    );
 
     // Restore: the game file returns to its original bytes.
     let res = project::restore_original(&project).unwrap();
-    assert!(res.files_restored >= 1, "at least one file restored, got {}", res.files_restored);
+    assert!(
+        res.files_restored >= 1,
+        "at least one file restored, got {}",
+        res.files_restored
+    );
     let restored = std::fs::read(&game_file).unwrap();
-    assert_eq!(restored, original, "restore must reproduce the original bytes");
+    assert_eq!(
+        restored, original,
+        "restore must reproduce the original bytes"
+    );
 
     // Translations are untouched — a re-export re-applies them.
     let still: Vec<_> = db::all_units(&project.conn).unwrap();
@@ -100,24 +117,47 @@ fn restore_undoes_embed_font_artifacts() {
     // Translate every unit so every data file (System.json included) is touched and
     // snapshotted — then the MZ font repoint in System.json is reverted via source/.
     for u in db::all_units(&project.conn).unwrap() {
-        db::update_unit(&project.conn, u.id, Some("\u{e41}\u{e1b}\u{e25}"), "Translated").unwrap();
+        db::update_unit(
+            &project.conn,
+            u.id,
+            Some("\u{e41}\u{e1b}\u{e25}"),
+            "Translated",
+        )
+        .unwrap();
     }
 
     // Export in place WITH font embedding.
     project::export(&mut project, true, true).unwrap();
-    assert!(root.join(".rpgtl/source/System.json").exists(), "System.json snapshotted");
-    assert!(root.join("fonts/Sarabun-Regular.ttf").is_file(), "font TTF added");
-    assert!(root.join("js/plugins/RPGTL_ThaiText.js").is_file(), "outline plugin added");
     assert!(
-        std::fs::read_to_string(root.join("js/plugins.js")).unwrap().contains("RPGTL_ThaiText"),
+        root.join(".rpgtl/source/System.json").exists(),
+        "System.json snapshotted"
+    );
+    assert!(
+        root.join("fonts/Sarabun-Regular.ttf").is_file(),
+        "font TTF added"
+    );
+    assert!(
+        root.join("js/plugins/RPGTL_ThaiText.js").is_file(),
+        "outline plugin added"
+    );
+    assert!(
+        std::fs::read_to_string(root.join("js/plugins.js"))
+            .unwrap()
+            .contains("RPGTL_ThaiText"),
         "plugins.js registers our plugin"
     );
 
     // Restore: added files gone, plugins.js back to original.
     let res = project::restore_original(&project).unwrap();
     assert!(res.files_restored >= 1, "restored at least one file");
-    assert!(!root.join("fonts/Sarabun-Regular.ttf").exists(), "font TTF deleted");
-    assert!(!root.join("js/plugins/RPGTL_ThaiText.js").exists(), "outline plugin deleted");
+    assert!(
+        !root.join("fonts/Sarabun-Regular.ttf").exists(),
+        "font TTF deleted"
+    );
+    assert!(
+        !root.join("js/plugins/RPGTL_ThaiText.js").exists(),
+        "outline plugin deleted"
+    );
     assert_eq!(
         std::fs::read_to_string(root.join("js/plugins.js")).unwrap(),
         plugins0,
@@ -142,8 +182,18 @@ fn restore_on_never_exported_project_is_a_no_op() {
 
     // No export has happened, so there is no `.rpgtl/source/` snapshot.
     let res = project::restore_original(&project).unwrap();
-    assert_eq!(res.files_restored, 0, "nothing to restore before any export");
-    assert!(res.note.contains("Nothing to restore"), "friendly note, got: {}", res.note);
+    assert_eq!(
+        res.files_restored, 0,
+        "nothing to restore before any export"
+    );
+    assert!(
+        res.note.contains("Nothing to restore"),
+        "friendly note, got: {}",
+        res.note
+    );
     // The game file is left exactly as written.
-    assert_eq!(std::fs::read(root.join("game/script.rpy")).unwrap(), SCRIPT.as_bytes());
+    assert_eq!(
+        std::fs::read(root.join("game/script.rpy")).unwrap(),
+        SCRIPT.as_bytes()
+    );
 }

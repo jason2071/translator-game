@@ -100,7 +100,10 @@ fn roundtrip_identity() {
     // Header gained exactly one column: th.
     let sheet = std::fs::read_to_string(root.join("game_messages.csv")).unwrap();
     let header = sheet.lines().next().unwrap();
-    assert!(header.trim_end().ends_with(",th"), "th column appended: {header}");
+    assert!(
+        header.trim_end().ends_with(",th"),
+        "th column appended: {header}"
+    );
 
     // Re-extraction from the exported sheet yields identical sources — the Original
     // column (and every other original column) survived untouched.
@@ -110,7 +113,10 @@ fn roundtrip_identity() {
         .into_iter()
         .map(|u| u.source)
         .collect();
-    assert_eq!(before, after, "original columns must be unchanged by export");
+    assert_eq!(
+        before, after,
+        "original columns must be unchanged by export"
+    );
 }
 
 #[test]

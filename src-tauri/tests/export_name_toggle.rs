@@ -39,7 +39,10 @@ fn names_are_not_exported_when_the_toggle_is_off() {
 
     let units = db::all_units(&proj.conn).unwrap();
     let names: Vec<_> = units.iter().filter(|u| u.kind == UnitKind::Name).collect();
-    assert!(!names.is_empty(), "fixture has Name units (actor/item names)");
+    assert!(
+        !names.is_empty(),
+        "fixture has Name units (actor/item names)"
+    );
     assert!(
         names.iter().any(|u| u.source == "Hero"),
         "the actor name is a Name unit"
@@ -54,7 +57,10 @@ fn names_are_not_exported_when_the_toggle_is_off() {
     project::export(&mut proj, true, false).unwrap();
 
     let actors = read(&root.join("data/Actors.json"));
-    assert!(actors.contains("\"name\":\"Hero\""), "actor name kept in the source language: {actors}");
+    assert!(
+        actors.contains("\"name\":\"Hero\""),
+        "actor name kept in the source language: {actors}"
+    );
     assert!(
         !actors.contains("\u{e41}\u{e1b}\u{e25}-Hero"),
         "the translated name must not be injected: {actors}"
@@ -94,7 +100,10 @@ fn a_fresh_project_defaults_to_keeping_the_original_names() {
     project::export(&mut proj, true, false).unwrap();
 
     let actors = read(&root.join("data/Actors.json"));
-    assert!(actors.contains("\"name\":\"Hero\""), "original name kept: {actors}");
+    assert!(
+        actors.contains("\"name\":\"Hero\""),
+        "original name kept: {actors}"
+    );
     assert!(
         actors.contains("\u{e41}\u{e1b}\u{e25}-A young warrior from the village."),
         "other text still translated: {actors}"
@@ -110,19 +119,33 @@ fn the_toggle_spares_item_names_it_never_meant_to_cover() {
     use app_lib::model::{TransUnit, UnitKind};
 
     let actor = TransUnit::new("Actors.json", "/1/name", UnitKind::Name, "Hero");
-    let nick = TransUnit::new("Actors.json", "/1/nickname", UnitKind::Nickname, "The Brave");
+    let nick = TransUnit::new(
+        "Actors.json",
+        "/1/nickname",
+        UnitKind::Nickname,
+        "The Brave",
+    );
     let item = TransUnit::new("Items.json", "/1/name", UnitKind::Name, "Potion");
     let skill = TransUnit::new("Skills.json", "/1/name", UnitKind::Name, "Fireball");
     let enemy = TransUnit::new("Enemies.json", "/1/name", UnitKind::Name, "Slime");
     let renpy = TransUnit::new("script.rpy", "name#c", UnitKind::Name, "Mei");
     let line = TransUnit::new("Map001.json", "/x", UnitKind::Dialogue, "Hello");
 
-    assert!(actor.is_character_name(), "an actor's name is a person's name");
+    assert!(
+        actor.is_character_name(),
+        "an actor's name is a person's name"
+    );
     assert!(nick.is_character_name(), "so is their nickname");
-    assert!(renpy.is_character_name(), "so is a Ren'Py Character(...) name");
+    assert!(
+        renpy.is_character_name(),
+        "so is a Ren'Py Character(...) name"
+    );
     assert!(!item.is_character_name(), "an item is a thing");
     assert!(!skill.is_character_name(), "so is a skill");
-    assert!(!enemy.is_character_name(), "an enemy name reads as a label, translate it");
+    assert!(
+        !enemy.is_character_name(),
+        "an enemy name reads as a label, translate it"
+    );
     assert!(!line.is_character_name(), "dialogue is never a name");
 }
 
@@ -141,7 +164,10 @@ fn export_keeps_item_names_translated_when_the_toggle_is_off() {
     project::export(&mut proj, true, false).unwrap();
 
     let actors = read(&root.join("data/Actors.json"));
-    assert!(actors.contains("\"name\":\"Hero\""), "actor name kept: {actors}");
+    assert!(
+        actors.contains("\"name\":\"Hero\""),
+        "actor name kept: {actors}"
+    );
 
     let items = read(&root.join("data/Items.json"));
     assert!(
@@ -176,7 +202,10 @@ fn mod_export_also_skips_names_when_the_toggle_is_off() {
             .expect("mod holds the patched Actors.json");
         e.read_to_string(&mut actors).unwrap();
     }
-    assert!(actors.contains("\"name\":\"Hero\""), "mod keeps the source name: {actors}");
+    assert!(
+        actors.contains("\"name\":\"Hero\""),
+        "mod keeps the source name: {actors}"
+    );
     assert!(
         !actors.contains("\u{e41}\u{e1b}\u{e25}-Hero"),
         "mod must not carry the translated name: {actors}"

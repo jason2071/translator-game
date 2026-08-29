@@ -130,7 +130,9 @@ fn is_ks(p: &Path) -> bool {
 fn has_ks(dir: &Path) -> bool {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -148,7 +150,9 @@ fn collect_ks(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -401,8 +405,13 @@ pub(super) fn extract_ks(file: &str, content: &str, out: &mut Vec<TransUnit>) {
         }
         let source = &raw[indent..end];
         out.push(
-            TransUnit::new(file, format!("{abs}:{}", end - indent), UnitKind::Dialogue, source)
-                .with_context(speaker.clone()),
+            TransUnit::new(
+                file,
+                format!("{abs}:{}", end - indent),
+                UnitKind::Dialogue,
+                source,
+            )
+            .with_context(speaker.clone()),
         );
     }
 }
@@ -450,9 +459,15 @@ The room fell silent.[l]
     #[test]
     fn speaker_is_carried_as_context() {
         let units = extract("#akane\nHello there.[l]\n#\nNarration.[l]\n");
-        let hi = units.iter().find(|u| u.source.starts_with("Hello")).unwrap();
+        let hi = units
+            .iter()
+            .find(|u| u.source.starts_with("Hello"))
+            .unwrap();
         assert_eq!(hi.context.as_deref(), Some("akane"));
-        let narr = units.iter().find(|u| u.source.starts_with("Narration")).unwrap();
+        let narr = units
+            .iter()
+            .find(|u| u.source.starts_with("Narration"))
+            .unwrap();
         assert_eq!(narr.context, None); // bare `#` cleared the speaker
     }
 

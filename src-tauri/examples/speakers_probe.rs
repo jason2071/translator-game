@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 fn main() {
     let root = std::path::PathBuf::from(
-        std::env::args().nth(1).expect("usage: speakers_probe <game root>"),
+        std::env::args()
+            .nth(1)
+            .expect("usage: speakers_probe <game root>"),
     );
     let eng = engine::detect(&root).expect("no engine detected");
     let units = eng.extract(&root, &ExtractOpts::default()).unwrap();
@@ -21,7 +23,11 @@ fn main() {
             *by_speaker.entry(c.to_string()).or_default() += 1;
         }
     }
-    println!("engine={} units={units} dialogue={dialogue} named={named}", eng.id(), units = units.len());
+    println!(
+        "engine={} units={units} dialogue={dialogue} named={named}",
+        eng.id(),
+        units = units.len()
+    );
     let mut list: Vec<_> = by_speaker.into_iter().collect();
     list.sort_by(|a, b| b.1.cmp(&a.1));
     println!("--- speakers ({}) ---", list.len());

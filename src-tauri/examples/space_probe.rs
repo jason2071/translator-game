@@ -56,7 +56,12 @@ async fn main() {
 
     for term in terms {
         let req = BatchReq {
-            items: vec![BatchItem { id: 0, text: term.to_string(), context: None, neighbors: None }],
+            items: vec![BatchItem {
+                id: 0,
+                text: term.to_string(),
+                context: None,
+                neighbors: None,
+            }],
             glossary: vec![],
             source_lang: "English".into(),
             target_lang: "Thai".into(),
@@ -76,7 +81,8 @@ async fn main() {
                     dump("aligned", &aligned);
                     println!(
                         "   verdict: {}",
-                        if aligned.starts_with(char::is_whitespace) || aligned.starts_with('\u{200b}')
+                        if aligned.starts_with(char::is_whitespace)
+                            || aligned.starts_with('\u{200b}')
                         {
                             "STILL PADDED"
                         } else {

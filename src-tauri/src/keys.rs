@@ -88,7 +88,11 @@ mod tests {
         std::env::set_var(var, "  sk-dev-123  ");
         assert_eq!(env_key("envtestprovider").as_deref(), Some("sk-dev-123"));
         std::env::set_var(var, "   ");
-        assert_eq!(env_key("envtestprovider"), None, "blank is treated as unset");
+        assert_eq!(
+            env_key("envtestprovider"),
+            None,
+            "blank is treated as unset"
+        );
         std::env::remove_var(var);
         assert_eq!(env_key("envtestprovider"), None);
     }

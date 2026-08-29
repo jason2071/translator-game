@@ -166,7 +166,11 @@ pub struct MinedTerm {
 /// Build the (system, user) prompt that asks the model to mine recurring proper
 /// nouns / special terms from sampled game text and suggest translations. The
 /// user turn is the raw sampled corpus.
-pub fn build_glossary_mining(source_lang: &str, target_lang: &str, corpus: &str) -> (String, String) {
+pub fn build_glossary_mining(
+    source_lang: &str,
+    target_lang: &str,
+    corpus: &str,
+) -> (String, String) {
     let src = if source_lang.trim().eq_ignore_ascii_case("auto") || source_lang.trim().is_empty() {
         "the source language (auto-detect it, commonly English, Japanese, or Chinese)".to_string()
     } else {
@@ -752,7 +756,10 @@ mod tests {
         assert!(!sys.contains('\u{27E6}'), "unexpected ⟦ in prompt: {sys}");
         // With a masked code, the placeholder rule appears.
         let (sys2, _) = build_messages(&req(vec!["Hi \u{27E6}0\u{27E7} there"]));
-        assert!(sys2.contains("\u{27E6}0\u{27E7}"), "placeholder rule missing");
+        assert!(
+            sys2.contains("\u{27E6}0\u{27E7}"),
+            "placeholder rule missing"
+        );
     }
 
     #[test]
@@ -768,9 +775,15 @@ mod tests {
     #[test]
     fn single_item_accepts_raw_text() {
         // Translation-only models reply with just the text, no JSON.
-        assert_eq!(parse_batch_response("สวัสดีชาวโลก!", 1).unwrap(), vec!["สวัสดีชาวโลก!"]);
+        assert_eq!(
+            parse_batch_response("สวัสดีชาวโลก!", 1).unwrap(),
+            vec!["สวัสดีชาวโลก!"]
+        );
         // Quoted raw text is unwrapped.
-        assert_eq!(parse_batch_response("\"Bonjour\"", 1).unwrap(), vec!["Bonjour"]);
+        assert_eq!(
+            parse_batch_response("\"Bonjour\"", 1).unwrap(),
+            vec!["Bonjour"]
+        );
         // Reasoning is still stripped before the raw fallback.
         assert_eq!(
             parse_batch_response("<think>hmm</think>\nสวัสดี", 1).unwrap(),
@@ -825,7 +838,10 @@ mod tests {
     fn glossary_classify_prompt_lists_candidates() {
         let cands = vec![
             ("Karen".to_string(), "I met Karen at the tower.".to_string()),
-            ("Corpo".to_string(), "She joined Corpo last year.".to_string()),
+            (
+                "Corpo".to_string(),
+                "She joined Corpo last year.".to_string(),
+            ),
         ];
         let (sys, user) = build_glossary_classify("English", "Thai", &cands);
         assert!(sys.contains("KEEP only") && sys.contains("DROP"));
@@ -834,7 +850,8 @@ mod tests {
         assert!(user.starts_with("Karen \u{2014} I met Karen at the tower."));
         assert!(user.contains("Corpo \u{2014} She joined Corpo last year."));
         // The classify response shares the mining shape, so the parser reads it.
-        let parsed = parse_glossary_mining("[{\"term\":\"Karen\",\"kind\":\"name\",\"tr\":\"คาเรน\"}]");
+        let parsed =
+            parse_glossary_mining("[{\"term\":\"Karen\",\"kind\":\"name\",\"tr\":\"คาเรน\"}]");
         assert_eq!(parsed[0].term, "Karen");
     }
 
@@ -849,7 +866,14 @@ mod tests {
         ]\n```";
         let got = parse_glossary_mining(raw);
         assert_eq!(got.len(), 2);
-        assert_eq!(got[0], MinedTerm { term: "Callum".into(), kind: "name".into(), translation: "คัลลัม".into() });
+        assert_eq!(
+            got[0],
+            MinedTerm {
+                term: "Callum".into(),
+                kind: "name".into(),
+                translation: "คัลลัม".into()
+            }
+        );
         assert_eq!(got[1].term, "Stamina");
         assert_eq!(got[1].translation, "พลังกาย"); // alternate key honored
     }
@@ -916,7 +940,10 @@ mod tests {
         }
         // Pronouns are a separate axis and stay gendered.
         assert!(d.contains("ผม") && d.contains("ฉัน"), "{d}");
-        assert!(d.contains("Mei=female") && d.contains("Hiroshi=male"), "{d}");
+        assert!(
+            d.contains("Mei=female") && d.contains("Hiroshi=male"),
+            "{d}"
+        );
 
         // With no gendered speaker the ban still stands (nothing to list, that's all).
         let bare = gender_directive(&[], "Thai", false).unwrap();
@@ -937,7 +964,11 @@ mod tests {
         let d = gender_directive(&chars, "Thai", true).unwrap();
         assert!(d.contains("ครับ") && d.contains("ค่ะ"));
         assert!(d.contains("ผม") && d.contains("ฉัน"));
-        assert!(d.contains("Mei=female") && d.contains("Hiroshi=male") && d.contains("Narrator=neutral"));
+        assert!(
+            d.contains("Mei=female")
+                && d.contains("Hiroshi=male")
+                && d.contains("Narrator=neutral")
+        );
 
         // Non-Thai target → gendered particles don't apply, nothing added.
         assert!(gender_directive(&chars, "English", true).is_none());
@@ -961,17 +992,27 @@ mod tests {
         let got = parse_gender_classify(
             "```json\n[{\"name\":\"Mei\",\"gender\":\"F\",\"note\":\"น้องสาว, กันเอง\"},{\"name\":\"Coach\",\"gender\":\"male\"},{\"name\":\"X\",\"gender\":\"?\"}]\n```",
         );
-        assert_eq!(got, vec![
-            ("Mei".to_string(), "female".to_string(), "น้องสาว, กันเอง".to_string()),
-            ("Coach".to_string(), "male".to_string(), "".to_string()),
-            ("X".to_string(), "neutral".to_string(), "".to_string()),
-        ]);
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "Mei".to_string(),
+                    "female".to_string(),
+                    "น้องสาว, กันเอง".to_string()
+                ),
+                ("Coach".to_string(), "male".to_string(), "".to_string()),
+                ("X".to_string(), "neutral".to_string(), "".to_string()),
+            ]
+        );
     }
 
     #[test]
     fn persona_directive_lists_notes_and_skips_empty() {
         let chars = vec![
-            ("Mei".to_string(), "น้องสาว protagonist, เรียกพี่, กันเอง".to_string()),
+            (
+                "Mei".to_string(),
+                "น้องสาว protagonist, เรียกพี่, กันเอง".to_string(),
+            ),
             ("Boss".to_string(), "หัวหน้า, ทางการ".to_string()),
             ("Ghost".to_string(), "".to_string()), // no note → skipped
         ];
@@ -999,9 +1040,12 @@ mod tests {
         let got = parse_persona_classify(
             "```json\n[{\"name\":\"Mei\",\"note\":\"น้องสาว, เรียกพี่\"},{\"name\":\"Boss\",\"note\":\"\"}]\n```",
         );
-        assert_eq!(got, vec![
-            ("Mei".to_string(), "น้องสาว, เรียกพี่".to_string()),
-            ("Boss".to_string(), "".to_string()),
-        ]);
+        assert_eq!(
+            got,
+            vec![
+                ("Mei".to_string(), "น้องสาว, เรียกพี่".to_string()),
+                ("Boss".to_string(), "".to_string()),
+            ]
+        );
     }
 }

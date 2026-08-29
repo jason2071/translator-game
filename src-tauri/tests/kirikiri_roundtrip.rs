@@ -32,7 +32,10 @@ const ACT2: &str = "\
 
 fn sjis(s: &str) -> Vec<u8> {
     let (cow, _, had_err) = encoding_rs::SHIFT_JIS.encode(s);
-    assert!(!had_err, "fixture string is not representable in Shift-JIS: {s:?}");
+    assert!(
+        !had_err,
+        "fixture string is not representable in Shift-JIS: {s:?}"
+    );
     cow.into_owned()
 }
 
@@ -167,13 +170,17 @@ fn thai_translation_of_shift_jis_falls_back_to_utf16() {
     u.status = Status::Translated;
 
     let out = tempfile::tempdir().unwrap();
-    eng.inject(root, std::slice::from_ref(&u), out.path()).unwrap();
+    eng.inject(root, std::slice::from_ref(&u), out.path())
+        .unwrap();
 
     let bytes = std::fs::read(out.path().join(&u.file)).unwrap();
     let text = read_utf16le(&bytes); // falls back to UTF-16LE
     assert!(text.contains("เงียบสงบยามเช้า[l]"), "translation written");
     assert!(!text.contains("静かな朝だった"), "source replaced");
-    assert!(text.contains("何をしようか考えた。[p]"), "other line preserved");
+    assert!(
+        text.contains("何をしようか考えた。[p]"),
+        "other line preserved"
+    );
 }
 
 #[test]
@@ -182,12 +189,17 @@ fn inject_replaces_only_target_span_in_utf16_file() {
     let root = d.path();
     let eng = engine::detect(root).unwrap();
     let units = eng.extract(root, &ExtractOpts::default()).unwrap();
-    let mut u = units.iter().find(|u| u.source == "森へ行く").unwrap().clone();
+    let mut u = units
+        .iter()
+        .find(|u| u.source == "森へ行く")
+        .unwrap()
+        .clone();
     u.translation = Some("เข้าป่า".to_string());
     u.status = Status::Translated;
 
     let out = tempfile::tempdir().unwrap();
-    eng.inject(root, std::slice::from_ref(&u), out.path()).unwrap();
+    eng.inject(root, std::slice::from_ref(&u), out.path())
+        .unwrap();
 
     let bytes = std::fs::read(out.path().join(&u.file)).unwrap();
     let text = read_utf16le(&bytes);

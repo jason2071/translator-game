@@ -143,7 +143,8 @@ fn inject_replaces_only_target_span() {
     u.status = Status::Translated;
 
     let out = tempfile::tempdir().unwrap();
-    eng.inject(&root, std::slice::from_ref(&u), out.path()).unwrap();
+    eng.inject(&root, std::slice::from_ref(&u), out.path())
+        .unwrap();
 
     let patched = std::fs::read_to_string(out.path().join(&u.file)).unwrap();
     // The target line now holds the translation, quotes intact.
@@ -178,13 +179,23 @@ fn archived_game_resolves_to_game_dir_and_reports_packed() {
     // data_dir must be game/, NOT root (so the tl/ check and font remap land right,
     // and renpy/common at the root is never treated as the game).
     let d = eng.describe(root).unwrap();
-    assert!(d.data_dir.replace('\\', "/").ends_with("/game"), "data_dir = {}", d.data_dir);
+    assert!(
+        d.data_dir.replace('\\', "/").ends_with("/game"),
+        "data_dir = {}",
+        d.data_dir
+    );
 
     // The archive here isn't a readable RPA, so auto-unpack recovers no source and
     // extraction fails with an actionable message (decompile the .rpyc) rather than
     // importing the SDK UI.
-    let err = eng.extract(root, &ExtractOpts::default()).unwrap_err().to_string();
-    assert!(err.contains("compiled") && err.contains("unrpyc"), "got: {err}");
+    let err = eng
+        .extract(root, &ExtractOpts::default())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("compiled") && err.contains("unrpyc"),
+        "got: {err}"
+    );
 }
 
 /// Assemble a real RPA-3.0 archive: `RPA-3.0 <hex index off> <hex key>\n`, each
@@ -246,16 +257,26 @@ fn packed_game_with_source_rpy_auto_unpacks() {
     // count — without unpacking yet.
     let d = eng.describe(root).unwrap();
     assert_eq!(d.file_count, 1, "peeked .rpy count from the archive");
-    assert!(!root.join("game/story.rpy").exists(), "describe must not write");
+    assert!(
+        !root.join("game/story.rpy").exists(),
+        "describe must not write"
+    );
 
     // extract() unpacks the source out of the archive, then reads it normally.
     let units = eng.extract(root, &ExtractOpts::default()).unwrap();
-    assert!(root.join("game/story.rpy").exists(), "extract unpacked the source");
+    assert!(
+        root.join("game/story.rpy").exists(),
+        "extract unpacked the source"
+    );
     let sources: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
     assert!(sources.contains(&"Into the woods we go."));
     assert!(sources.contains(&"Back to town."));
     assert_eq!(
-        units.iter().find(|u| u.source == "Into the woods we go.").unwrap().kind,
+        units
+            .iter()
+            .find(|u| u.source == "Into the woods we go.")
+            .unwrap()
+            .kind,
         UnitKind::Dialogue
     );
 
@@ -295,7 +316,10 @@ fn token_tl_tree_does_not_mask_the_base_script() {
         !texts.contains(&"ゲームを終了しますか？"),
         "the SDK common.rpy tree must not be the source: {texts:?}"
     );
-    assert!(units.iter().all(|u| u.file == "story.rpy"), "all from the base script");
+    assert!(
+        units.iter().all(|u| u.file == "story.rpy"),
+        "all from the base script"
+    );
 }
 
 #[test]
@@ -317,8 +341,14 @@ fn richer_tl_tree_still_wins_over_a_thin_base_script() {
     let eng = engine::detect(root).unwrap();
     let units = eng.extract(root, &ExtractOpts::default()).unwrap();
     let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
-    assert!(texts.contains(&"Hello.") && texts.contains(&"Goodbye."), "{texts:?}");
-    assert!(!texts.contains(&"Привет."), "base script not used: {texts:?}");
+    assert!(
+        texts.contains(&"Hello.") && texts.contains(&"Goodbye."),
+        "{texts:?}"
+    );
+    assert!(
+        !texts.contains(&"Привет."),
+        "base script not used: {texts:?}"
+    );
 }
 
 #[test]
@@ -331,7 +361,11 @@ fn explicit_english_uses_base_scripts_before_japanese_fallback() {
     let game = root.join("game");
     std::fs::create_dir_all(game.join("tl/japanese")).unwrap();
     std::fs::write(game.join("script_version.txt"), b"8.4.0").unwrap();
-    std::fs::write(game.join("story.rpy"), "label start:\n    m \"Hello from base.\"\n").unwrap();
+    std::fs::write(
+        game.join("story.rpy"),
+        "label start:\n    m \"Hello from base.\"\n",
+    )
+    .unwrap();
     std::fs::write(
         game.join("tl/japanese/story.rpy"),
         "translate japanese a1:\n    m \"こんにちは。\"\n\ntranslate japanese a2:\n    m \"さようなら。\"\n",
@@ -351,7 +385,10 @@ fn explicit_english_uses_base_scripts_before_japanese_fallback() {
     let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
     assert!(texts.contains(&"Hello from base."), "{texts:?}");
     assert!(!texts.contains(&"こんにちは。"), "{texts:?}");
-    assert!(units.iter().all(|u| !u.file.starts_with("tl/")), "{units:?}");
+    assert!(
+        units.iter().all(|u| !u.file.starts_with("tl/")),
+        "{units:?}"
+    );
 }
 
 #[test]
@@ -361,7 +398,11 @@ fn explicit_japanese_uses_the_japanese_tl_tree() {
     let game = root.join("game");
     std::fs::create_dir_all(game.join("tl/japanese")).unwrap();
     std::fs::write(game.join("script_version.txt"), b"8.4.0").unwrap();
-    std::fs::write(game.join("story.rpy"), "label start:\n    m \"Hello from base.\"\n").unwrap();
+    std::fs::write(
+        game.join("story.rpy"),
+        "label start:\n    m \"Hello from base.\"\n",
+    )
+    .unwrap();
     std::fs::write(
         game.join("tl/japanese/story.rpy"),
         "translate japanese a1:\n    m \"こんにちは。\"\n",
@@ -381,7 +422,10 @@ fn explicit_japanese_uses_the_japanese_tl_tree() {
     let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
     assert!(texts.contains(&"こんにちは。"), "{texts:?}");
     assert!(!texts.contains(&"Hello from base."), "{texts:?}");
-    assert!(units.iter().all(|u| u.file.starts_with("tl/japanese/")), "{units:?}");
+    assert!(
+        units.iter().all(|u| u.file.starts_with("tl/japanese/")),
+        "{units:?}"
+    );
 }
 
 #[test]
@@ -407,11 +451,17 @@ fn compiled_only_game_without_bundled_python_reports_actionable_error() {
         .extract(root, &ExtractOpts::default())
         .unwrap_err()
         .to_string();
-    assert!(err.contains("compiled") && err.contains("unrpyc"), "got: {err}");
+    assert!(
+        err.contains("compiled") && err.contains("unrpyc"),
+        "got: {err}"
+    );
     assert!(
         err.contains("Automatic decompile"),
         "should explain the auto-attempt: {err}"
     );
     // The bytecode was staged out of the archive as a side effect of the attempt.
-    assert!(root.join("game/story.rpyc").exists(), "rpyc staged from archive");
+    assert!(
+        root.join("game/story.rpyc").exists(),
+        "rpyc staged from archive"
+    );
 }

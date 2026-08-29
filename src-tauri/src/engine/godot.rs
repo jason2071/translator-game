@@ -87,7 +87,8 @@ impl GameEngine for GodotEngine {
 
         for (file, mut file_units) in by_file {
             let src = root.join(file);
-            let mut text = std::fs::read_to_string(&src).with_context(|| format!("reading {file}"))?;
+            let mut text =
+                std::fs::read_to_string(&src).with_context(|| format!("reading {file}"))?;
 
             // Splice from the end backwards so earlier byte offsets stay valid.
             // Spans start/end on ASCII quote/comma/newline boundaries, so they are
@@ -126,7 +127,9 @@ fn is_godot(root: &Path) -> bool {
     let mut has_catalog = false;
     let mut stack = vec![root.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -162,7 +165,9 @@ fn collect_catalogs(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {

@@ -13,6 +13,7 @@ pub mod project;
 use ai::{BatchItem, BatchReq, GlossPair, ProviderConfig};
 use engine::protect;
 use engine::DetectResult;
+use futures::StreamExt;
 use model::Status;
 use project::db::{FileCount, GlossCandidate, GlossaryEntry, LintWarning, Stats, UnitFilter};
 use project::{ExportResult, Project, ProjectInfo};
@@ -21,7 +22,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use futures::StreamExt;
 use tauri::Emitter;
 
 /// The single open project (only one at a time in V1).
@@ -123,7 +123,12 @@ fn rescan_project(state: tauri::State<AppState>) -> Result<RescanResult, String>
     with_project_mut(&state, |p| {
         let (added, context_filled, removed) = project::rescan(p)?;
         let total = project::db::unit_count(&p.conn)?;
-        Ok(RescanResult { added, context_filled, removed, total })
+        Ok(RescanResult {
+            added,
+            context_filled,
+            removed,
+            total,
+        })
     })
 }
 
@@ -147,7 +152,9 @@ fn set_languages(
 /// games.
 #[tauri::command]
 fn set_game_context(text: String, state: tauri::State<AppState>) -> Result<(), String> {
-    with_project(&state, |p| project::db::set_meta(&p.conn, "game_context", &text))
+    with_project(&state, |p| {
+        project::db::set_meta(&p.conn, "game_context", &text)
+    })
 }
 
 /// Set this project's setting-era preset (e.g. "ancient", "modern"), which seeds
@@ -222,11 +229,7 @@ fn update_unit(
             if let Some(t) = translation.as_deref() {
                 let src: Option<String> = p
                     .conn
-                    .query_row(
-                        "SELECT source FROM unit WHERE id = ?1",
-                        [id],
-                        |r| r.get(0),
-                    )
+                    .query_row("SELECT source FROM unit WHERE id = ?1", [id], |r| r.get(0))
                     .ok();
                 if let Some(src) = src {
                     project::db::tm_upsert(&p.conn, &src, t)?;
@@ -315,11 +318,14 @@ fn visible_characters(conn: &rusqlite::Connection) -> anyhow::Result<Vec<project
 fn characters_list(state: tauri::State<AppState>) -> Result<Vec<project::db::Character>, String> {
     with_project(&state, |p| {
         let mut list = visible_characters(&p.conn)?;
-        let have: std::collections::HashSet<String> =
-            list.iter().map(|c| c.name.clone()).collect();
+        let have: std::collections::HashSet<String> = list.iter().map(|c| c.name.clone()).collect();
         for name in project::db::distinct_speakers(&p.conn)? {
             if !project::db::is_non_character_speaker(&name) && !have.contains(&name) {
-                list.push(project::db::Character { name, gender: String::new(), note: String::new() });
+                list.push(project::db::Character {
+                    name,
+                    gender: String::new(),
+                    note: String::new(),
+                });
             }
         }
         list.sort_by(|a, b| a.name.cmp(&b.name));
@@ -329,20 +335,34 @@ fn characters_list(state: tauri::State<AppState>) -> Result<Vec<project::db::Cha
 
 /// Set (or clear, with an empty gender) one speaker's gender.
 #[tauri::command]
-fn character_set(name: String, gender: String, state: tauri::State<AppState>) -> Result<(), String> {
-    with_project(&state, |p| project::db::character_set(&p.conn, &name, &gender))
+fn character_set(
+    name: String,
+    gender: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    with_project(&state, |p| {
+        project::db::character_set(&p.conn, &name, &gender)
+    })
 }
 
 /// Set (or clear, with an empty note) one speaker's persona/register note.
 #[tauri::command]
-fn character_set_note(name: String, note: String, state: tauri::State<AppState>) -> Result<(), String> {
-    with_project(&state, |p| project::db::character_set_note(&p.conn, &name, &note))
+fn character_set_note(
+    name: String,
+    note: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    with_project(&state, |p| {
+        project::db::character_set_note(&p.conn, &name, &note)
+    })
 }
 
 /// Delete every stored character row (before a clean re-classify).
 #[tauri::command]
 fn characters_clear(state: tauri::State<AppState>) -> Result<(), String> {
-    with_project(&state, |p| project::db::characters_clear(&p.conn).map(|_| ()))
+    with_project(&state, |p| {
+        project::db::characters_clear(&p.conn).map(|_| ())
+    })
 }
 
 /// AI-**find** the game's person characters and label each one's gender, then store
@@ -375,7 +395,10 @@ async fn classify_genders(
                 .map_err(|e| e.to_string())?
                 .into_iter()
                 .collect();
-        let engine_id = project::db::get_meta(&p.conn, "engine_id").ok().flatten().unwrap_or_default();
+        let engine_id = project::db::get_meta(&p.conn, "engine_id")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut trusted: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut todo: Vec<(String, String)> = Vec::new();
@@ -390,7 +413,10 @@ async fn classify_genders(
                 continue;
             }
             trusted.insert(n.trim().to_string());
-            todo.push((n.trim().to_string(), samples.get(n).cloned().unwrap_or_default()));
+            todo.push((
+                n.trim().to_string(),
+                samples.get(n).cloned().unwrap_or_default(),
+            ));
         }
         // Mining is the fallback for a game that names no speakers at all. When the
         // game does name them, mining only adds noise: a miner reads the capitalized
@@ -433,7 +459,14 @@ async fn classify_genders(
     for group in todo.chunks(chunk) {
         let (sys, user) = ai::prompt::build_gender_classify(group);
         match provider
-            .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
+            .complete(
+                &state.http,
+                key.as_deref(),
+                &sys,
+                &user,
+                &config.model,
+                config.max_tokens(),
+            )
             .await
         {
             // Keep a dialogue speaker with any label; keep a mined name only if it got a
@@ -499,14 +532,20 @@ async fn classify_personas(
             if n.trim().is_empty() || have_note.contains(n.trim()) || !seen.insert(key) {
                 continue;
             }
-            todo.push((n.trim().to_string(), samples.get(&n).cloned().unwrap_or_default()));
+            todo.push((
+                n.trim().to_string(),
+                samples.get(&n).cloned().unwrap_or_default(),
+            ));
         }
         for c in visible_characters(&p.conn).map_err(|e| e.to_string())? {
             let key = c.name.trim().to_lowercase();
             if c.name.trim().is_empty() || !c.note.trim().is_empty() || !seen.insert(key) {
                 continue;
             }
-            todo.push((c.name.trim().to_string(), samples.get(&c.name).cloned().unwrap_or_default()));
+            todo.push((
+                c.name.trim().to_string(),
+                samples.get(&c.name).cloned().unwrap_or_default(),
+            ));
         }
         todo.truncate(200);
         todo
@@ -531,7 +570,14 @@ async fn classify_personas(
     for group in todo.chunks(chunk) {
         let (sys, user) = ai::prompt::build_persona_classify(group);
         match provider
-            .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
+            .complete(
+                &state.http,
+                key.as_deref(),
+                &sys,
+                &user,
+                &config.model,
+                config.max_tokens(),
+            )
             .await
         {
             // Keep only names the model actually gave a note for (empty = "couldn't tell").
@@ -578,7 +624,10 @@ async fn suggest_glossary_ai(
     // slow part), so the button isn't a silent spinner. `count` on "asking" is how
     // many candidates the model is judging.
     let stage = |s: &str, count: usize| {
-        let _ = app.emit("glossary://suggest", serde_json::json!({ "stage": s, "count": count }));
+        let _ = app.emit(
+            "glossary://suggest",
+            serde_json::json!({ "stage": s, "count": count }),
+        );
     };
     stage("mining", 0);
 
@@ -590,7 +639,10 @@ async fn suggest_glossary_ai(
     let (mined, fallback_corpus, existing, source_lang, target_lang) = {
         let guard = state.project.lock().unwrap();
         let p = guard.as_ref().ok_or("no project open")?;
-        let engine_id = project::db::get_meta(&p.conn, "engine_id").ok().flatten().unwrap_or_default();
+        let engine_id = project::db::get_meta(&p.conn, "engine_id")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         let mined = project::db::mine_glossary_candidates(&p.conn, &engine_id, 150)
             .map_err(|e| e.to_string())?;
         // Only pay to gather the fallback sample when mining came up short.
@@ -606,8 +658,14 @@ async fn suggest_glossary_ai(
             .into_iter()
             .map(|g| g.term.to_lowercase())
             .collect();
-        let source_lang = project::db::get_meta(&p.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
-        let target_lang = project::db::get_meta(&p.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into());
+        let source_lang = project::db::get_meta(&p.conn, "source_lang")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "auto".into());
+        let target_lang = project::db::get_meta(&p.conn, "target_lang")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "Thai".into());
         (mined, fallback_corpus, existing, source_lang, target_lang)
     };
     if mined.is_empty() && fallback_corpus.trim().is_empty() {
@@ -628,14 +686,25 @@ async fn suggest_glossary_ai(
     // Classify path: the model filters + classifies + translates our local
     // shortlist (accurate counts come from the whole-DB mining, not the response).
     if mined.len() >= 5 {
-        let pairs: Vec<(String, String)> =
-            mined.iter().map(|c| (c.term.clone(), c.example.clone())).collect();
-        let counts: std::collections::HashMap<String, i64> =
-            mined.iter().map(|c| (c.term.to_lowercase(), c.count)).collect();
+        let pairs: Vec<(String, String)> = mined
+            .iter()
+            .map(|c| (c.term.clone(), c.example.clone()))
+            .collect();
+        let counts: std::collections::HashMap<String, i64> = mined
+            .iter()
+            .map(|c| (c.term.to_lowercase(), c.count))
+            .collect();
         let (sys, user) = ai::prompt::build_glossary_classify(&source_lang, &target_lang, &pairs);
         stage("asking", pairs.len());
         let raw = provider
-            .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
+            .complete(
+                &state.http,
+                key.as_deref(),
+                &sys,
+                &user,
+                &config.model,
+                config.max_tokens(),
+            )
             .await
             .map_err(|e| e.to_string())?;
         let mut out: Vec<GlossCandidate> = ai::prompt::parse_glossary_mining(&raw)
@@ -656,10 +725,18 @@ async fn suggest_glossary_ai(
     }
 
     // Fallback (no capitalization signal): let the model mine the text sample.
-    let (sys, user) = ai::prompt::build_glossary_mining(&source_lang, &target_lang, &fallback_corpus);
+    let (sys, user) =
+        ai::prompt::build_glossary_mining(&source_lang, &target_lang, &fallback_corpus);
     stage("asking", 0);
     let raw = provider
-        .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
+        .complete(
+            &state.http,
+            key.as_deref(),
+            &sys,
+            &user,
+            &config.model,
+            config.max_tokens(),
+        )
         .await
         .map_err(|e| e.to_string())?;
     let mut out: Vec<GlossCandidate> = ai::prompt::parse_glossary_mining(&raw)
@@ -692,12 +769,19 @@ async fn suggest_game_context(
     let (corpus, source_lang) = {
         let guard = state.project.lock().unwrap();
         let p = guard.as_ref().ok_or("no project open")?;
-        let engine_id = project::db::get_meta(&p.conn, "engine_id").ok().flatten().unwrap_or_default();
+        let engine_id = project::db::get_meta(&p.conn, "engine_id")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         // Diverse, code-stripped sample (intro + longest + spread), capped so it
         // fits a small context window — richer than the frequency-ranked mining
         // sample, which over-weights repeated UI strings.
-        let lines = project::db::sample_corpus(&p.conn, &engine_id, 14_000).map_err(|e| e.to_string())?;
-        let source_lang = project::db::get_meta(&p.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
+        let lines =
+            project::db::sample_corpus(&p.conn, &engine_id, 14_000).map_err(|e| e.to_string())?;
+        let source_lang = project::db::get_meta(&p.conn, "source_lang")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "auto".into());
         (lines.join("\n"), source_lang)
     };
     if corpus.trim().is_empty() {
@@ -717,7 +801,14 @@ async fn suggest_game_context(
     let (sys, user) = ai::prompt::build_context_prompt(&source_lang, &corpus);
     let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
     let raw = provider
-        .complete(&state.http, key.as_deref(), &sys, &user, &config.model, config.max_tokens())
+        .complete(
+            &state.http,
+            key.as_deref(),
+            &sys,
+            &user,
+            &config.model,
+            config.max_tokens(),
+        )
         .await
         .map_err(|e| e.to_string())?;
     Ok(ai::prompt::plain_completion(&raw))
@@ -729,7 +820,9 @@ fn glossary_add_bulk(
     items: Vec<(String, String)>,
     state: tauri::State<AppState>,
 ) -> Result<usize, String> {
-    with_project_mut(&state, |p| project::db::glossary_add_bulk(&mut p.conn, &items))
+    with_project_mut(&state, |p| {
+        project::db::glossary_add_bulk(&mut p.conn, &items)
+    })
 }
 
 #[tauri::command]
@@ -768,7 +861,9 @@ fn export_mod(
     embed_font: Option<bool>,
     state: tauri::State<AppState>,
 ) -> Result<project::ModResult, String> {
-    with_project(&state, |p| project::export_mod(p, embed_font.unwrap_or(false)))
+    with_project(&state, |p| {
+        project::export_mod(p, embed_font.unwrap_or(false))
+    })
 }
 
 /// Undo an in-place export: put the game's original files back from the
@@ -867,8 +962,10 @@ fn cancel_translation(state: tauri::State<AppState>) {
 /// Matches the picker's display names and the common ISO codes.
 fn is_cjk_lang(lang: &str) -> bool {
     let l = lang.trim().to_lowercase();
-    matches!(l.as_str(), "zh" | "ja" | "ko" | "zh-tw" | "zh-cn" | "zh-hant" | "zh-hans")
-        || l.contains("chin")
+    matches!(
+        l.as_str(),
+        "zh" | "ja" | "ko" | "zh-tw" | "zh-cn" | "zh-hant" | "zh-hans"
+    ) || l.contains("chin")
         || l.contains("japan")
         || l.contains("korea")
 }
@@ -886,8 +983,8 @@ fn is_thai_lang(lang: &str) -> bool {
 /// known asset extension); real translations never contain one.
 fn looks_like_asset_path(s: &str) -> bool {
     const ASSET_EXT: [&str; 12] = [
-        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".ogg", ".mp3", ".wav", ".opus", ".webm",
-        ".mp4", ".ttf",
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".ogg", ".mp3", ".wav", ".opus", ".webm", ".mp4",
+        ".ttf",
     ];
     let lower = s.to_ascii_lowercase();
     s.contains('/') && ASSET_EXT.iter().any(|e| lower.contains(e))
@@ -919,7 +1016,21 @@ async fn translate_units(
     // source (dedup), and pre-fill any group whose source is already in TM. Only
     // genuinely-new distinct sources reach the AI, so repeated lines and
     // previously-translated strings are never re-billed.
-    let (to_ai, total, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters, personas, polite_particles) = {
+    let (
+        to_ai,
+        total,
+        reused,
+        reused_updates,
+        glossary,
+        source_lang,
+        target_lang,
+        engine_id,
+        game_context,
+        era,
+        characters,
+        personas,
+        polite_particles,
+    ) = {
         let guard = state.project.lock().unwrap();
         let proj = guard.as_ref().ok_or("no project is open")?;
         let overwrite = scope.overwrite.unwrap_or(false);
@@ -965,7 +1076,10 @@ async fn translate_units(
         let mut box_lines: HashMap<String, Vec<String>> = HashMap::new();
         for u in &candidates {
             if let Some(g) = &u.group {
-                box_lines.entry(g.clone()).or_default().push(u.source.clone());
+                box_lines
+                    .entry(g.clone())
+                    .or_default()
+                    .push(u.source.clone());
             }
         }
 
@@ -977,9 +1091,7 @@ async fn translate_units(
             // Untranslated and previously-Failed units are both eligible; a
             // normal Run retries the ones that failed before.
             if u.source.is_empty()
-                || !(overwrite
-                    || u.status == Status::Untranslated
-                    || u.status == Status::Failed)
+                || !(overwrite || u.status == Status::Untranslated || u.status == Status::Failed)
             {
                 continue;
             }
@@ -1073,21 +1185,34 @@ async fn translate_units(
                 translation: g.translation,
             })
             .collect::<Vec<_>>();
-        let source_lang = project::db::get_meta(&proj.conn, "source_lang").ok().flatten().unwrap_or_else(|| "auto".into());
-        let target_lang = project::db::get_meta(&proj.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into());
+        let source_lang = project::db::get_meta(&proj.conn, "source_lang")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "auto".into());
+        let target_lang = project::db::get_meta(&proj.conn, "target_lang")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "Thai".into());
         // Per-project lore/setting notes, fed to the model on top of the global
         // Extra prompt (config.system_prompt).
-        let game_context = project::db::get_meta(&proj.conn, "game_context").ok().flatten().unwrap_or_default();
+        let game_context = project::db::get_meta(&proj.conn, "game_context")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         // Setting-era preset → a register directive prepended to extra_system.
-        let era = project::db::get_meta(&proj.conn, "era").ok().flatten().unwrap_or_default();
+        let era = project::db::get_meta(&proj.conn, "era")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         // Speaker → gender map → a Thai gendered-particle directive, and speaker → note
         // map → a persona/register directive (per-line speaker arrives via each unit's
         // `context`/`ctx`). One DB read, split into the two `(name, X)` maps.
         let cast = visible_characters(&proj.conn).unwrap_or_default();
-        let characters: Vec<(String, String)> =
-            cast.iter().map(|c| (c.name.clone(), c.gender.clone())).collect();
-        let personas: Vec<(String, String)> =
-            cast.into_iter().map(|c| (c.name, c.note)).collect();
+        let characters: Vec<(String, String)> = cast
+            .iter()
+            .map(|c| (c.name.clone(), c.gender.clone()))
+            .collect();
+        let personas: Vec<(String, String)> = cast.into_iter().map(|c| (c.name, c.note)).collect();
         // Thai politeness particles (ครับ/ค่ะ). Default OFF: left to itself a model
         // ends most lines with one, which reads as a dub rather than a translation.
         let polite_particles = project::db::get_meta(&proj.conn, "polite_particles")
@@ -1096,7 +1221,21 @@ async fn translate_units(
             .map(|v| v == "1")
             .unwrap_or(false);
 
-        (to_ai, total_units, reused, reused_updates, glossary, source_lang, target_lang, engine_id, game_context, era, characters, personas, polite_particles)
+        (
+            to_ai,
+            total_units,
+            reused,
+            reused_updates,
+            glossary,
+            source_lang,
+            target_lang,
+            engine_id,
+            game_context,
+            era,
+            characters,
+            personas,
+            polite_particles,
+        )
     };
 
     let mut summary = TranslateSummary {
@@ -1108,7 +1247,12 @@ async fn translate_units(
     // Instant jump for the TM-reused units.
     let _ = app.emit(
         "translate://progress",
-        Progress { done, total, translated: reused, failed: 0 },
+        Progress {
+            done,
+            total,
+            translated: reused,
+            failed: 0,
+        },
     );
     // Fill the reused rows in the grid live too.
     if !reused_updates.is_empty() {
@@ -1136,7 +1280,8 @@ async fn translate_units(
         if let Some(dir) = ai::prompt::era_directive(&era, &target_lang) {
             parts.push(dir);
         }
-        if let Some(dir) = ai::prompt::gender_directive(&characters, &target_lang, polite_particles) {
+        if let Some(dir) = ai::prompt::gender_directive(&characters, &target_lang, polite_particles)
+        {
             parts.push(dir);
         }
         if let Some(dir) = ai::prompt::persona_directive(&personas, &target_lang) {
@@ -1149,7 +1294,11 @@ async fn translate_units(
         if !global.is_empty() {
             parts.push(global.to_string());
         }
-        if parts.is_empty() { None } else { Some(parts.join("\n")) }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n"))
+        }
     };
     let batch_size = config.batch_size();
     let interval = config.min_interval_ms();
@@ -1268,7 +1417,11 @@ async fn translate_units(
                 let mut singles = futures::stream::iter(singles).buffered(concurrency);
                 let mut j = 0usize;
                 while let Some(r) = singles.next().await {
-                    let src = req.items.get(j).map(|it| it.text.clone()).unwrap_or_default();
+                    let src = req
+                        .items
+                        .get(j)
+                        .map(|it| it.text.clone())
+                        .unwrap_or_default();
                     let text = match r {
                         Some(Ok(mut v)) => v.pop().map(|t| ai::align_outer_whitespace(&src, &t)),
                         Some(Err(e)) => {
@@ -1366,7 +1519,10 @@ async fn translate_units(
                     .unwrap_or_else(|| "No translation returned by the model".to_string()),
             };
             for id in &g.ids {
-                failures.push(FailedUnit { id: *id, reason: reason.clone() });
+                failures.push(FailedUnit {
+                    id: *id,
+                    reason: reason.clone(),
+                });
             }
         }
         summary.failed += failures.len();
@@ -1483,8 +1639,14 @@ async fn translate_texts(
         let guard = state.project.lock().unwrap();
         match guard.as_ref() {
             Some(p) => (
-                project::db::get_meta(&p.conn, "source_lang").ok().flatten().unwrap_or_else(|| "Japanese".into()),
-                project::db::get_meta(&p.conn, "target_lang").ok().flatten().unwrap_or_else(|| "Thai".into()),
+                project::db::get_meta(&p.conn, "source_lang")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "Japanese".into()),
+                project::db::get_meta(&p.conn, "target_lang")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "Thai".into()),
                 p.engine_id.clone(),
             ),
             None => ("Japanese".into(), "Thai".into(), String::new()),
@@ -1493,8 +1655,10 @@ async fn translate_texts(
 
     let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
     let client = state.http.clone();
-    let masks: Vec<protect::Masked> =
-        texts.iter().map(|t| protect::mask_for(&engine_id, t)).collect();
+    let masks: Vec<protect::Masked> = texts
+        .iter()
+        .map(|t| protect::mask_for(&engine_id, t))
+        .collect();
     let total = texts.len();
     let interval = config.min_interval_ms();
 
@@ -1506,7 +1670,12 @@ async fn translate_texts(
     let mut last_error: Option<String> = None;
     let _ = app.emit(
         "translate://progress",
-        Progress { done: 0, total, translated: 0, failed: 0 },
+        Progress {
+            done: 0,
+            total,
+            translated: 0,
+            failed: 0,
+        },
     );
 
     // One item per request so progress is granular and cancellation is prompt.
@@ -1537,7 +1706,10 @@ async fn translate_texts(
             max_tokens: config.max_tokens(),
             thinking: config.thinking,
         };
-        let restored = match provider.translate_batch(&client, key.as_deref(), &req).await {
+        let restored = match provider
+            .translate_batch(&client, key.as_deref(), &req)
+            .await
+        {
             Ok(mut v) => v
                 .pop()
                 // A model routinely answers with a stray leading space — a glossary
@@ -1565,12 +1737,20 @@ async fn translate_texts(
         // Emit the finished item first (fills its row live), then the counter.
         let _ = app.emit(
             "translate://item",
-            TextItem { index: i, text: restored.clone() },
+            TextItem {
+                index: i,
+                text: restored.clone(),
+            },
         );
         out.push(restored);
         let _ = app.emit(
             "translate://progress",
-            Progress { done: i + 1, total, translated, failed },
+            Progress {
+                done: i + 1,
+                total,
+                translated,
+                failed,
+            },
         );
     }
     // Nothing came back at all and the provider told us why — report that instead
@@ -1758,7 +1938,9 @@ mod tests {
 
     #[test]
     fn asset_paths_are_rejected_as_translations() {
-        assert!(looks_like_asset_path("images/Week 12/MOW/C Beach Date/Sex/sc w12cbeachdate s078a.jpg"));
+        assert!(looks_like_asset_path(
+            "images/Week 12/MOW/C Beach Date/Sex/sc w12cbeachdate s078a.jpg"
+        ));
         assert!(looks_like_asset_path("audio/type3.ogg"));
         assert!(looks_like_asset_path("gui/fonts/tl_font.TTF"));
         // Real translations never trip it — even ones with a slash or a dotted word.

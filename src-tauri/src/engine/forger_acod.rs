@@ -105,7 +105,8 @@ impl GameEngine for ForgerAcodEngine {
                 // since extract, an in-range pointer can still land mid-UTF-8-char,
                 // which would panic `replace_range` instead of failing gracefully.
                 let end = start + len;
-                if end > text.len() || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+                if end > text.len() || !text.is_char_boundary(start) || !text.is_char_boundary(end)
+                {
                     return Err(anyhow!(
                         "stale pointer {} in {} — re-extract needed",
                         u.pointer,
@@ -170,7 +171,9 @@ fn collect_acod(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -292,7 +295,10 @@ mod tests {
             root,
             "sub.acod",
             &acod_bytes(&[
-                ("07270E50", "<font face='DINPro_Bold'>I wish I could retire.</font>"),
+                (
+                    "07270E50",
+                    "<font face='DINPro_Bold'>I wish I could retire.</font>",
+                ),
                 ("000D1792", "Choose now, hurry!"),
                 ("000EMPTY0", ""), // empty value → skipped (also not 8 hex, still skipped)
                 ("DEADBEEF", ""),  // valid key, empty value → skipped
@@ -316,9 +322,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
         let original = acod_bytes(&[
-            ("07270E50", "<font face='DINPro_Bold'>I wish I could retire.</font>"),
+            (
+                "07270E50",
+                "<font face='DINPro_Bold'>I wish I could retire.</font>",
+            ),
             ("000D1792", "Choose now, hurry!"),
-            ("00093521", "Your save is corrupt.<br/>Overwrite and restart?"),
+            (
+                "00093521",
+                "Your save is corrupt.<br/>Overwrite and restart?",
+            ),
         ]);
         write(root, "sub.acod", &original);
 
@@ -332,7 +344,10 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         eng.inject(root, &units, out.path()).unwrap();
         let produced = std::fs::read(out.path().join("sub.acod")).unwrap();
-        assert_eq!(produced, original, "unchanged units round-trip byte-identical");
+        assert_eq!(
+            produced, original,
+            "unchanged units round-trip byte-identical"
+        );
     }
 
     #[test]
@@ -342,7 +357,10 @@ mod tests {
         write(
             root,
             "ui.acod",
-            &acod_bytes(&[("000D1792", "Choose now, hurry!"), ("000D19DE", "Are you Anthousa?")]),
+            &acod_bytes(&[
+                ("000D1792", "Choose now, hurry!"),
+                ("000D19DE", "Are you Anthousa?"),
+            ]),
         );
         let eng = ForgerAcodEngine;
         let mut units = eng.extract(root, &ExtractOpts::default()).unwrap();

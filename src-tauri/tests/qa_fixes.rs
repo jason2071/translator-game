@@ -32,7 +32,9 @@ fn detects_and_extracts_mv_www_data_layout() {
     let d = eng.describe(&root).unwrap();
     assert!(d.data_dir.replace('\\', "/").ends_with("www/data"));
     let units = eng.extract(&root, &ExtractOpts::default()).unwrap();
-    assert!(units.iter().any(|u| u.file == "System.json" && u.pointer == "/gameTitle"));
+    assert!(units
+        .iter()
+        .any(|u| u.file == "System.json" && u.pointer == "/gameTitle"));
 }
 
 #[test]
@@ -49,7 +51,9 @@ fn opt_in_toggles_extract_notes_and_scripts() {
     let units = eng.extract(&root, &opts).unwrap();
 
     // note field now extracted (off by default in the other tests)
-    assert!(units.iter().any(|u| u.file == "Actors.json" && u.pointer == "/1/note"));
+    assert!(units
+        .iter()
+        .any(|u| u.file == "Actors.json" && u.pointer == "/1/note"));
     // 355 script command now extracted, verbatim
     assert!(units
         .iter()
@@ -65,7 +69,9 @@ fn inject_rejects_a_stale_pointer() {
     u.status = Status::Translated;
 
     let out = tempfile::tempdir().unwrap();
-    let err = eng.inject(&root, std::slice::from_ref(&u), out.path()).unwrap_err();
+    let err = eng
+        .inject(&root, std::slice::from_ref(&u), out.path())
+        .unwrap_err();
     assert!(err.to_string().contains("stale pointer"), "got: {err}");
 }
 
@@ -78,8 +84,13 @@ fn export_without_backup_still_patches() {
         .iter()
         .find(|u| u.file == "System.json" && u.pointer == "/gameTitle")
         .unwrap();
-    project::db::update_unit(&proj.conn, title.id, Some("แปลแล้ว"), Status::Translated.as_str())
-        .unwrap();
+    project::db::update_unit(
+        &proj.conn,
+        title.id,
+        Some("แปลแล้ว"),
+        Status::Translated.as_str(),
+    )
+    .unwrap();
 
     let res = project::export(&mut proj, false, false).unwrap();
     assert!(res.backup_dir.is_none(), "backup=false must skip backup");
@@ -87,7 +98,10 @@ fn export_without_backup_still_patches() {
     let patched: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(root.join("data/System.json")).unwrap())
             .unwrap();
-    assert_eq!(patched.pointer("/gameTitle").unwrap().as_str().unwrap(), "แปลแล้ว");
+    assert_eq!(
+        patched.pointer("/gameTitle").unwrap().as_str().unwrap(),
+        "แปลแล้ว"
+    );
 }
 
 #[test]
@@ -131,12 +145,18 @@ fn bc4_like_wildcards_are_literal() {
 
     // No fixture source contains "_", so a literal underscore matches nothing
     // (before the fix it was a wildcard and matched everything).
-    assert!(search("_").is_empty(), "'_' must be literal, not a wildcard");
+    assert!(
+        search("_").is_empty(),
+        "'_' must be literal, not a wildcard"
+    );
 
     // The System messages contain literal "%" (e.g. "…%1 damage!"), so a literal
     // "%" matches exactly those — not every row.
     let pct = search("%");
-    assert!(!pct.is_empty(), "'%' should match the rows that literally contain it");
+    assert!(
+        !pct.is_empty(),
+        "'%' should match the rows that literally contain it"
+    );
     assert!((pct.len() as i64) < total, "'%' must not act as match-all");
     assert!(pct.iter().all(|u| u.source.contains('%')));
 }

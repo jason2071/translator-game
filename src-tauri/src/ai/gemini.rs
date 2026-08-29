@@ -68,8 +68,8 @@ impl TranslationProvider for Gemini {
                 .await
                 .map_err(|e| CallError::Retryable(e.into()))?;
             if status.is_success() {
-                let v: serde_json::Value = serde_json::from_str(&text)
-                    .map_err(|e| CallError::Fatal(e.into()))?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| CallError::Fatal(e.into()))?;
                 let joined: String = v["candidates"][0]["content"]["parts"]
                     .as_array()
                     .map(|parts| {
@@ -129,7 +129,10 @@ impl TranslationProvider for Gemini {
                 .await
                 .map_err(|e| CallError::Retryable(e.into()))?;
             let status = resp.status();
-            let text = resp.text().await.map_err(|e| CallError::Retryable(e.into()))?;
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| CallError::Retryable(e.into()))?;
             if status.is_success() {
                 let v: serde_json::Value =
                     serde_json::from_str(&text).map_err(|e| CallError::Fatal(e.into()))?;

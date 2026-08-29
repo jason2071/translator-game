@@ -119,16 +119,23 @@ fn inject_replaces_only_target_cell_in_csv() {
     let root = d.path();
     let eng = engine::detect(root).unwrap();
     let units = eng.extract(root, &ExtractOpts::default()).unwrap();
-    let mut u = units.iter().find(|u| u.source == "Goodbye").unwrap().clone();
+    let mut u = units
+        .iter()
+        .find(|u| u.source == "Goodbye")
+        .unwrap()
+        .clone();
     u.translation = Some("\u{e25}\u{e32}\u{e01}\u{e48}\u{e2d}\u{e19}".to_string()); // ลาก่อน
     u.status = Status::Translated;
 
     let out = tempfile::tempdir().unwrap();
-    eng.inject(root, std::slice::from_ref(&u), out.path()).unwrap();
+    eng.inject(root, std::slice::from_ref(&u), out.path())
+        .unwrap();
 
     let text = std::fs::read_to_string(out.path().join(&u.file)).unwrap();
     // Target cell translated; the key, the sibling row, and the `ja` column stay.
-    assert!(text.contains("BYE,\u{e25}\u{e32}\u{e01}\u{e48}\u{e2d}\u{e19},\u{3055}\u{3088}\u{3046}\u{306a}\u{3089}"));
+    assert!(text.contains(
+        "BYE,\u{e25}\u{e32}\u{e01}\u{e48}\u{e2d}\u{e19},\u{3055}\u{3088}\u{3046}\u{306a}\u{3089}"
+    ));
     assert!(text.contains("GREET,\"Hello, hero\","));
     assert!(!text.contains("Goodbye"));
 }
@@ -149,7 +156,8 @@ fn inject_replaces_only_target_entry_in_po() {
     u.status = Status::Translated;
 
     let out = tempfile::tempdir().unwrap();
-    eng.inject(root, std::slice::from_ref(&u), out.path()).unwrap();
+    eng.inject(root, std::slice::from_ref(&u), out.path())
+        .unwrap();
 
     let text = std::fs::read_to_string(out.path().join(&u.file)).unwrap();
     assert!(text.contains("msgstr \"\u{e21}\u{e35} %d \u{e17}\u{e2d}\u{e07}\""));

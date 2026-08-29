@@ -58,8 +58,8 @@ impl TranslationProvider for Anthropic {
                 .await
                 .map_err(|e| CallError::Retryable(e.into()))?;
             if status.is_success() {
-                let v: serde_json::Value = serde_json::from_str(&text)
-                    .map_err(|e| CallError::Fatal(e.into()))?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| CallError::Fatal(e.into()))?;
                 // content is an array of blocks; concatenate text blocks.
                 let joined: String = v["content"]
                     .as_array()
@@ -116,7 +116,10 @@ impl TranslationProvider for Anthropic {
                 .await
                 .map_err(|e| CallError::Retryable(e.into()))?;
             let status = resp.status();
-            let text = resp.text().await.map_err(|e| CallError::Retryable(e.into()))?;
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| CallError::Retryable(e.into()))?;
             if status.is_success() {
                 let v: serde_json::Value =
                     serde_json::from_str(&text).map_err(|e| CallError::Fatal(e.into()))?;

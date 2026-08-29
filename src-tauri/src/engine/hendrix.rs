@@ -212,8 +212,7 @@ pub fn export_sheet(
                     .with_context(|| format!("snapshotting original {rel}"))?;
             }
         } else {
-            std::fs::copy(&snap, &live)
-                .with_context(|| format!("restoring original {rel}"))?;
+            std::fs::copy(&snap, &live).with_context(|| format!("restoring original {rel}"))?;
         }
     }
 
@@ -250,7 +249,11 @@ pub fn export_sheet(
         note.push_str(" (the language was already registered)");
     }
 
-    Ok(SheetExport { backup_dir, note, warning })
+    Ok(SheetExport {
+        backup_dir,
+        note,
+        warning,
+    })
 }
 
 /// Add a `{Name, Symbol, Font, FontSize}` entry for our target language to the
@@ -263,7 +266,9 @@ fn register_language(base: &Path, symbol: &str, name: &str) -> Result<bool> {
     let path = base.join("js").join("plugins.js");
     let text = std::fs::read_to_string(&path).context("reading js/plugins.js")?;
     let start = text.find('[').context("js/plugins.js: no $plugins array")?;
-    let end = text.rfind(']').context("js/plugins.js: unterminated $plugins array")?;
+    let end = text
+        .rfind(']')
+        .context("js/plugins.js: unterminated $plugins array")?;
     if end < start {
         return Err(anyhow!("js/plugins.js: malformed $plugins array"));
     }
@@ -279,7 +284,10 @@ fn register_language(base: &Path, symbol: &str, name: &str) -> Result<bool> {
             .get_mut("parameters")
             .and_then(|v| v.as_object_mut())
             .ok_or_else(|| anyhow!("Hendrix plugin has no parameters object"))?;
-        let langs_str = params.get("Languages").and_then(|v| v.as_str()).unwrap_or("[]");
+        let langs_str = params
+            .get("Languages")
+            .and_then(|v| v.as_str())
+            .unwrap_or("[]");
         let mut langs: Vec<String> = serde_json::from_str(langs_str).unwrap_or_default();
         let exists = langs.iter().any(|l| {
             serde_json::from_str::<serde_json::Value>(l)
@@ -303,7 +311,12 @@ fn register_language(base: &Path, symbol: &str, name: &str) -> Result<bool> {
     }
 
     if changed {
-        let rebuilt = format!("{}{}{}", &text[..start], serde_json::to_string(&arr)?, &text[end + 1..]);
+        let rebuilt = format!(
+            "{}{}{}",
+            &text[..start],
+            serde_json::to_string(&arr)?,
+            &text[end + 1..]
+        );
         std::fs::write(&path, rebuilt).context("writing js/plugins.js")?;
     }
     Ok(changed)
@@ -497,7 +510,11 @@ fn write_with_column(
     // callers restore the original sheet first, but guard anyway.
     if let Some(header) = sheet.records.first() {
         let norm = |s: &str| s.trim_start_matches('\u{feff}').trim().to_ascii_lowercase();
-        if header.fields.iter().any(|f| norm(f) == symbol.to_ascii_lowercase()) {
+        if header
+            .fields
+            .iter()
+            .any(|f| norm(f) == symbol.to_ascii_lowercase())
+        {
             return Err(anyhow!("{SHEET} already has a '{symbol}' column"));
         }
     }
@@ -600,7 +617,7 @@ mod tests {
         let written = std::fs::read_to_string(out.path().join(SHEET)).unwrap();
         let lines: Vec<&str> = written.lines().collect();
         assert_eq!(lines[0], format!("{HEADER},th")); // new column header
-        // Translated row carries the Thai; original columns unchanged.
+                                                      // Translated row carries the Thai; original columns unchanged.
         assert_eq!(lines[1], "NEW,,アリス,こんにちは,こんにちは,Hi,สวัสดี");
         // Untranslated row falls back to Original in the th column (not blank).
         assert_eq!(lines[2], "NEW,,,はい,はい,Yes,はい");
@@ -676,7 +693,10 @@ mod tests {
         std::fs::create_dir_all(&js).unwrap();
         std::fs::write(
             js.join("plugins.js"),
-            format!("var $plugins =\n{};\n", serde_json::to_string(&arr).unwrap()),
+            format!(
+                "var $plugins =\n{};\n",
+                serde_json::to_string(&arr).unwrap()
+            ),
         )
         .unwrap();
     }
@@ -726,7 +746,9 @@ mod tests {
         std::fs::write(base.join("data/System.json"), "{}").unwrap();
         write_hendrix_plugins(base, &["jp", "en"]);
 
-        let mut units = HendrixEngine.extract(base, &ExtractOpts::default()).unwrap();
+        let mut units = HendrixEngine
+            .extract(base, &ExtractOpts::default())
+            .unwrap();
         units[0].translation = Some("สวัสดี".into());
         units[0].status = crate::model::Status::Translated;
 

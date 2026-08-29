@@ -187,7 +187,8 @@ impl GameEngine for RenpyEngine {
 
             // Apply from the end of the file backwards so earlier byte offsets
             // stay valid as we splice.
-            file_units.sort_by_key(|u| Reverse(parse_pointer(&u.pointer).map(|(s, _)| s).unwrap_or(0)));
+            file_units
+                .sort_by_key(|u| Reverse(parse_pointer(&u.pointer).map(|(s, _)| s).unwrap_or(0)));
             for u in file_units {
                 let (start, len) = parse_pointer(&u.pointer)
                     .ok_or_else(|| anyhow!("bad Ren'Py pointer {} in {}", u.pointer, file))?;
@@ -306,7 +307,9 @@ fn needs_decompile(dir: &Path) -> bool {
     // A loose `.rpyc` whose `.rpy` sibling is missing.
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -323,7 +326,9 @@ fn needs_decompile(dir: &Path) -> bool {
     }
     // A `.rpyc` packed in a `.rpa` that hasn't been unpacked+decompiled to a `.rpy`.
     for archive in archives_in(dir) {
-        let Ok(names) = rpa::list_rpyc(&archive) else { continue };
+        let Ok(names) = rpa::list_rpyc(&archive) else {
+            continue;
+        };
         for name in names {
             // archive-relative `foo/bar.rpyc` → the on-disk `.rpy` it decompiles to.
             let rpy_rel = format!("{}.rpy", &name[..name.len() - ".rpyc".len()]);
@@ -431,7 +436,9 @@ fn run_unrpyc(python: &Path, unrpyc_py: &Path, dir: &Path, try_harder: bool) -> 
 fn has_rpyc(dir: &Path) -> bool {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -538,15 +545,19 @@ fn is_renpy_game_dir(dir: &Path) -> bool {
     rd.flatten().any(|e| {
         let p = e.path();
         p.is_file()
-            && (matches!(p.extension().and_then(|x| x.to_str()), Some("rpa") | Some("rpyc"))
-                || p.file_name().and_then(|n| n.to_str()) == Some("script_version.txt"))
+            && (matches!(
+                p.extension().and_then(|x| x.to_str()),
+                Some("rpa") | Some("rpyc")
+            ) || p.file_name().and_then(|n| n.to_str()) == Some("script_version.txt"))
     })
 }
 
 fn has_rpy(dir: &Path) -> bool {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -588,7 +599,9 @@ fn collect_rpy(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -697,9 +710,34 @@ fn block_skip_kind(trimmed: &str) -> Option<SkipKind> {
 /// dialogue (asset names, definitions, control flow, inline python).
 fn is_line_skip(first: &str) -> bool {
     const KW: &[&str] = &[
-        "$", "define", "default", "image", "scene", "show", "hide", "play", "stop", "queue",
-        "voice", "jump", "call", "return", "label", "pass", "window", "nvl", "camera", "pause",
-        "with", "init", "python", "screen", "style", "transform", "layeredimage", "testcase",
+        "$",
+        "define",
+        "default",
+        "image",
+        "scene",
+        "show",
+        "hide",
+        "play",
+        "stop",
+        "queue",
+        "voice",
+        "jump",
+        "call",
+        "return",
+        "label",
+        "pass",
+        "window",
+        "nvl",
+        "camera",
+        "pause",
+        "with",
+        "init",
+        "python",
+        "screen",
+        "style",
+        "transform",
+        "layeredimage",
+        "testcase",
     ];
     KW.contains(&first)
 }
@@ -886,8 +924,8 @@ fn display_text_ok(s: &str) -> bool {
     // An asset filename ("door h.png", "817506__soft-tap.mp3") reads as prose —
     // spaces, letters — but naming it in the translation breaks the lookup.
     const ASSET_EXT: [&str; 12] = [
-        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".ogg", ".mp3", ".wav", ".opus", ".webm",
-        ".mp4", ".ttf",
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".ogg", ".mp3", ".wav", ".opus", ".webm", ".mp4",
+        ".ttf",
     ];
     let lower = s.to_ascii_lowercase();
     if ASSET_EXT.iter().any(|e| lower.ends_with(e)) {
@@ -917,10 +955,12 @@ fn is_log_call(raw: &str) -> bool {
         let name = name.rsplit('.').next().unwrap_or(&name).to_string();
         // Match whole `_`-separated words, not a substring: `notify_dialog(` carries
         // "log" inside "dialog" and shows its argument to the player.
-        if name
-            .split('_')
-            .any(|w| matches!(w, "print" | "log" | "logger" | "logging" | "debug" | "trace"))
-        {
+        if name.split('_').any(|w| {
+            matches!(
+                w,
+                "print" | "log" | "logger" | "logging" | "debug" | "trace"
+            )
+        }) {
             return true;
         }
     }
@@ -1074,7 +1114,12 @@ fn harvest_python_line(
         if !py_seen.insert(s.to_string()) {
             continue;
         }
-        out.push(TransUnit::new(file, format!("str#{abs}:{len}"), UnitKind::Term, s));
+        out.push(TransUnit::new(
+            file,
+            format!("str#{abs}:{len}"),
+            UnitKind::Term,
+            s,
+        ));
     }
 }
 
@@ -1110,7 +1155,12 @@ fn harvest_screen_literal(
     }
     let abs = line_start + rel;
     if seen.insert(abs) {
-        out.push(TransUnit::new(file, format!("{abs}:{len}"), UnitKind::Term, s));
+        out.push(TransUnit::new(
+            file,
+            format!("{abs}:{len}"),
+            UnitKind::Term,
+            s,
+        ));
     }
 }
 
@@ -1156,7 +1206,10 @@ fn preferred_tl_source(dir: &Path, requested_lang: Option<&str>) -> Option<(Stri
             // ("Are you sure you want to quit?", …), not the game's text — a game
             // whose base language is this one ships it as a matter of course. Never
             // a source tree.
-            if rpys.iter().all(|f| f.file_name() == Some("common.rpy".as_ref())) {
+            if rpys
+                .iter()
+                .all(|f| f.file_name() == Some("common.rpy".as_ref()))
+            {
                 return None;
             }
             Some((rank, name, p))
@@ -1270,8 +1323,13 @@ fn extract_from_tl(file: &str, src_lang: &str, content: &str, out: &mut Vec<Tran
                         Some(tok.to_string())
                     };
                     out.push(
-                        TransUnit::new(file, format!("{abs}:{len}"), UnitKind::Dialogue, &raw[rel..rel + len])
-                            .with_context(speaker),
+                        TransUnit::new(
+                            file,
+                            format!("{abs}:{len}"),
+                            UnitKind::Dialogue,
+                            &raw[rel..rel + len],
+                        )
+                        .with_context(speaker),
                     );
                 }
             }
@@ -1280,18 +1338,13 @@ fn extract_from_tl(file: &str, src_lang: &str, content: &str, out: &mut Vec<Tran
     }
 }
 
-fn extract_rpy(
-    file: &str,
-    content: &str,
-    out: &mut Vec<TransUnit>,
-    py_seen: &mut HashSet<String>,
-) {
+fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>, py_seen: &mut HashSet<String>) {
     let mut skip_indent: Option<(usize, SkipKind)> = None;
     let mut skip_expr_depth: i32 = 0; // open brackets of a multi-line define/default/$
-    // Open brackets inside the *current* skipped block. A python block's dict or list
-    // may close its brace back at column 0 (hand-formatted code does this), and
-    // indent alone would then read that line as the end of the block — silently
-    // dropping every display string in the rest of it.
+                                      // Open brackets inside the *current* skipped block. A python block's dict or list
+                                      // may close its brace back at column 0 (hand-formatted code does this), and
+                                      // indent alone would then read that line as the end of the block — silently
+                                      // dropping every display string in the rest of it.
     let mut block_expr_depth: i32 = 0;
     let mut seen: HashSet<usize> = HashSet::new(); // inner-start offsets already taken
     let mut offset = 0usize; // byte offset of the current line within the file
@@ -1355,7 +1408,9 @@ fn extract_rpy(
                         {
                             harvest_python_line(file, raw, line_start, &mut seen, py_seen, out);
                         } else if let Some(arg) = screen_text_arg(trimmed) {
-                            harvest_screen_literal(file, raw, indent, arg, line_start, &mut seen, out);
+                            harvest_screen_literal(
+                                file, raw, indent, arg, line_start, &mut seen, out,
+                            );
                         }
                     }
                     SkipKind::Other => {}
@@ -1467,7 +1522,9 @@ fn extract_rpy(
         } else {
             UnitKind::Dialogue
         };
-        out.push(TransUnit::new(file, format!("{abs}:{inner_len}"), kind, source).with_context(speaker));
+        out.push(
+            TransUnit::new(file, format!("{abs}:{inner_len}"), kind, source).with_context(speaker),
+        );
     }
 }
 
@@ -1488,7 +1545,10 @@ fn assign_eq(s: &str) -> Option<usize> {
     for i in 0..b.len() {
         if b[i] == b'=' && b.get(i + 1) != Some(&b'=') {
             let prev = if i == 0 { b' ' } else { b[i - 1] };
-            if !matches!(prev, b'!' | b'<' | b'>' | b'=' | b'+' | b'-' | b'*' | b'/' | b'%') {
+            if !matches!(
+                prev,
+                b'!' | b'<' | b'>' | b'=' | b'+' | b'-' | b'*' | b'/' | b'%'
+            ) {
                 return Some(i);
             }
         }
@@ -1543,7 +1603,9 @@ fn character_definitions(files: &[(String, String)]) -> HashMap<String, Characte
             if !(rhs.starts_with('"') || rhs.starts_with('\'')) {
                 continue;
             }
-            let Some((ir, il, after)) = first_string(rhs) else { continue };
+            let Some((ir, il, after)) = first_string(rhs) else {
+                continue;
+            };
             let tail = rhs[after..].trim_start();
             if !tail.is_empty() && !tail.starts_with('#') {
                 continue; // RHS is more than a lone string — not a name variable
@@ -1558,24 +1620,34 @@ fn character_definitions(files: &[(String, String)]) -> HashMap<String, Characte
     for (file, content) in files {
         for raw in content.lines() {
             let t = raw.trim_start();
-            let Some(after) = t.strip_prefix("define ") else { continue };
+            let Some(after) = t.strip_prefix("define ") else {
+                continue;
+            };
             let Some(eq) = after.find('=') else { continue };
             let cident = after[..eq].trim();
             if !is_ident(cident) || out.contains_key(cident) {
                 continue;
             }
             let rhs = after[eq + 1..].trim_start();
-            let Some(rest) = rhs.strip_prefix("Character") else { continue };
+            let Some(rest) = rhs.strip_prefix("Character") else {
+                continue;
+            };
             let rest = rest.trim_start();
-            let Some(args) = rest.strip_prefix('(').map(str::trim_start) else { continue };
+            let Some(args) = rest.strip_prefix('(').map(str::trim_start) else {
+                continue;
+            };
             let (name_file, name, gettext) = if let Some(gettext_args) = args.strip_prefix("_(") {
-                let Some((ir, il, _)) = first_string(gettext_args) else { continue };
+                let Some((ir, il, _)) = first_string(gettext_args) else {
+                    continue;
+                };
                 if il == 0 {
                     continue;
                 }
                 (file.clone(), gettext_args[ir..ir + il].to_string(), true)
             } else if args.starts_with('"') || args.starts_with('\'') {
-                let Some((ir, il, _)) = first_string(args) else { continue };
+                let Some((ir, il, _)) = first_string(args) else {
+                    continue;
+                };
                 if il == 0 {
                     continue;
                 }
@@ -1599,7 +1671,11 @@ fn character_definitions(files: &[(String, String)]) -> HashMap<String, Characte
             }
             out.insert(
                 cident.to_string(),
-                CharacterDefinition { file: name_file, name, gettext },
+                CharacterDefinition {
+                    file: name_file,
+                    name,
+                    gettext,
+                },
             );
         }
     }
@@ -1638,7 +1714,9 @@ fn remap_speaker_contexts(units: &mut [TransUnit], defs: &HashMap<String, Charac
         if unit.kind != UnitKind::Dialogue {
             continue;
         }
-        let Some(code) = unit.context.as_deref() else { continue };
+        let Some(code) = unit.context.as_deref() else {
+            continue;
+        };
         let Some(def) = defs.get(code) else { continue };
         let name = def.name.trim();
         if !name.is_empty() && name != code {
@@ -1803,7 +1881,9 @@ pub fn dialogue_blocks(content: &str) -> Vec<DiaBlock> {
 fn label_name(trimmed: &str) -> Option<String> {
     let after = trimmed.strip_prefix("label")?;
     let after = after.trim_start();
-    let end = after.find(|c: char| c == ':' || c == '(' || c.is_whitespace()).unwrap_or(after.len());
+    let end = after
+        .find(|c: char| c == ':' || c == '(' || c.is_whitespace())
+        .unwrap_or(after.len());
     let name = &after[..end];
     if name.is_empty() {
         None
@@ -1906,7 +1986,9 @@ pub fn harvest_tl_untranslated(dir: &Path, existing: &[TransUnit]) -> Vec<TransU
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -1916,7 +1998,9 @@ pub fn harvest_tl_untranslated(dir: &Path, existing: &[TransUnit]) -> Vec<TransU
             if p.extension().and_then(|x| x.to_str()) != Some("rpy") {
                 continue;
             }
-            let Ok(content) = std::fs::read_to_string(&p) else { continue };
+            let Ok(content) = std::fs::read_to_string(&p) else {
+                continue;
+            };
             // File path relative to the game dir (`tl/<lang>/common.rpy`), matching
             // how the fill loop and the rest of the engine name Ren'Py files.
             let rel = p
@@ -2146,7 +2230,8 @@ pub fn export_tl_with_font_scale(
                 }
                 let filled = renpy_tl::fill_tl(&content, &lookup);
                 if filled != content {
-                    std::fs::write(&p, filled).with_context(|| format!("writing {}", p.display()))?;
+                    std::fs::write(&p, filled)
+                        .with_context(|| format!("writing {}", p.display()))?;
                 }
                 files += 1;
             }
@@ -2262,7 +2347,9 @@ fn tl_source_lang(units: &[TransUnit]) -> Option<String> {
         }
     }
     // Largest tl/ tree wins ties by name, so the choice is deterministic.
-    let (lang, n) = by_lang.into_iter().max_by_key(|&(l, n)| (n, std::cmp::Reverse(l)))?;
+    let (lang, n) = by_lang
+        .into_iter()
+        .max_by_key(|&(l, n)| (n, std::cmp::Reverse(l)))?;
     (n > base).then(|| lang.to_string())
 }
 
@@ -2322,7 +2409,11 @@ fn export_tl_from_source_with_font_scale(
                 let (start, len) = parse_pointer(&u.pointer)
                     .ok_or_else(|| anyhow!("bad Ren'Py tl pointer {} in {}", u.pointer, rel))?;
                 if start + len > bytes.len() {
-                    return Err(anyhow!("stale pointer {} in {} — re-extract needed", u.pointer, rel));
+                    return Err(anyhow!(
+                        "stale pointer {} in {} — re-extract needed",
+                        u.pointer,
+                        rel
+                    ));
                 }
                 let tr = u.translation.clone().unwrap_or_default();
                 // Escape literal `%` (→ `%%`) the way the source does: Ren'Py
@@ -2331,7 +2422,10 @@ fn export_tl_from_source_with_font_scale(
                 // `%` is a raw format string (strftime, screen label) the game consumes
                 // as-is. `fill_tl` does the same for the non-source tl path.
                 let tr = renpy_tl::escape_percent_like(&u.source, &renpy_tl::decode_escapes(&tr));
-                bytes.splice(start..start + len, renpy_tl::quote_unicode(&tr).into_bytes());
+                bytes.splice(
+                    start..start + len,
+                    renpy_tl::quote_unicode(&tr).into_bytes(),
+                );
             }
         }
         // Retag the column-0 `translate <src> …` block headers to the target locale.
@@ -2390,7 +2484,9 @@ fn add_language_option(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
     let already = format!("Language(\"{lang}\")");
     let mut stack = vec![data_dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -2402,7 +2498,9 @@ fn add_language_option(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
             if p.extension().and_then(|x| x.to_str()) != Some("rpy") {
                 continue;
             }
-            let Ok(content) = std::fs::read_to_string(&p) else { continue };
+            let Ok(content) = std::fs::read_to_string(&p) else {
+                continue;
+            };
             if !content.contains("action Language(") || content.contains(&already) {
                 continue;
             }
@@ -2426,7 +2524,8 @@ fn add_language_option(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
                     out.push_str(&button);
                 }
             }
-            std::fs::write(&p, out).with_context(|| format!("adding language button to {}", p.display()))?;
+            std::fs::write(&p, out)
+                .with_context(|| format!("adding language button to {}", p.display()))?;
         }
     }
     Ok(())
@@ -2632,7 +2731,11 @@ fn setup_language_with_font_scale(
             let (os, ns) = (text_segments(&old_u), text_segments(&new_u));
             if os.len() == ns.len() && os.len() > 1 {
                 for (o, n) in os.iter().zip(ns.iter()) {
-                    if o != n && !o.is_empty() && !n.is_empty() && usable(o) && seen_keys.insert(o.clone())
+                    if o != n
+                        && !o.is_empty()
+                        && !n.is_empty()
+                        && usable(o)
+                        && seen_keys.insert(o.clone())
                     {
                         s.push_str(&format!(
                             "        \"{}\": \"{}\",\n",
@@ -2697,7 +2800,9 @@ fn setup_language_with_font_scale(
         // ends, so it is safe in any script — no language gate.
         s.push_str("        for (_a, _b), _v in _tl_fmts:\n");
         s.push_str("            if len(_t) >= len(_a) + len(_b) and _t.startswith(_a) and _t.endswith(_b):\n");
-        s.push_str("                _mid = _t[len(_a):len(_t) - len(_b)] if _b else _t[len(_a):]\n");
+        s.push_str(
+            "                _mid = _t[len(_a):len(_t) - len(_b)] if _b else _t[len(_a):]\n",
+        );
         s.push_str("                _out = _v.replace(\"{}\", _tl_text.get(_mid, _mid))\n");
         s.push_str("                if _out != _t:\n");
         s.push_str("                    return _out\n");
@@ -2747,7 +2852,9 @@ fn setup_language_with_font_scale(
         s.push_str("    def _tl_restore_runtime_lists():\n");
         s.push_str("        for _v, _m in _tl_restore_lists.items():\n");
         s.push_str("            try:\n");
-        s.push_str("                setattr(store, _v, [_m.get(_x, _x) for _x in getattr(store, _v)])\n");
+        s.push_str(
+            "                setattr(store, _v, [_m.get(_x, _x) for _x in getattr(store, _v)])\n",
+        );
         s.push_str("            except Exception:\n");
         s.push_str("                pass\n");
         s.push_str("    if _tl_restore_runtime_lists not in config.after_load_callbacks:\n");
@@ -2780,7 +2887,9 @@ fn setup_language_with_font_scale(
         s.push_str("        _g = _tl_groups.get(_f)\n");
         s.push_str("        if _g is None:\n");
         s.push_str("            try:\n");
-        s.push_str("                _g = FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_f, None, None)\n");
+        s.push_str(
+            "                _g = FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_f, None, None)\n",
+        );
         s.push_str("            except Exception:\n");
         s.push_str("                _g = _f\n");
         s.push_str("            _tl_groups[_f] = _g\n");
@@ -2825,7 +2934,9 @@ fn setup_language_with_font_scale(
         s.push_str("    for _f in _tl_fonts:\n");
         s.push_str("        for _b in (False, True):\n");
         s.push_str("            for _i in (False, True):\n");
-        s.push_str("                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n");
+        s.push_str(
+            "                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n",
+        );
         if has_heart_icon_font {
             s.push_str("    if hasattr(store, \"heart_icon\"):\n");
             s.push_str("        store.heart_icon = \"{font=rpgtl_icons}♡{/font}\"\n");
@@ -2896,8 +3007,7 @@ fn copy_dejavu_icon_font(data_dir: &Path) -> Result<bool> {
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::copy(&src, &dst)
-        .with_context(|| format!("copying icon font {}", src.display()))?;
+    std::fs::copy(&src, &dst).with_context(|| format!("copying icon font {}", src.display()))?;
     Ok(true)
 }
 
@@ -2908,7 +3018,9 @@ fn collect_font_refs(data_dir: &Path) -> Vec<String> {
     let mut refs = std::collections::BTreeSet::new();
     let mut stack = vec![data_dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -3040,7 +3152,10 @@ mod tests {
             sources.contains(&"家の中を探索する"),
             "the block continues past the column-0 brace: {sources:?}"
         );
-        assert!(sources.contains(&"僕の部屋"), "the dict value itself: {sources:?}");
+        assert!(
+            sources.contains(&"僕の部屋"),
+            "the dict value itself: {sources:?}"
+        );
     }
 
     #[test]
@@ -3059,9 +3174,15 @@ mod tests {
 ";
         let units = extract(src);
         let sources: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
-        assert!(!sources.iter().any(|s| s.contains("voice manifest")), "{sources:?}");
+        assert!(
+            !sources.iter().any(|s| s.contains("voice manifest")),
+            "{sources:?}"
+        );
         assert!(!sources.contains(&"reloading config"), "{sources:?}");
-        assert!(sources.contains(&"ボイス生成完了"), "a notify IS shown: {sources:?}");
+        assert!(
+            sources.contains(&"ボイス生成完了"),
+            "a notify IS shown: {sources:?}"
+        );
     }
 
     #[test]
@@ -3079,14 +3200,23 @@ mod tests {
         .unwrap();
 
         // A game already has a unit for "Already have unit" — don't duplicate it.
-        let existing = vec![TransUnit::new("script.rpy", "1:1", UnitKind::Term, "Already have unit")];
+        let existing = vec![TransUnit::new(
+            "script.rpy",
+            "1:1",
+            UnitKind::Term,
+            "Already have unit",
+        )];
         let got = harvest_tl_untranslated(&tl, &existing);
 
         let sources: Vec<&str> = got.iter().map(|u| u.source.as_str()).collect();
         assert_eq!(sources, vec!["Are you sure you want to quit?"], "{got:?}");
         let u = &got[0];
         assert_eq!(u.file, "tl/thai/common.rpy");
-        assert!(u.pointer.starts_with("str#"), "display-matched, not spliced: {}", u.pointer);
+        assert!(
+            u.pointer.starts_with("str#"),
+            "display-matched, not spliced: {}",
+            u.pointer
+        );
         // A harvested tl/ unit must never flip a re-export into tl-source mode.
         assert_eq!(tl_source_lang(&got), None);
     }
@@ -3110,15 +3240,22 @@ mod tests {
         let out = export_tl_from_source(&game, "english", &units, "Thai").unwrap();
         assert!(out.files >= 1);
 
-        let thai = std::fs::read_to_string(game.join("tl").join("thai").join("script.rpy")).unwrap();
-        assert!(thai.contains("translate thai a1:"), "retagged dialogue: {thai}");
+        let thai =
+            std::fs::read_to_string(game.join("tl").join("thai").join("script.rpy")).unwrap();
+        assert!(
+            thai.contains("translate thai a1:"),
+            "retagged dialogue: {thai}"
+        );
         assert!(thai.contains("translate thai strings:"), "retagged strings");
         assert!(thai.contains("\"T:Hello\""), "dialogue spliced");
         assert!(thai.contains("\"T:World\""), "strings `new` spliced");
         assert!(thai.contains("old \"X\""), "the `old` key is preserved");
         assert!(!thai.contains("translate english"), "no source tag left");
         // The source tree is never modified (idempotent re-export).
-        assert_eq!(std::fs::read_to_string(ten.join("script.rpy")).unwrap(), src);
+        assert_eq!(
+            std::fs::read_to_string(ten.join("script.rpy")).unwrap(),
+            src
+        );
     }
 
     /// A game whose dialogue lives in base `.rpy` but that also ships a stray
@@ -3135,7 +3272,8 @@ mod tests {
         extract_rpy("story.rpy", script, &mut units, &mut py_seen);
         assert!(units.len() >= 3, "base units extracted: {}", units.len());
         // Plus a shipped tl/japanese/common.rpy — a handful of UI strings.
-        let common = "translate japanese strings:\n    old \"Quit?\"\n    new \"\u{7d42}\u{4e86}?\"\n";
+        let common =
+            "translate japanese strings:\n    old \"Quit?\"\n    new \"\u{7d42}\u{4e86}?\"\n";
         extract_from_tl("tl/japanese/common.rpy", "japanese", common, &mut units);
         assert!(
             units.iter().any(|u| u.file.starts_with("tl/")),
@@ -3179,9 +3317,13 @@ mod tests {
         }
         export_tl_from_source(&game, "english", &units, "Thai").unwrap();
 
-        let thai = std::fs::read_to_string(game.join("tl").join("thai").join("script.rpy")).unwrap();
+        let thai =
+            std::fs::read_to_string(game.join("tl").join("thai").join("script.rpy")).unwrap();
         assert!(thai.contains("50%%"), "literal percent doubled: {thai}");
-        assert!(!thai.contains("50% "), "no bare `% ` left that Ren'Py would misread");
+        assert!(
+            !thai.contains("50% "),
+            "no bare `% ` left that Ren'Py would misread"
+        );
     }
 
     #[test]
@@ -3209,13 +3351,15 @@ translate english python:
         let sources: Vec<&str> = out.iter().map(|u| u.source.as_str()).collect();
         assert_eq!(sources, vec!["Hello there", "Narration line.", "Victoria"]);
         // No Cyrillic (the `old`/comment original) and no python-block code leaked in.
-        assert!(!sources.iter().any(|s| s.contains('В') || s.contains("Character")));
+        assert!(!sources
+            .iter()
+            .any(|s| s.contains('В') || s.contains("Character")));
         // Speaker captured from the say prefix; kinds correct.
         assert_eq!(out[0].context.as_deref(), Some("e"));
         assert_eq!(out[0].kind, UnitKind::Dialogue);
         assert_eq!(out[1].context, None); // narration has no speaker
         assert_eq!(out[2].kind, UnitKind::Term); // a strings entry
-        // Byte spans are exact: content[span] == the source string.
+                                                 // Byte spans are exact: content[span] == the source string.
         for u in &out {
             let (s, l) = parse_pointer(&u.pointer).unwrap();
             assert_eq!(&src[s..s + l], u.source);
@@ -3262,11 +3406,17 @@ init python:
 
         // Bare screen literals and multi-word python strings ARE harvested now
         // (as Term units, translated via the strings table at display time).
-        let ui = units.iter().find(|u| u.source == "This is UI, not dialogue.").unwrap();
+        let ui = units
+            .iter()
+            .find(|u| u.source == "This is UI, not dialogue.")
+            .unwrap();
         assert_eq!(ui.kind, UnitKind::Term);
         let code = units.iter().find(|u| u.source == "code string").unwrap();
         assert_eq!(code.kind, UnitKind::Term);
-        assert!(code.pointer.starts_with("str#"), "python strings are display-matched, not spliced");
+        assert!(
+            code.pointer.starts_with("str#"),
+            "python strings are display-matched, not spliced"
+        );
     }
 
     #[test]
@@ -3294,7 +3444,10 @@ label start:
 
         assert!(texts.contains(&"Real dialogue."), "kept real dialogue");
         for junk in ["gui/frame.png", "input", "main_menu", "who"] {
-            assert!(!texts.contains(&junk), "must skip screen/style junk: {junk}");
+            assert!(
+                !texts.contains(&junk),
+                "must skip screen/style junk: {junk}"
+            );
         }
     }
 
@@ -3325,15 +3478,24 @@ label start:
         let units = extract(src);
         let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
 
-        assert!(texts.contains(&"Real dialogue."), "kept real dialogue: {texts:?}");
-        assert!(texts.contains(&"Narration too."), "kept narration: {texts:?}");
+        assert!(
+            texts.contains(&"Real dialogue."),
+            "kept real dialogue: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Narration too."),
+            "kept narration: {texts:?}"
+        );
         for junk in [
             "images/walk/walk_0007.png",
             "images/walk/walk_0009.png",
             "images/endingbg.png",
             "images/bg/room.png",
         ] {
-            assert!(!texts.contains(&junk), "ATL frame path must not be extracted: {junk}");
+            assert!(
+                !texts.contains(&junk),
+                "ATL frame path must not be extracted: {junk}"
+            );
         }
     }
 
@@ -3367,12 +3529,18 @@ label start:
             "家の中を探索して、気になるものを調べる。",
             "システム説明",
         ] {
-            assert!(texts.contains(&want), "JP display string must be harvested: {want} in {texts:?}");
+            assert!(
+                texts.contains(&want),
+                "JP display string must be harvested: {want} in {texts:?}"
+            );
         }
         // ASCII single-word identifiers/keys stay out — the whitespace rule still
         // governs Latin text.
         for junk in ["kitchen", "input_prompt", "day_label", "content"] {
-            assert!(!texts.contains(&junk), "ASCII identifier must stay out: {junk}");
+            assert!(
+                !texts.contains(&junk),
+                "ASCII identifier must stay out: {junk}"
+            );
         }
     }
 
@@ -3414,9 +3582,16 @@ label x:
         // Unwrapped screen text (no _()) is harvested too, as a spliceable Term.
         let unwrapped = units.iter().find(|u| u.source == "Unwrapped").unwrap();
         assert_eq!(unwrapped.kind, UnitKind::Term);
-        assert!(!unwrapped.pointer.starts_with("str#"), "screen literals keep a byte span");
+        assert!(
+            !unwrapped.pointer.starts_with("str#"),
+            "screen literals keep a byte span"
+        );
         assert_eq!(
-            units.iter().find(|u| u.source == "Start Game").unwrap().kind,
+            units
+                .iter()
+                .find(|u| u.source == "Start Game")
+                .unwrap()
+                .kind,
             UnitKind::Term
         );
     }
@@ -3432,7 +3607,9 @@ label x:
         assert_eq!(units[1].source, "Let's go.");
         assert_eq!(units[1].context.as_deref(), Some("Me"));
         // The speaker names must not be extracted as their own units.
-        assert!(!units.iter().any(|u| u.source == "Sylvie" || u.source == "Me"));
+        assert!(!units
+            .iter()
+            .any(|u| u.source == "Sylvie" || u.source == "Me"));
     }
 
     #[test]
@@ -3507,7 +3684,9 @@ label start:
         add_language_option(root, "thai", "\u{e44}\u{e17}\u{e22}").unwrap();
         let c = std::fs::read_to_string(root.join("screens.rpy")).unwrap();
         // Added after the last existing button, with the same 8-space indent.
-        assert!(c.contains("        textbutton \"\u{e44}\u{e17}\u{e22}\" action Language(\"thai\")"));
+        assert!(
+            c.contains("        textbutton \"\u{e44}\u{e17}\u{e22}\" action Language(\"thai\")")
+        );
 
         // Re-running does not duplicate it.
         add_language_option(root, "thai", "\u{e44}\u{e17}\u{e22}").unwrap();
@@ -3519,14 +3698,20 @@ label start:
     fn normalize_lang_is_lowercase_ascii() {
         assert_eq!(normalize_lang("Thai"), "thai");
         assert_eq!(normalize_lang("thai"), "thai");
-        assert_eq!(normalize_lang("Brazilian Portuguese"), "brazilianportuguese");
+        assert_eq!(
+            normalize_lang("Brazilian Portuguese"),
+            "brazilianportuguese"
+        );
         assert_eq!(normalize_lang("\u{e44}\u{e17}\u{e22}"), "translated"); // non-ASCII -> fallback
     }
 
     #[test]
     fn stale_companions_maps_rpy_to_rpyc() {
         let eng = RenpyEngine;
-        assert_eq!(eng.stale_companions("script.rpy"), vec!["script.rpyc".to_string()]);
+        assert_eq!(
+            eng.stale_companions("script.rpy"),
+            vec!["script.rpyc".to_string()]
+        );
         assert_eq!(
             eng.stale_companions("scripts/ch1.rpy"),
             vec!["scripts/ch1.rpyc".to_string()]
@@ -3542,7 +3727,11 @@ label start:
             "macos" => "mac",
             _ => "linux",
         };
-        let exe = if cfg!(windows) { "python.exe" } else { "python" };
+        let exe = if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python"
+        };
 
         // Ren'Py 7 layout: a bare `<os>-<arch>` dir (no py-prefix) with a
         // libpython2.7 runtime → Py2; the 64-bit build wins over the 32-bit one.
@@ -3645,7 +3834,10 @@ label start:
         let units = extract(src);
         let texts: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
         // Code strings inside the priority-init python blocks are NOT extracted.
-        assert!(!texts.contains(&"empty"), "style name must not be translated");
+        assert!(
+            !texts.contains(&"empty"),
+            "style name must not be translated"
+        );
         assert!(!texts.contains(&"raw_code_string"));
         // A `_()`-wrapped string inside the block is still translatable.
         assert!(texts.contains(&"Messages"));
@@ -3689,7 +3881,7 @@ define g = Character(_(\"Gwen\"))
         assert_eq!(got.get("e"), Some(&"Eileen")); // literal
         assert!(!got.contains_key("narrator")); // Character(None)
         assert!(!got.contains_key("g")); // Character(_()) — strings path
-        // A string var not used by any Character isn't emitted.
+                                         // A string var not used by any Character isn't emitted.
         assert!(!units.iter().any(|u| u.source == "nope"));
         assert!(units.iter().all(|u| u.kind == UnitKind::Name));
         assert!(units.iter().all(|u| u.pointer.starts_with("name#")));
@@ -3749,7 +3941,10 @@ define twi = Character(_(\"Both\"))
         let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
 
         // The whole string is still a key (that is what a `text "…"` literal needs)…
-        assert!(out.contains("The main story is completed.{/color}"), "{out}");
+        assert!(
+            out.contains("The main story is completed.{/color}"),
+            "{out}"
+        );
         // …and so is each TEXT segment on its own, which is all the hook ever sees.
         assert!(
             out.contains("\"The main story is completed.\": \""),
@@ -3773,14 +3968,23 @@ define twi = Character(_(\"Both\"))
             "\u{e44}\u{e17}\u{e22}",
             &[
                 ("d".to_string(), "\u{e14}\u{e35}".to_string()),
-                ("Start".to_string(), "\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}".to_string()),
+                (
+                    "Start".to_string(),
+                    "\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}".to_string(),
+                ),
             ],
             &BTreeMap::new(),
         )
         .unwrap();
         let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
-        assert!(!out.contains("\"d\": \""), "one-character key leaked: {out}");
-        assert!(out.contains("\"Start\": \""), "real terms still exported: {out}");
+        assert!(
+            !out.contains("\"d\": \""),
+            "one-character key leaked: {out}"
+        );
+        assert!(
+            out.contains("\"Start\": \""),
+            "real terms still exported: {out}"
+        );
     }
 
     /// A name the game renders through a variable (`menu: "[Mom_name]"`) is reached
@@ -3796,13 +4000,19 @@ define twi = Character(_(\"Both\"))
             "\u{e44}\u{e17}\u{e22}",
             &[
                 // as if it came from the glossary
-                ("Linda".to_string(), "\u{e25}\u{e34}\u{e19}\u{e14}\u{e32}".to_string()),
+                (
+                    "Linda".to_string(),
+                    "\u{e25}\u{e34}\u{e19}\u{e14}\u{e32}".to_string(),
+                ),
             ],
             &BTreeMap::new(),
         )
         .unwrap();
         let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
-        assert!(out.contains("\"Linda\": \""), "name missing from the hook table: {out}");
+        assert!(
+            out.contains("\"Linda\": \""),
+            "name missing from the hook table: {out}"
+        );
     }
 
     /// The generated `zzz_translator.rpy` runs inside the *game's* Python. Ren'Py 7
@@ -3815,13 +4025,24 @@ define twi = Character(_(\"Both\"))
             d.path(),
             "thai",
             "\u{e44}\u{e17}\u{e22}",
-            &[("Start".to_string(), "\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}".to_string())],
+            &[(
+                "Start".to_string(),
+                "\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}".to_string(),
+            )],
             &BTreeMap::new(),
         )
         .unwrap();
         let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
-        for py3_only in [".isascii(", ".removeprefix(", ".removesuffix(", ".casefold("] {
-            assert!(!out.contains(py3_only), "Python 3-only call {py3_only} in generated code");
+        for py3_only in [
+            ".isascii(",
+            ".removeprefix(",
+            ".removesuffix(",
+            ".casefold(",
+        ] {
+            assert!(
+                !out.contains(py3_only),
+                "Python 3-only call {py3_only} in generated code"
+            );
         }
     }
 
@@ -3867,9 +4088,19 @@ define twi = Character(_(\"Both\"))
         // that writes the store, so the Character lands in saves and pickling one whose
         // `callback=` is an init-python function crashes the save.
         let names = vec![("Rin".to_string(), "\u{e23}\u{e34}\u{e19}".to_string())];
-        setup_language(d.path(), "thai", "\u{e44}\u{e17}\u{e22}", &names, &BTreeMap::new()).unwrap();
+        setup_language(
+            d.path(),
+            "thai",
+            "\u{e44}\u{e17}\u{e22}",
+            &names,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
-        assert!(zzz.contains("    old \"Rin\"\n    new \"\u{e23}\u{e34}\u{e19}\""), "{zzz}");
+        assert!(
+            zzz.contains("    old \"Rin\"\n    new \"\u{e23}\u{e34}\u{e19}\""),
+            "{zzz}"
+        );
         assert!(!zzz.contains("kind=rin"), "no Character re-define: {zzz}");
     }
 
@@ -3901,10 +4132,19 @@ define twi = Character(_(\"Both\"))
             .filter(|u| u.pointer.starts_with("pylist#"))
             .map(|u| (u.pointer.as_str(), u.source.as_str()))
             .collect();
-        assert!(list.contains(&("pylist#days_of_week#1", "Monday")), "{list:?}");
-        assert!(list.contains(&("pylist#parts_of_day#1", "late night")), "{list:?}");
+        assert!(
+            list.contains(&("pylist#days_of_week#1", "Monday")),
+            "{list:?}"
+        );
+        assert!(
+            list.contains(&("pylist#parts_of_day#1", "late night")),
+            "{list:?}"
+        );
         // Asset lists are not display text — a path (`/`) or a bare filename.
-        assert!(!list.iter().any(|(p, _)| p.starts_with("pylist#doors#")), "{list:?}");
+        assert!(
+            !list.iter().any(|(p, _)| p.starts_with("pylist#doors#")),
+            "{list:?}"
+        );
     }
 
     #[test]
@@ -3917,9 +4157,18 @@ define twi = Character(_(\"Both\"))
         );
         setup_language(d.path(), "thai", "ไทย", &[], &lists).unwrap();
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
-        assert!(zzz.contains("\"days_of_week\": {\"จันทร์\": \"Monday\", },"), "{zzz}");
-        assert!(zzz.contains("config.after_load_callbacks.append(_tl_restore_runtime_lists)"), "{zzz}");
-        assert!(!zzz.contains("_l[_i] = _t"), "list state must not be translated: {zzz}");
+        assert!(
+            zzz.contains("\"days_of_week\": {\"จันทร์\": \"Monday\", },"),
+            "{zzz}"
+        );
+        assert!(
+            zzz.contains("config.after_load_callbacks.append(_tl_restore_runtime_lists)"),
+            "{zzz}"
+        );
+        assert!(
+            !zzz.contains("_l[_i] = _t"),
+            "list state must not be translated: {zzz}"
+        );
     }
 
     #[test]
@@ -3936,35 +4185,43 @@ define twi = Character(_(\"Both\"))
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
         // Thai code points come from the bundled face, every other glyph from the
         // game's own font — a whole-face swap turns symbols like ⚫ into tofu.
-        assert!(zzz.contains("FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_f, None, None)"), "{zzz}");
-        assert!(zzz.contains("preferences.font_transform = \"rpgtl_thai\""), "{zzz}");
+        assert!(
+            zzz.contains("FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_f, None, None)"),
+            "{zzz}"
+        );
+        assert!(
+            zzz.contains("preferences.font_transform = \"rpgtl_thai\""),
+            "{zzz}"
+        );
         // The whole-face map covers custom displayables; detected heart icons use a
         // separate, un-mapped DejaVu alias.
-        assert!(zzz.contains("config.font_replacement_map[_f, _b, _i]"), "{zzz}");
+        assert!(
+            zzz.contains("config.font_replacement_map[_f, _b, _i]"),
+            "{zzz}"
+        );
         assert!(
             !zzz.contains("else:\n        for _f in _tl_fonts:"),
             "the text fallback must apply to custom displayables: {zzz}"
         );
         // Named UI text styles commonly inherit from `text`, rather than `default`.
         // Both roots must allow Thai to break between characters in narrow widgets.
-        assert!(zzz.contains("style.default.language = \"anywhere\""), "{zzz}");
+        assert!(
+            zzz.contains("style.default.language = \"anywhere\""),
+            "{zzz}"
+        );
         assert!(zzz.contains("style.text.language = \"anywhere\""), "{zzz}");
     }
 
     #[test]
     fn setup_language_emits_a_validated_thai_font_scale() {
         let d = tempfile::tempdir().unwrap();
-        setup_language_with_font_scale(
-            d.path(),
-            "thai",
-            "ไทย",
-            &[],
-            &BTreeMap::new(),
-            105,
-        )
-        .unwrap();
+        setup_language_with_font_scale(d.path(), "thai", "ไทย", &[], &BTreeMap::new(), 105)
+            .unwrap();
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
-        assert!(zzz.contains("config.ftfont_scale[_tl_font] = 1.05"), "{zzz}");
+        assert!(
+            zzz.contains("config.ftfont_scale[_tl_font] = 1.05"),
+            "{zzz}"
+        );
         assert!(validate_thai_font_scale(69).is_err());
         assert!(validate_thai_font_scale(121).is_err());
     }
@@ -3984,7 +4241,10 @@ define twi = Character(_(\"Both\"))
             b"icon-font"
         );
         let zzz = std::fs::read_to_string(game.join(GENERATED_RPY)).unwrap();
-        assert!(zzz.contains("config.font_name_map[\"rpgtl_icons\"]"), "{zzz}");
+        assert!(
+            zzz.contains("config.font_name_map[\"rpgtl_icons\"]"),
+            "{zzz}"
+        );
         assert!(
             zzz.contains("store.heart_icon = \"{font=rpgtl_icons}♡{/font}\""),
             "{zzz}"
@@ -4005,23 +4265,44 @@ define twi = Character(_(\"Both\"))
         ];
         setup_language(d.path(), "thai", "ไทย", &strings, &BTreeMap::new()).unwrap();
         let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
-        assert!(zzz.contains("translate thai strings:"), "strings block present: {zzz}");
+        assert!(
+            zzz.contains("translate thai strings:"),
+            "strings block present: {zzz}"
+        );
         assert!(zzz.contains("    old \"Go to University\"\n    new \"ไปมหาวิทยาลัย\""));
-        assert!(zzz.contains("old \"Say \\\"hi\\\"\""), "escapes normalized: {zzz}");
+        assert!(
+            zzz.contains("old \"Say \\\"hi\\\"\""),
+            "escapes normalized: {zzz}"
+        );
         // Same table as a post-interpolation hook, so a line whose text is picked at
         // runtime (`m "[renpy.random.choice(hesitation)]"`) still translates.
-        assert!(zzz.contains("config.replace_text = _tl_replace_text"), "{zzz}");
+        assert!(
+            zzz.contains("config.replace_text = _tl_replace_text"),
+            "{zzz}"
+        );
         // The hook also replaces a known source string *inside* a longer text, so a
         // screen's `text "目的: [objective]"` — translated literal, python value —
         // still ends up fully translated.
-        assert!(zzz.contains("_tl_frags = sorted("), "substring fallback: {zzz}");
-        assert!(zzz.contains("_p = _p.replace(_k, _v)"), "substring fallback: {zzz}");
+        assert!(
+            zzz.contains("_tl_frags = sorted("),
+            "substring fallback: {zzz}"
+        );
+        assert!(
+            zzz.contains("_p = _p.replace(_k, _v)"),
+            "substring fallback: {zzz}"
+        );
         // …and only keeps the result when it resolved every source-language run.
-        assert!(zzz.contains("return _p if not _tl_has_src(_p) else _t"), "all-or-nothing: {zzz}");
+        assert!(
+            zzz.contains("return _p if not _tl_has_src(_p) else _t"),
+            "all-or-nothing: {zzz}"
+        );
         // …and knows a `.format()` template, whose text is filled in before any
         // translation runs (`"{}を手に入れた！".format(item)`).
         assert!(zzz.contains("_tl_fmts = ["), "format templates: {zzz}");
-        assert!(zzz.contains("_out = _v.replace(\"{}\", _tl_text.get(_mid, _mid))"), "format templates: {zzz}");
+        assert!(
+            zzz.contains("_out = _v.replace(\"{}\", _tl_text.get(_mid, _mid))"),
+            "format templates: {zzz}"
+        );
         assert!(
             zzz.contains("\"Go to University\": \"ไปมหาวิทยาลัย\","),
             "hook table carries the unescaped translation: {zzz}"
@@ -4062,10 +4343,16 @@ label quests:
             texts.iter().any(|t| t.contains("(Fri/Sat)")),
             "slash-bearing sentence must be extracted: {texts:?}"
         );
-        assert!(texts.contains(&"Saved"), "notify single-word is display text");
+        assert!(
+            texts.contains(&"Saved"),
+            "notify single-word is display text"
+        );
         assert!(texts.contains(&"✓ Objective complete: Find your classroom"));
         // Deduped: the find_quest() repeat adds no second unit.
-        assert_eq!(texts.iter().filter(|t| **t == "Go to University").count(), 1);
+        assert_eq!(
+            texts.iter().filter(|t| **t == "Go to University").count(),
+            1
+        );
         // Keys / colors / paths stay out.
         assert!(!texts.iter().any(|t| t.contains("aunt_housework")));
         assert!(!texts.contains(&"#ffe066"));

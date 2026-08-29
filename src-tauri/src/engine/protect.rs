@@ -201,7 +201,9 @@ pub fn normalize_thai_dates(s: &str) -> String {
         "วันจันทร์" | "จันทร์" => "จ.",
         "วันอังคาร" | "อังคาร" => "อ.",
         "วันพุธ" | "พุธ" => "พ.",
-        "วันพฤหัสบดี" | "พฤหัสบดี" | "วันพฤหัส" | "พฤหัส" => "พฤ.",
+        "วันพฤหัสบดี" | "พฤหัสบดี" | "วันพฤหัส" | "พฤหัส" => {
+            "พฤ."
+        }
         "วันศุกร์" | "ศุกร์" => "ศ.",
         "วันเสาร์" | "เสาร์" => "ส.",
         _ => return s.to_string(),
@@ -279,7 +281,12 @@ fn tidy_spaces(s: &str) -> String {
             continue;
         }
         // Drop a space that ended up in front of closing punctuation.
-        if prev_space && matches!(c, ',' | '.' | '!' | '?' | ':' | ';' | ')' | ']' | '}' | '"' | '\'' | '…') {
+        if prev_space
+            && matches!(
+                c,
+                ',' | '.' | '!' | '?' | ':' | ';' | ')' | ']' | '}' | '"' | '\'' | '…'
+            )
+        {
             out.pop();
         }
         out.push(c);
@@ -374,7 +381,12 @@ fn printf_len(s: &str) -> Option<usize> {
         }
     }
     // Conversion letter.
-    if i < b.len() && matches!(b[i], b's' | b'd' | b'i' | b'f' | b'g' | b'e' | b'E' | b'x' | b'X' | b'o' | b'c') {
+    if i < b.len()
+        && matches!(
+            b[i],
+            b's' | b'd' | b'i' | b'f' | b'g' | b'e' | b'E' | b'x' | b'X' | b'o' | b'c'
+        )
+    {
         Some(i + 1)
     } else {
         None
@@ -464,9 +476,7 @@ pub fn mask_xunity(input: &str) -> Masked {
         let len = match b[i] {
             b'<' => vmz_angle_len(&input[i..]),
             // `{{A}}` — a substitution placeholder, never prose.
-            b'{' if input[i..].starts_with("{{") => {
-                input[i..].find("}}").map(|end| end + 2)
-            }
+            b'{' if input[i..].starts_with("{{") => input[i..].find("}}").map(|end| end + 2),
             // The two-character `\n` escape XUnity writes for a line break (and the
             // `\r`/`\t` it accepts), not a backslash followed by prose.
             b'\\' if matches!(b.get(i + 1), Some(b'n' | b'r' | b't')) => Some(2),
@@ -855,9 +865,15 @@ mod tests {
         let m = mask("%1 was drained of %2 %3!");
         assert_eq!(m.tokens, vec!["%1", "%2", "%3"]);
         assert!(!m.text.contains('%'));
-        assert_eq!(restore(&m.text, &m.tokens).unwrap(), "%1 was drained of %2 %3!");
+        assert_eq!(
+            restore(&m.text, &m.tokens).unwrap(),
+            "%1 was drained of %2 %3!"
+        );
 
-        assert!(mask("50% off today").is_plain(), "a bare % must not be masked");
+        assert!(
+            mask("50% off today").is_plain(),
+            "a bare % must not be masked"
+        );
     }
 
     #[test]
@@ -886,7 +902,10 @@ mod tests {
         // picked up `\c[…]`/`\v[…]` bled from adjacent "Water Left"/"Stamina" lines.
         let src = "Used for watering crops. <br>";
         let bad = "ใช้สำหรับรดน้ำพืชผล <br>น้ำที่เหลือ: \\c[1]\\v[205]/16\\c[0] <br>\\c[10]-3\\c[0] \\c[1]Stamina\\c[0]";
-        assert!(!codes_match(eng, src, bad), "foreign codes must be rejected");
+        assert!(
+            !codes_match(eng, src, bad),
+            "foreign codes must be rejected"
+        );
 
         // A clean translation of the same line keeps exactly its (zero) codes.
         assert!(codes_match(eng, src, "ใช้สำหรับรดน้ำพืชผล <br>"));
@@ -894,18 +913,33 @@ mod tests {
         // Reordering the real codes is fine; dropping or adding one is not.
         let coded = "\\C[2]Fire\\C[0] burns";
         assert!(codes_match(eng, coded, "เผา \\C[2]ไฟ\\C[0] ไหม้"));
-        assert!(!codes_match(eng, coded, "เผา \\C[2]ไฟ ไหม้"), "dropped \\C[0]");
-        assert!(!codes_match(eng, coded, "เผา \\C[2]ไฟ\\C[0]\\C[0] ไหม้"), "extra \\C[0]");
+        assert!(
+            !codes_match(eng, coded, "เผา \\C[2]ไฟ ไหม้"),
+            "dropped \\C[0]"
+        );
+        assert!(
+            !codes_match(eng, coded, "เผา \\C[2]ไฟ\\C[0]\\C[0] ไหม้"),
+            "extra \\C[0]"
+        );
     }
 
     #[test]
     fn strip_codes_leaves_only_prose() {
         // Codes vanish; the prose stays; no doubled spaces where a code was.
-        assert_eq!(strip_codes("rpgmaker-mvmz", "Hi \\C[2]hero\\C[0]!"), "Hi hero!");
-        assert_eq!(strip_codes("tyrano", "Into the woods.[l][r]"), "Into the woods.");
+        assert_eq!(
+            strip_codes("rpgmaker-mvmz", "Hi \\C[2]hero\\C[0]!"),
+            "Hi hero!"
+        );
+        assert_eq!(
+            strip_codes("tyrano", "Into the woods.[l][r]"),
+            "Into the woods."
+        );
         // Ren'Py: interpolation + text tags stripped, the words between them kept.
         let s = strip_codes("renpy", "Say [player_name], {b}bold{/b} now.");
-        assert!(s.contains("bold") && s.contains("now."), "prose kept: {s:?}");
+        assert!(
+            s.contains("bold") && s.contains("now."),
+            "prose kept: {s:?}"
+        );
         assert!(!s.contains("player_name") && !s.contains("{b}"));
         assert!(!s.contains("  "), "no double spaces: {s:?}");
     }
@@ -952,7 +986,6 @@ mod tests {
         assert!(!m.text.contains("[name]"), "interpolation should be masked");
         assert!(m.text.contains("[[lit]]"), "escaped [[ must stay literal");
     }
-
 
     #[test]
     fn mask_for_dispatches_by_engine() {
@@ -1008,8 +1041,6 @@ mod tests {
         assert!(m.text.contains("100% ready"), "percent must stay visible");
     }
 
-
-
     #[test]
     fn forger_mask_unmask_is_identity() {
         let samples = [
@@ -1045,7 +1076,11 @@ mod tests {
         // Prose with bare words and no `=` is NOT masked, so it stays visible and
         // gets translated.
         let prose = mask_forger("if x <low then flee> now");
-        assert!(prose.is_plain(), "prose-shaped <…> must not mask: {:?}", prose.text);
+        assert!(
+            prose.is_plain(),
+            "prose-shaped <…> must not mask: {:?}",
+            prose.text
+        );
         // A bare `<` (emoticon) and `50% off` (space + conversion letter) stay text.
         assert!(mask_forger("I <3 it, 50% off").is_plain());
     }
@@ -1105,7 +1140,10 @@ mod tests {
     fn normalize_cjk_brackets_maps_to_parens_and_leaves_text() {
         assert_eq!(normalize_cjk_brackets("「マスター」"), "(マスター)");
         assert_eq!(normalize_cjk_brackets("『主人様』"), "(主人様)");
-        assert_eq!(normalize_cjk_brackets("【注意】〔a〕〈b〉《c》（d）"), "(注意)(a)(b)(c)(d)");
+        assert_eq!(
+            normalize_cjk_brackets("【注意】〔a〕〈b〉《c》（d）"),
+            "(注意)(a)(b)(c)(d)"
+        );
         // Thai/ASCII text and existing parens are untouched.
         assert_eq!(normalize_cjk_brackets("สวัสดี (ok) [x]"), "สวัสดี (ok) [x]");
     }
@@ -1189,15 +1227,29 @@ mod tests {
     fn mvmz_masks_visumz_angle_codes_leaving_only_prose() {
         // The real bug: `<Show Switch: 24>` + `<center>` + `\OutlineColor[23]` +
         // `\FS[30]` must all hide, leaving only "Album" for the model to translate.
-        let m = mask_for("rpgmaker-mvmz", "<Show Switch: 24><center>\\OutlineColor[23]\\FS[30]Album");
+        let m = mask_for(
+            "rpgmaker-mvmz",
+            "<Show Switch: 24><center>\\OutlineColor[23]\\FS[30]Album",
+        );
         assert_eq!(
             m.tokens,
-            vec!["<Show Switch: 24>", "<center>", "\\OutlineColor[23]", "\\FS[30]"]
+            vec![
+                "<Show Switch: 24>",
+                "<center>",
+                "\\OutlineColor[23]",
+                "\\FS[30]"
+            ]
         );
         assert!(!m.text.contains('<'), "angle codes hidden from the model");
         assert!(!m.text.contains('\\'), "escape codes hidden from the model");
         // Strip the four sentinels → only the translatable word remains.
-        assert_eq!(strip_codes("rpgmaker-mvmz", "<Show Switch: 24><center>\\OutlineColor[23]\\FS[30]Album"), "Album");
+        assert_eq!(
+            strip_codes(
+                "rpgmaker-mvmz",
+                "<Show Switch: 24><center>\\OutlineColor[23]\\FS[30]Album"
+            ),
+            "Album"
+        );
     }
 
     #[test]
@@ -1224,7 +1276,10 @@ mod tests {
         let src = "Secret path if(s[1])";
         let m = mask_for("rpgmaker-mvmz", src);
         assert_eq!(m.tokens, vec!["if(s[1])"]);
-        assert_eq!(restore(&m.text.replace("Secret path", "ทางลับ"), &m.tokens).unwrap(), "ทางลับ if(s[1])");
+        assert_eq!(
+            restore(&m.text.replace("Secret path", "ทางลับ"), &m.tokens).unwrap(),
+            "ทางลับ if(s[1])"
+        );
         // Word-internal `en(`/`if(` (prose) must NOT be masked.
         assert!(mask_for("rpgmaker-mvmz", "The garden(v) is nice").is_plain());
         assert!(mask_for("rpgmaker-mvmz", "A sniff(x) sound").is_plain());

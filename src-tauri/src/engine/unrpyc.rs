@@ -81,6 +81,11 @@ mod tests {
     fn both_branches_materialize() {
         let v1 = materialize(PyMajor::Py2).expect("materialize v1");
         assert!(v1.is_file());
-        assert!(v1.parent().unwrap().join("decompiler").join("__init__.py").is_file());
+        assert!(v1
+            .parent()
+            .unwrap()
+            .join("decompiler")
+            .join("__init__.py")
+            .is_file());
     }
 }

@@ -4,8 +4,8 @@
 //!
 //!   cargo run --example particles_probe -- [model]
 
-use app_lib::ai::{self, BatchItem, BatchReq, ProviderConfig};
 use app_lib::ai::prompt::gender_directive;
+use app_lib::ai::{self, BatchItem, BatchReq, ProviderConfig};
 
 const LINES: &[(&str, &str)] = &[
     ("Mei", "Good morning! Did you sleep well?"),
@@ -16,7 +16,18 @@ const LINES: &[(&str, &str)] = &[
     ("Mei", "Please wait a moment, I'll go get it."),
 ];
 
-const PARTICLES: [&str; 10] = ["ครับ", "ค่ะ", "คะ", "นะคะ", "นะครับ", "ครับผม", "จ้ะ", "จ้า", "ฮะ", "ฮ่ะ"];
+const PARTICLES: [&str; 10] = [
+    "ครับ",
+    "ค่ะ",
+    "คะ",
+    "นะคะ",
+    "นะครับ",
+    "ครับผม",
+    "จ้ะ",
+    "จ้า",
+    "ฮะ",
+    "ฮ่ะ",
+];
 
 fn local_cfg(model: &str) -> ProviderConfig {
     serde_json::from_value(serde_json::json!({
@@ -73,12 +84,23 @@ fn report(label: &str, out: &[Option<String>]) -> usize {
     println!("=== {label}");
     for ((who, src), got) in LINES.iter().zip(out) {
         let t = got.clone().unwrap_or_else(|| "(failed)".into());
-        let bad: Vec<&str> = PARTICLES.iter().copied().filter(|p| t.contains(p)).collect();
+        let bad: Vec<&str> = PARTICLES
+            .iter()
+            .copied()
+            .filter(|p| t.contains(p))
+            .collect();
         if !bad.is_empty() {
             hits += 1;
         }
         let mark = if bad.is_empty() { "  " } else { "!!" };
-        println!("{mark} [{who}] {src}\n     -> {t}{}", if bad.is_empty() { String::new() } else { format!("   <-- {bad:?}") });
+        println!(
+            "{mark} [{who}] {src}\n     -> {t}{}",
+            if bad.is_empty() {
+                String::new()
+            } else {
+                format!("   <-- {bad:?}")
+            }
+        );
     }
     println!("   lines with a particle: {hits}/{}\n", LINES.len());
     hits
@@ -86,7 +108,9 @@ fn report(label: &str, out: &[Option<String>]) -> usize {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let model = std::env::args().nth(1).unwrap_or_else(|| "gemma4:12b".into());
+    let model = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "gemma4:12b".into());
     println!("model: {model}\n");
 
     let off = run(&model, false).await;
@@ -95,14 +119,23 @@ async fn main() {
     // What the app actually stores: the same post-process the Run applies.
     let stripped: Vec<Option<String>> = off
         .iter()
-        .map(|o| o.as_deref().map(app_lib::engine::protect::strip_thai_particles))
+        .map(|o| {
+            o.as_deref()
+                .map(app_lib::engine::protect::strip_thai_particles)
+        })
         .collect();
-    let n_off = report("Polite particles OFF — after strip_thai_particles (stored)", &stripped);
+    let n_off = report(
+        "Polite particles OFF — after strip_thai_particles (stored)",
+        &stripped,
+    );
 
     let on = run(&model, true).await;
     let n_on = report("Polite particles ON (previous behaviour)", &on);
 
-    println!("summary: prompt-only={n_prompt}, stored={n_off}, ON={n_on} (of {})", LINES.len());
+    println!(
+        "summary: prompt-only={n_prompt}, stored={n_off}, ON={n_on} (of {})",
+        LINES.len()
+    );
     if n_off == 0 {
         println!("PASS — nothing with a particle reaches the project.");
     } else {
