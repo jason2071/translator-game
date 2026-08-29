@@ -200,6 +200,44 @@ const SCRIPT_NON_TEXT_CALLS: &[&str] = &[
     "console.",
 ];
 
+/// Variables conventionally used to assemble an image/audio filename in event
+/// scripts. Unlike a direct `ImageManager.loadPicture("...")` call, these
+/// names are assigned before the loader call, so the call-name look-behind above
+/// cannot identify them. Their values may contain spaces (for example
+/// `"Daisy - Barn-Boob_"`), which otherwise resembles English prose.
+const SCRIPT_ASSET_VARIABLES: &[&str] = &[
+    "imagename",
+    "image_name",
+    "picturename",
+    "picture_name",
+    "filename",
+    "file_name",
+    "assetname",
+    "asset_name",
+    "charactername",
+    "character_name",
+    "facename",
+    "face_name",
+];
+
+/// Is the literal immediately assigned to a conventional asset-name variable?
+/// Only inspect the current statement, so an earlier `imageName = ...` cannot
+/// suppress a later line of ordinary dialogue in the same script command.
+fn is_asset_assignment(prefix: &str) -> bool {
+    let statement = prefix.rsplit([';', '\n', '\r']).next().unwrap_or(prefix);
+    let Some((left, _)) = statement.rsplit_once('=') else {
+        return false;
+    };
+    let name = left
+        .trim_end()
+        .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+        .next()
+        .unwrap_or("")
+        .trim_start_matches('$')
+        .to_ascii_lowercase();
+    SCRIPT_ASSET_VARIABLES.contains(&name.as_str())
+}
+
 /// The string literals inside a script command (355/655) that read as player
 /// text, as `(byte offset, byte length)` spans into `js` — the span covers the
 /// literal's **contents**, not its quotes.
@@ -285,11 +323,16 @@ pub fn script_text_spans(js: &str) -> Vec<(usize, usize)> {
         }
         let tail = &prefix[tail_start..];
         let asset_call = SCRIPT_NON_TEXT_CALLS.iter().any(|c| tail.contains(c));
+        let asset_assignment = is_asset_assignment(prefix);
         // Only take a literal whose escaping survives a round trip. Anything
         // exotic (`A`, `\x41`, `\0`) would come back re-escaped differently
         // and break `extract → inject == source`, so it is left alone.
         let text = unescape_js(raw);
-        if !asset_call && escape_js_literal(&text, q) == raw && looks_like_player_text(&text) {
+        if !asset_call
+            && !asset_assignment
+            && escape_js_literal(&text, q) == raw
+            && looks_like_player_text(&text)
+        {
             out.push((start, raw.len()));
         }
         i = j + 1;
@@ -557,6 +600,13 @@ mod tests {
             script_text_spans(r#"Galv.CACHE.load("pic", "img/pictures/cg01.png");"#).is_empty()
         );
         assert!(script_text_spans(r#"AudioManager.playSe({name:"Cursor 1"});"#).is_empty());
+        // Asset stems with spaces are assembled before their later CACHE.load.
+        // They must not be mistaken for prose merely because they look like an
+        // English phrase.
+        assert!(script_text_spans(
+            r#"let imageName = 'Daisy - Barn-Boob_'; Galv.CACHE.load('pictures', imageName);"#
+        )
+        .is_empty());
 
         // Two literals in one command are two units.
         let two = r#"a("Take the west road."); b("Or head back home.");"#;

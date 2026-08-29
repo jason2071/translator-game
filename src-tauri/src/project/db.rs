@@ -316,6 +316,73 @@ pub fn prune_stale_units(conn: &mut Connection, fresh: &[TransUnit]) -> Result<u
     Ok(doomed.len())
 }
 
+/// Remove a very specific class of applied stale rows created by older rescans:
+/// a project was exported in place, the translated bytes were read back as a
+/// new source, and that row kept the same Thai value in both columns. A real
+/// translated row in the same file still carries a different original source
+/// with that Thai translation, which makes this pattern distinguishable from
+/// the user's work. Only rows absent from the current pristine extraction are
+/// eligible; genuine Thai-source games therefore remain untouched.
+pub fn prune_rescan_echoes(conn: &mut Connection, fresh: &[TransUnit]) -> Result<usize> {
+    use std::collections::HashSet;
+
+    let valid: HashSet<(&str, &str, &str)> = fresh
+        .iter()
+        .map(|unit| {
+            (
+                unit.file.as_str(),
+                unit.pointer.as_str(),
+                unit.source.as_str(),
+            )
+        })
+        .collect();
+    let rows: Vec<(i64, String, String, String, Option<String>, Status)> = {
+        let mut stmt =
+            conn.prepare("SELECT id, file, pointer, source, translation, status FROM unit")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                Status::from_str(&row.get::<_, String>(5)?),
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let translated_values: HashSet<(&str, &str)> = rows
+        .iter()
+        .filter_map(|(_, file, _, source, translation, status)| {
+            let translation = translation.as_deref()?;
+            (status.is_applied() && source != translation).then_some((file.as_str(), translation))
+        })
+        .collect();
+    let doomed: Vec<i64> = rows
+        .iter()
+        .filter_map(|(id, file, pointer, source, translation, status)| {
+            let translation = translation.as_deref()?;
+            (status.is_applied()
+                && source == translation
+                && !valid.contains(&(file, pointer, source))
+                && translated_values.contains(&(file, source)))
+            .then_some(*id)
+        })
+        .collect();
+    if doomed.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    {
+        let mut del = tx.prepare("DELETE FROM unit WHERE id = ?1")?;
+        for id in &doomed {
+            del.execute(params![id])?;
+        }
+    }
+    tx.commit()?;
+    Ok(doomed.len())
+}
+
 /// Filter/paginate the unit grid. All fields optional.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

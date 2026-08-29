@@ -7,7 +7,7 @@ use crate::engine::{self, ExtractOpts};
 use anyhow::{anyhow, Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -156,18 +156,29 @@ pub fn rescan(project: &mut Project) -> Result<(usize, usize, usize)> {
         .ok_or_else(|| anyhow!("the game folder is no longer recognized"))?;
     let source_lang =
         db::get_meta(&project.conn, "source_lang")?.unwrap_or_else(|| "English".to_string());
-    let units = eng.extract(
-        &project.root,
+    // An in-place export deliberately changes the live game files. Re-scanning
+    // those bytes would then insert the Thai output as a new *source* row (and
+    // its shifted byte offsets), even though `.rpgtl/source` has the original.
+    // For MV/MZ, scan a short-lived mirror overlaid with those originals instead.
+    let scan_root = mvmz_pristine_rescan_root(project)?;
+    let extract_root = scan_root.as_deref().unwrap_or(&project.root);
+    let extracted = eng.extract(
+        extract_root,
         &ExtractOpts {
             source_lang: Some(source_lang),
             ..ExtractOpts::default()
         },
-    )?;
+    );
+    if let Some(root) = scan_root {
+        let _ = std::fs::remove_dir_all(root);
+    }
+    let units = extracted?;
     let migrated_characters = db::migrate_character_contexts(&mut project.conn, &units)?;
     let (added, filled) = db::merge_units(&mut project.conn, &units)?;
     // Drop rows this extractor no longer produces and that hold no work — the
     // junk a stricter extraction pass leaves behind (see `prune_stale_units`).
-    let removed = db::prune_stale_units(&mut project.conn, &units)?;
+    let removed = db::prune_stale_units(&mut project.conn, &units)?
+        + db::prune_rescan_echoes(&mut project.conn, &units)?;
     Ok((added, filled + migrated_characters, removed))
 }
 
@@ -750,11 +761,62 @@ fn build_mod_via_inject(
     Ok((touched.len(), note, warning))
 }
 
+/// Make a temporary MV/MZ game root for re-extraction. Its normal data files are
+/// copied from the live game, then each file that has an original snapshot (or
+/// an older export backup) is overlaid by [`pristine_read_root`]. This prevents a
+/// rescan after Export from treating the translated game bytes as new source.
+fn mvmz_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
+    if project.engine_id != "rpgmaker-mvmz" {
+        return Ok(None);
+    }
+    let source_dir = rpgtl_dir(&project.root).join("source");
+    let backup_dirs = earliest_backup_dirs(&rpgtl_dir(&project.root).join("backups"));
+    if !source_dir.is_dir() && backup_dirs.is_empty() {
+        return Ok(None);
+    }
+
+    // MV/MZ's built-in database lives directly under data/. Include every file
+    // there so the mirror remains detectable even when only one exported file
+    // has an original snapshot. Overlay paths also include root-level plugin
+    // and quest files owned by the engine adapters.
+    let mut files = BTreeSet::new();
+    for entry in std::fs::read_dir(&project.data_dir)? {
+        let entry = entry?;
+        if entry.path().is_file() {
+            files.insert(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    for dir in std::iter::once(source_dir).chain(backup_dirs) {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(&dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            if let Ok(rel) = entry.path().strip_prefix(&dir) {
+                files.insert(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    if files.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(pristine_read_root(
+        project,
+        &files.into_iter().collect::<Vec<_>>(),
+    )?))
+}
+
 /// A temp mirror of the game root holding **pristine** copies of `files` (each relative
 /// to the data dir). Prefers each file's `.rpgtl/source/` snapshot (the original bytes
-/// saved before the first in-place export) over the live game file, so a mod injects
-/// original bytes even if the game was already exported in place. Layout matches the
-/// game root, so `eng.inject(mirror, …)` resolves reads exactly as it would on the game.
+/// saved before the first in-place export), then the oldest backup, over the live game
+/// file. This lets a mod or rescan use original bytes even if the game was exported by
+/// an older app version before `.rpgtl/source` existed. Layout matches the game root, so
+/// `eng.inject(mirror, …)` resolves reads exactly as it would on the game.
 fn pristine_read_root(project: &Project, files: &[String]) -> Result<PathBuf> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -769,10 +831,21 @@ fn pristine_read_root(project: &Project, files: &[String]) -> Result<PathBuf> {
         .strip_prefix(&project.root)
         .unwrap_or(Path::new(""));
     let source_dir = rpgtl_dir(&project.root).join("source");
+    let earliest_backups = earliest_backup_dirs(&rpgtl_dir(&project.root).join("backups"));
     for file in files {
         let snap = source_dir.join(file);
         let live = project_file_path(project, file);
-        let src = if snap.exists() { snap } else { live };
+        let backup = earliest_backups
+            .iter()
+            .map(|dir| dir.join(file))
+            .find(|path| path.exists());
+        let src = if snap.exists() {
+            snap
+        } else if let Some(backup) = backup {
+            backup
+        } else {
+            live
+        };
         if !src.exists() {
             continue;
         }
