@@ -85,6 +85,15 @@ fn mask_inner(input: &str, mask_angle: bool) -> Masked {
                 continue;
             }
         }
+        // Lust Share House's RCSV scenario data uses `{%}` as a runtime name
+        // placeholder. It looks like ordinary punctuation, but the game expects the
+        // closing brace exactly; leaving it visible lets a model return `{%` and
+        // prints that broken token in-game.
+        if mask_angle && input[i..].starts_with("{%}") {
+            push_token(&mut text, &mut tokens, "{%}");
+            i += 3;
+            continue;
+        }
         // RPGMaker message parameters `%1`, `%2`, … — printf-style substitutions
         // in System terms and skill/state messages (e.g. "%1 gained %2 %3!"). Mask
         // so a model can't drop or renumber them; a bare `%` (as in "50% off") is
@@ -1320,6 +1329,17 @@ mod tests {
         assert!(mask_for("rpgmaker-mvmz", "A sniff(x) sound").is_plain());
         // The stock (non-mvmz) grammar leaves the marker as prose.
         assert!(mask("Ban him en(v[2]>=70)").is_plain());
+    }
+
+    #[test]
+    fn mvmz_masks_percent_name_placeholder_and_rejects_a_missing_brace() {
+        let src = "Please be kind to me, {%}.";
+        let m = mask_for("rpgmaker-mvmz", src);
+        assert_eq!(m.tokens, vec!["{%}"]);
+        assert_eq!(m.text, "Please be kind to me, ⟦0⟧.");
+        assert_eq!(restore(&m.text, &m.tokens).unwrap(), src);
+        assert!(codes_match("rpgmaker-mvmz", src, "ได้โปรดใจดีกับฉันด้วย {%}."));
+        assert!(!codes_match("rpgmaker-mvmz", src, "ได้โปรดใจดีกับฉันด้วย {%"));
     }
 
     #[test]

@@ -96,6 +96,17 @@ fn mvmz_rcsv_rescan_uses_pristine_source_after_export() {
 
     let (mut project, fresh) = project::open_or_create(root, "auto", "Thai").unwrap();
     assert!(fresh);
+    // Simulate a project exported by an older version: its snapshot contains
+    // only ordinary JSON, because that version did not know about RCSV yet.
+    // The rescan mirror must still add the live RCSV sheets beside `data/`.
+    let old_source = root.join(".rpgtl/source");
+    fs::create_dir_all(&old_source).unwrap();
+    fs::copy(data.join("System.json"), old_source.join("System.json")).unwrap();
+    let (added, _, removed) = project::rescan(&mut project).unwrap();
+    assert_eq!(added, 0, "RCSV is retained with an old JSON-only snapshot");
+    assert_eq!(removed, 0);
+    assert_eq!(db::all_units(&project.conn).unwrap().len(), 1);
+
     let line = db::all_units(&project.conn)
         .unwrap()
         .into_iter()

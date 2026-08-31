@@ -608,6 +608,63 @@ pub fn update_unit(
     Ok(())
 }
 
+/// Repair the `{%}` runtime-name placeholder used by some RPGMaker RCSV files.
+///
+/// Older builds treated it as prose, so a model could return `{%` without the
+/// closing brace. Only repair a row when its source expects the placeholder and
+/// every expected placeholder is still present in the translation (some merely
+/// miss their closing brace). A placeholder that was genuinely omitted stays
+/// untouched for the user to review instead of being guessed into the text.
+pub fn repair_unclosed_mvmz_placeholders(conn: &Connection) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source, translation FROM unit \
+         WHERE source LIKE '%{%}%' AND translation LIKE '%{%'",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+
+    let mut repaired_rows = 0;
+    for row in rows {
+        let (id, source, translation) = row?;
+        let (repaired, unclosed) = close_percent_placeholders(&translation);
+        let expected = source.matches("{%}").count();
+        if unclosed > 0 && repaired.matches("{%}").count() == expected {
+            conn.execute(
+                "UPDATE unit SET translation = ?1 WHERE id = ?2",
+                params![repaired, id],
+            )?;
+            repaired_rows += 1;
+        }
+    }
+    Ok(repaired_rows)
+}
+
+/// Insert a missing `}` after every `{%` token. The caller verifies the number of
+/// resulting tokens against the source before writing anything to the database.
+fn close_percent_placeholders(text: &str) -> (String, usize) {
+    let mut out = String::with_capacity(text.len());
+    let mut remaining = text;
+    let mut unclosed = 0;
+    while let Some(pos) = remaining.find("{%") {
+        out.push_str(&remaining[..pos + 2]);
+        remaining = &remaining[pos + 2..];
+        if remaining.starts_with('}') {
+            out.push('}');
+            remaining = &remaining[1..];
+        } else {
+            out.push('}');
+            unclosed += 1;
+        }
+    }
+    out.push_str(remaining);
+    (out, unclosed)
+}
+
 /// Fold the WAL back into the main DB file. Called periodically during a long
 /// Run so the `-wal` file doesn't bloat over thousands of continuous writes
 /// (which slows every read that must scan it). PASSIVE never blocks on a reader,
@@ -1823,6 +1880,44 @@ mod tests {
             .unwrap();
         assert_eq!(kind, "Dialogue");
         assert_eq!(context, None);
+    }
+
+    #[test]
+    fn repair_unclosed_mvmz_placeholders_only_repairs_matching_source_tokens() {
+        let mut broken = unit(
+            "ScenarioData.rcsv",
+            "1:0",
+            "Hello, {%}.",
+            Status::Translated,
+        );
+        broken.translation = Some("สวัสดี {%".into());
+        let mut missing = unit(
+            "ScenarioData.rcsv",
+            "2:0",
+            "Hello, {%}.",
+            Status::Translated,
+        );
+        missing.translation = Some("สวัสดี".into());
+        let mut plain = unit("ScenarioData.rcsv", "3:0", "Hello.", Status::Translated);
+        plain.translation = Some("สวัสดี {%".into());
+        let conn = mem_db(&[broken, missing, plain]);
+
+        assert_eq!(repair_unclosed_mvmz_placeholders(&conn).unwrap(), 1);
+        let translations: Vec<Option<String>> = conn
+            .prepare("SELECT translation FROM unit ORDER BY pointer")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            translations,
+            vec![
+                Some("สวัสดี {%}".into()),
+                Some("สวัสดี".into()),
+                Some("สวัสดี {%".into())
+            ]
+        );
     }
 
     #[test]

@@ -706,6 +706,31 @@ fn has_rcsv_localization_data(base: &Path) -> bool {
     !rcsv_localization_files(base).is_empty()
 }
 
+/// Root-relative files an encrypted-RCSV game needs in a pristine rescan/mod
+/// mirror. The normal MV/MZ mirror starts with `data/` only; without this list
+/// an older JSON snapshot makes a rescan silently lose the separate story CSVs.
+pub fn rcsv_localization_root_files(data_dir: &Path) -> Vec<String> {
+    let base = data_dir.parent().unwrap_or(data_dir);
+    let mut files: Vec<String> = rcsv_localization_files(base)
+        .into_iter()
+        .filter_map(|path| path.strip_prefix(base).ok().map(Path::to_path_buf))
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .collect();
+    if !files.is_empty() {
+        for file in [
+            "js/plugins/MySystemLocalization.js",
+            "js/plugins/CustomTitleScreen.js",
+        ] {
+            if base.join(file).is_file() {
+                files.push(file.to_string());
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
 fn is_rcsv_localization_file(file: &str) -> bool {
     let path = Path::new(file);
     path.parent() == Some(Path::new("csvs"))

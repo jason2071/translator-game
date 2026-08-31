@@ -180,6 +180,12 @@ pub fn rescan(project: &mut Project) -> Result<(usize, usize, usize)> {
     // junk a stricter extraction pass leaves behind (see `prune_stale_units`).
     let removed = db::prune_stale_units(&mut project.conn, &units)?
         + db::prune_rescan_echoes(&mut project.conn, &units)?;
+    // Older builds sent RPGMaker's `{%}` runtime-name placeholder to the model as
+    // prose. Re-scan is the safe repair point for existing projects: only rows
+    // whose source proves the expected placeholder count are changed.
+    if project.engine_id == "rpgmaker-mvmz" {
+        db::repair_unclosed_mvmz_placeholders(&project.conn)?;
+    }
     Ok((added, filled + migrated_characters, removed))
 }
 
@@ -797,6 +803,13 @@ fn mvmz_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
             files.insert(entry.file_name().to_string_lossy().to_string());
         }
     }
+    // Some MV games keep localized dialogue beside `data/` in encrypted RCSV
+    // sheets. Include their live root-relative files even when this project has
+    // old snapshots that predate the RCSV adapter; otherwise the temporary
+    // rescan mirror would contain only JSON and silently lose the whole story.
+    files.extend(crate::engine::mvmz::rcsv_localization_root_files(
+        &project.data_dir,
+    ));
     for dir in std::iter::once(source_dir).chain(backup_dirs) {
         if !dir.is_dir() {
             continue;
