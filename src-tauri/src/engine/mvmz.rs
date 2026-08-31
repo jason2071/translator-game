@@ -43,7 +43,14 @@ impl GameEngine for MvMzEngine {
         // `js/` sits beside the data dir: `<root>` for MZ, `<root>/www` for MV.
         let base = dir.parent().unwrap_or(&dir);
         let mut warnings = Vec::new();
-        if let Some(sys) = detect_language_system(base) {
+        if has_rcsv_localization_data(base) {
+            warnings.push(
+                "This game stores its localized text in encrypted RCSV sheets. The English \
+                 column is extracted directly; Export replaces that column, so select English \
+                 in-game to see the translation."
+                    .to_string(),
+            );
+        } else if let Some(sys) = detect_language_system(base) {
             warnings.push(format!(
                 "This game uses a built-in language system ({sys}). Its dialogue is \
                  served per in-game language from a separate translation file, not the \
@@ -63,6 +70,16 @@ impl GameEngine for MvMzEngine {
 
     fn extract(&self, root: &Path, opts: &ExtractOpts) -> Result<Vec<TransUnit>> {
         let dir = data_dir(root).ok_or_else(|| anyhow!("not an RPGMaker MV/MZ project"))?;
+        let base = dir.parent().unwrap_or(&dir);
+        let rcsv_files = rcsv_localization_files(base);
+        if !rcsv_files.is_empty() {
+            let mut units = Vec::new();
+            for path in rcsv_files {
+                extract_rcsv_localization_file(base, &path, opts, &mut units)?;
+            }
+            extract_rcsv_localization_plugins(base, &mut units)?;
+            return Ok(units);
+        }
         // InnScenario is a bundled-story convention used by some MV games. Its
         // dialogue lives in CSV files alongside normal RPG Maker JSON, so retain
         // the ordinary engine and add those files only when their paired data is
@@ -133,6 +150,27 @@ impl GameEngine for MvMzEngine {
             } else {
                 (dir.join(file), out_dir.join(file))
             };
+            if is_rcsv_localization_file(file) {
+                let bytes = std::fs::read(&src).with_context(|| format!("reading {file}"))?;
+                let text = decrypt_rcsv(&bytes).with_context(|| format!("decoding {file}"))?;
+                let out = inject_rcsv_localization_file(file, &text, &file_units)?;
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&dst, encrypt_rcsv(&out))
+                    .with_context(|| format!("writing {file}"))?;
+                continue;
+            }
+            if is_rcsv_localization_plugin(file) {
+                let text =
+                    std::fs::read_to_string(&src).with_context(|| format!("reading {file}"))?;
+                let out = inject_rcsv_localization_plugin(file, &text, &file_units)?;
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&dst, out).with_context(|| format!("writing {file}"))?;
+                continue;
+            }
             let text = std::fs::read_to_string(&src).with_context(|| format!("reading {file}"))?;
             if is_inn_scenario_csv(file) {
                 let out = inject_inn_scenario_csv(file, &text, &file_units)?;
@@ -611,7 +649,77 @@ fn is_inn_scenario_plugin(file: &str) -> bool {
 /// This must stay in sync with `project::project_file_path`: snapshots and mod
 /// exports need to read the same files as this engine's injector.
 pub fn is_game_root_relative_file(file: &str) -> bool {
-    is_inn_scenario_plugin(file) || is_galv_quest_file(file) || is_galv_quest_plugin_config(file)
+    is_inn_scenario_plugin(file)
+        || is_galv_quest_file(file)
+        || is_galv_quest_plugin_config(file)
+        || is_rcsv_localization_file(file)
+        || is_rcsv_localization_plugin(file)
+}
+
+/// A small family of MV games stores every localized line in `csvs/*.rcsv`.
+/// The file is UTF-8 CSV except that its first KiB is XOR-obfuscated before it
+/// is loaded by the game's `CsvPath` plugin. We only opt in after decoding a
+/// sheet and finding a real language column; ordinary `.rcsv` assets stay out.
+const RCSV_KEY: &[u8] = b"RMMVSecure123!@";
+const RCSV_OBFUSCATED_BYTES: usize = 1024;
+
+fn decrypt_rcsv(bytes: &[u8]) -> Result<String> {
+    let mut plain = bytes.to_vec();
+    for (index, byte) in plain.iter_mut().take(RCSV_OBFUSCATED_BYTES).enumerate() {
+        *byte ^= RCSV_KEY[index % RCSV_KEY.len()];
+    }
+    String::from_utf8(plain).context("RCSV is not UTF-8 after decryption")
+}
+
+fn encrypt_rcsv(text: &str) -> Vec<u8> {
+    let mut encrypted = text.as_bytes().to_vec();
+    for (index, byte) in encrypted.iter_mut().take(RCSV_OBFUSCATED_BYTES).enumerate() {
+        *byte ^= RCSV_KEY[index % RCSV_KEY.len()];
+    }
+    encrypted
+}
+
+fn rcsv_localization_files(base: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(base.join("csvs"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().and_then(|ext| ext.to_str()) == Some("rcsv")
+                && std::fs::read(path)
+                    .ok()
+                    .and_then(|bytes| decrypt_rcsv(&bytes).ok())
+                    .and_then(|text| {
+                        csv_rows(&text)
+                            .ok()
+                            .map(|rows| rcsv_header(&rows).is_some())
+                    })
+                    == Some(true)
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+fn has_rcsv_localization_data(base: &Path) -> bool {
+    !rcsv_localization_files(base).is_empty()
+}
+
+fn is_rcsv_localization_file(file: &str) -> bool {
+    let path = Path::new(file);
+    path.parent() == Some(Path::new("csvs"))
+        && path.extension().and_then(|ext| ext.to_str()) == Some("rcsv")
+}
+
+/// These two plugins are part of the encrypted-RCSV localization convention.
+/// They keep the title-menu labels in JavaScript maps rather than the sheets,
+/// so they need the same English-only treatment as the RCSV columns.
+fn is_rcsv_localization_plugin(file: &str) -> bool {
+    matches!(
+        file,
+        "js/plugins/MySystemLocalization.js" | "js/plugins/CustomTitleScreen.js"
+    )
 }
 
 /// Galv's Quest Log stores its prose in a separate plain-text file and its UI
@@ -1061,6 +1169,354 @@ fn csv_field<'a>(rows: &'a [Vec<CsvField<'a>>], row: usize, col: usize) -> Resul
         .and_then(|record| record.get(col))
         .copied()
         .ok_or_else(|| anyhow!("CSV pointer row {row}, column {col} is out of bounds"))
+}
+
+/// The localized RCSV convention has one or two descriptive rows before its
+/// headers. Prefer the selected source language, with Auto choosing English,
+/// then Japanese and Chinese as the UI promises. A sheet without one of these
+/// exact columns is not part of this adapter.
+fn rcsv_source_columns(opts: &ExtractOpts) -> &'static [&'static str] {
+    let source = opts
+        .source_lang
+        .as_deref()
+        .unwrap_or("auto")
+        .to_ascii_lowercase();
+    if source.contains("japan") || source == "ja" {
+        &["Text_JP", "JP"]
+    } else if source.contains("traditional") || source.contains("zh-tw") {
+        &["Text_CN_T", "CN_T"]
+    } else if source.contains("chinese") || source.contains("zh") {
+        &["Text_CN_S", "CN_S", "Text_CN_T", "CN_T"]
+    } else if source.contains("korean") || source == "ko" {
+        &["Text_KR", "KR"]
+    } else if source.contains("russian") || source == "ru" {
+        &["Text_RU", "RU"]
+    } else if source.contains("english") || source == "en" {
+        &["Text_EN", "EN"]
+    } else {
+        &[
+            "Text_EN",
+            "EN",
+            "Text_JP",
+            "JP",
+            "Text_CN_S",
+            "CN_S",
+            "Text_CN_T",
+            "CN_T",
+        ]
+    }
+}
+
+fn rcsv_header<'a>(rows: &'a [Vec<CsvField<'a>>]) -> Option<(usize, &'a [CsvField<'a>])> {
+    rows.iter().enumerate().take(3).find_map(|(row, fields)| {
+        fields
+            .iter()
+            .any(|field| matches!(csv_value(field.raw).as_deref(), Ok("Text_EN" | "EN")))
+            .then_some((row, fields.as_slice()))
+    })
+}
+
+fn rcsv_source_column<'a>(
+    rows: &'a [Vec<CsvField<'a>>],
+    opts: &ExtractOpts,
+) -> Option<(usize, usize, String)> {
+    let (header_row, header) = rcsv_header(rows)?;
+    for wanted in rcsv_source_columns(opts) {
+        if let Some(col) = header
+            .iter()
+            .position(|field| csv_value(field.raw).ok().as_deref() == Some(*wanted))
+        {
+            return Some((header_row, col, (*wanted).to_string()));
+        }
+    }
+    None
+}
+
+fn rcsv_column_named(rows: &[Vec<CsvField<'_>>], name: &str) -> Option<(usize, usize)> {
+    let (header_row, header) = rcsv_header(rows)?;
+    header
+        .iter()
+        .position(|field| csv_value(field.raw).ok().as_deref() == Some(name))
+        .map(|column| (header_row, column))
+}
+
+fn rcsv_kind(file: &str) -> UnitKind {
+    match file {
+        "csvs/ScenarioData.rcsv" => UnitKind::Dialogue,
+        "csvs/CharData.rcsv" => UnitKind::Name,
+        "csvs/UIString.rcsv" => UnitKind::Term,
+        _ => UnitKind::Other,
+    }
+}
+
+fn extract_rcsv_localization_file(
+    base: &Path,
+    path: &Path,
+    opts: &ExtractOpts,
+    out: &mut Vec<TransUnit>,
+) -> Result<()> {
+    let relative = path
+        .strip_prefix(base)
+        .context("RCSV file outside game root")?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let bytes = std::fs::read(path).with_context(|| format!("reading {relative}"))?;
+    let text = decrypt_rcsv(&bytes).with_context(|| format!("decoding {relative}"))?;
+    let rows = csv_rows(&text).with_context(|| format!("parsing {relative}"))?;
+    let Some((header_row, source_col, source_name)) = rcsv_source_column(&rows, opts) else {
+        return Ok(());
+    };
+    let key_col = rcsv_column_named(&rows, "Key").map(|(_, column)| column);
+    let kind = rcsv_kind(&relative);
+
+    for row in header_row + 1..rows.len() {
+        let Some(field) = rows[row].get(source_col) else {
+            continue;
+        };
+        let source = csv_value(field.raw)?;
+        if source.trim().is_empty() {
+            continue;
+        }
+        let context = key_col
+            .and_then(|column| rows[row].get(column))
+            .and_then(|field| csv_value(field.raw).ok())
+            .filter(|key| !key.trim().is_empty());
+        out.push(
+            TransUnit::new(&relative, format!("rcsv:{row}:{source_name}"), kind, source)
+                .with_context(context),
+        );
+    }
+    Ok(())
+}
+
+fn parse_rcsv_pointer(pointer: &str) -> Option<(usize, &str)> {
+    let mut parts = pointer.split(':');
+    (parts.next()? == "rcsv").then_some(())?;
+    let row = parts.next()?.parse().ok()?;
+    let column = parts.next()?;
+    (parts.next().is_none() && !column.is_empty()).then_some((row, column))
+}
+
+fn inject_rcsv_localization_file(file: &str, text: &str, units: &[&TransUnit]) -> Result<String> {
+    let rows = csv_rows(text).with_context(|| format!("parsing {file}"))?;
+    let mut replacements = Vec::new();
+    for unit in units {
+        let (row, column_name) = parse_rcsv_pointer(&unit.pointer)
+            .ok_or_else(|| anyhow!("bad RCSV pointer {} in {file}", unit.pointer))?;
+        let (_, column) = rcsv_column_named(&rows, column_name).ok_or_else(|| {
+            anyhow!(
+                "stale pointer {} in {file} — re-extract needed",
+                unit.pointer
+            )
+        })?;
+        let field = csv_field(&rows, row, column)?;
+        let source = csv_value(field.raw)?;
+        if source != unit.source {
+            return Err(anyhow!(
+                "stale pointer {} in {file} — re-extract needed",
+                unit.pointer
+            ));
+        }
+        let was_quoted = field.raw.starts_with('"') && field.raw.ends_with('"');
+        replacements.push((
+            field.start,
+            field.end,
+            csv_encode(unit.translation.as_deref().unwrap_or_default(), was_quoted),
+        ));
+    }
+
+    replacements.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+    let mut out = text.to_string();
+    for (start, end, replacement) in replacements {
+        out.replace_range(start..end, &replacement);
+    }
+    Ok(out)
+}
+
+fn rcsv_localization_plugin_spec(file: &str) -> Option<(&'static str, usize)> {
+    match file {
+        // `TRANSLATIONS` maps a locale key to an object whose numeric property
+        // 1 is English; the language value is therefore one object level in.
+        "js/plugins/MySystemLocalization.js" => Some(("var TRANSLATIONS=", 2)),
+        // The custom title screen keeps only its Exit label in this map, where
+        // 1 is directly inside the object.
+        "js/plugins/CustomTitleScreen.js" => Some(("var map={1:", 1)),
+        _ => None,
+    }
+}
+
+fn js_quoted_span(js: &str, quote_at: usize) -> Option<(usize, usize)> {
+    let bytes = js.as_bytes();
+    let quote = *bytes.get(quote_at)?;
+    if !matches!(quote, b'\'' | b'"') {
+        return None;
+    }
+    let start = quote_at + 1;
+    let mut index = start;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index += 2,
+            byte if byte == quote => return Some((start, index)),
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn previous_non_whitespace(bytes: &[u8], mut index: usize) -> Option<u8> {
+    while index > 0 {
+        index -= 1;
+        if !bytes[index].is_ascii_whitespace() {
+            return Some(bytes[index]);
+        }
+    }
+    None
+}
+
+/// Locate only the value of numeric locale property `1` (English), not the
+/// adjacent Japanese/Chinese/etc. values. The scanner deliberately understands
+/// just enough JavaScript object syntax for the two bundled, fixed plugins and
+/// keeps offsets into the original source for safe injection.
+fn english_locale_spans(js: &str, marker: &str, property_depth: usize) -> Vec<(usize, usize)> {
+    let Some(marker_at) = js.find(marker) else {
+        return Vec::new();
+    };
+    let Some(open_rel) = js[marker_at..].find('{') else {
+        return Vec::new();
+    };
+    let bytes = js.as_bytes();
+    let mut depth = 1usize;
+    let mut index = marker_at + open_rel + 1;
+    let mut spans = Vec::new();
+    while index < bytes.len() && depth > 0 {
+        match bytes[index] {
+            b'\'' | b'"' => {
+                let Some((_, end)) = js_quoted_span(js, index) else {
+                    return Vec::new();
+                };
+                index = end + 1;
+            }
+            b'{' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                index += 1;
+            }
+            b'1' if depth == property_depth
+                && matches!(previous_non_whitespace(bytes, index), Some(b'{' | b',')) =>
+            {
+                let mut after_key = index + 1;
+                while bytes
+                    .get(after_key)
+                    .is_some_and(|byte| byte.is_ascii_whitespace())
+                {
+                    after_key += 1;
+                }
+                if bytes.get(after_key) != Some(&b':') {
+                    index += 1;
+                    continue;
+                }
+                let mut value_at = after_key + 1;
+                while bytes
+                    .get(value_at)
+                    .is_some_and(|byte| byte.is_ascii_whitespace())
+                {
+                    value_at += 1;
+                }
+                if let Some((start, end)) = js_quoted_span(js, value_at) {
+                    spans.push((start, end - start));
+                    index = end + 1;
+                } else {
+                    index = value_at;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    spans
+}
+
+fn extract_rcsv_localization_plugins(base: &Path, out: &mut Vec<TransUnit>) -> Result<()> {
+    for file in [
+        "js/plugins/MySystemLocalization.js",
+        "js/plugins/CustomTitleScreen.js",
+    ] {
+        let Some((marker, property_depth)) = rcsv_localization_plugin_spec(file) else {
+            continue;
+        };
+        let path = base.join(file);
+        if !path.is_file() {
+            continue;
+        }
+        let js = std::fs::read_to_string(&path).with_context(|| format!("reading {file}"))?;
+        for (start, len) in english_locale_spans(&js, marker, property_depth) {
+            let source = unescape_js(&js[start..start + len]);
+            if source.trim().is_empty() {
+                continue;
+            }
+            out.push(TransUnit::new(
+                file,
+                format!("locale:{start}:{len}"),
+                UnitKind::Term,
+                source,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn parse_locale_plugin_pointer(pointer: &str) -> Option<(usize, usize)> {
+    let mut parts = pointer.split(':');
+    (parts.next()? == "locale").then_some(())?;
+    let start = parts.next()?.parse().ok()?;
+    let len = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((start, len))
+}
+
+fn inject_rcsv_localization_plugin(file: &str, js: &str, units: &[&TransUnit]) -> Result<String> {
+    let (marker, property_depth) = rcsv_localization_plugin_spec(file)
+        .ok_or_else(|| anyhow!("unsupported RCSV localization plugin {file}"))?;
+    let valid_spans = english_locale_spans(js, marker, property_depth);
+    let mut replacements = Vec::new();
+    for unit in units {
+        let (start, len) = parse_locale_plugin_pointer(&unit.pointer)
+            .ok_or_else(|| anyhow!("bad locale pointer {} in {file}", unit.pointer))?;
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| anyhow!("bad locale pointer {} in {file}", unit.pointer))?;
+        if !valid_spans.contains(&(start, len))
+            || start == 0
+            || end > js.len()
+            || !js.is_char_boundary(start)
+            || !js.is_char_boundary(end)
+        {
+            return Err(anyhow!(
+                "stale pointer {} in {file} — re-extract needed",
+                unit.pointer
+            ));
+        }
+        if unescape_js(&js[start..end]) != unit.source {
+            return Err(anyhow!(
+                "stale pointer {} in {file} — re-extract needed",
+                unit.pointer
+            ));
+        }
+        let quote = js.as_bytes()[start - 1];
+        replacements.push((
+            start,
+            end,
+            super::codes::escape_js_literal(unit.translation.as_deref().unwrap_or_default(), quote),
+        ));
+    }
+
+    replacements.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+    let mut out = js.to_string();
+    for (start, end, replacement) in replacements {
+        out.replace_range(start..end, &replacement);
+    }
+    Ok(out)
 }
 
 fn extract_inn_scenario_csv(file: &str, text: &str, out: &mut Vec<TransUnit>) -> Result<()> {
@@ -1861,6 +2317,122 @@ mod tests {
         assert!(units.iter().any(|unit| {
             unit.pointer == "/routes/4/calendarLabel" && unit.source == "商人一行"
         }));
+    }
+
+    fn write_rcsv_locale_game(root: &Path) {
+        let data = root.join("data");
+        let csvs = root.join("csvs");
+        let plugins = root.join("js/plugins");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&csvs).unwrap();
+        std::fs::create_dir_all(&plugins).unwrap();
+        // This Korean database text is intentionally player-facing in a normal
+        // MV game, but a RCSV-localized game obtains its displayed strings from
+        // the language sheet below and must not extract this fallback language.
+        std::fs::write(data.join("System.json"), r#"{"gameTitle":"Korean title"}"#).unwrap();
+        let scenario = concat!(
+            "description,key,Korean,English,Japanese\r\n",
+            "desc,Key,Text_KR,Text_EN,Text_JP\r\n",
+            "scene_1,scene_1,Korean greeting,\"Hello, \"\"friend\"\"!\",Japanese greeting\r\n",
+            "scene_2,scene_2,Korean night,It is night.,Japanese night\r\n"
+        );
+        let ui = concat!(
+            "Category,Key,KR,EN,JP\r\n",
+            "GlobalMap,time_1,Korean morning,Morning,Japanese morning\r\n"
+        );
+        std::fs::write(csvs.join("ScenarioData.rcsv"), encrypt_rcsv(scenario)).unwrap();
+        std::fs::write(csvs.join("UIString.rcsv"), encrypt_rcsv(ui)).unwrap();
+        std::fs::write(
+            plugins.join("MySystemLocalization.js"),
+            "var TRANSLATIONS={'newGame': {1: 'New Game',2: 'Japanese New Game'},'continue_': {1: 'Continue',2: 'Japanese Continue'},'options': {1: 'Options',2: 'Japanese Options'},'gallery': {1: 'Gallery',2: 'Japanese Gallery'}};",
+        )
+        .unwrap();
+        std::fs::write(
+            plugins.join("CustomTitleScreen.js"),
+            "function _ctExitLabel() {var map={1: 'Exit',2: 'Japanese Exit'};return map[1];}",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn encrypted_rcsv_extracts_only_the_selected_language_and_round_trips() {
+        let game = tempfile::tempdir().unwrap();
+        write_rcsv_locale_game(game.path());
+        let engine = MvMzEngine;
+        let mut units = engine
+            .extract(
+                game.path(),
+                &ExtractOpts {
+                    source_lang: Some("auto".into()),
+                    ..ExtractOpts::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(units.len(), 8, "only English locale cells are extracted");
+        assert!(units.iter().all(|unit| !unit.source.contains("Korean")));
+        assert!(units.iter().all(|unit| !unit.source.contains("Japanese")));
+        let dialogue = units
+            .iter()
+            .find(|unit| unit.source == "Hello, \"friend\"!")
+            .unwrap();
+        assert_eq!(dialogue.file, "csvs/ScenarioData.rcsv");
+        assert_eq!(dialogue.pointer, "rcsv:2:Text_EN");
+        assert_eq!(dialogue.kind, UnitKind::Dialogue);
+        assert_eq!(dialogue.context.as_deref(), Some("scene_1"));
+        assert!(units
+            .iter()
+            .any(|unit| unit.source == "Morning" && unit.kind == UnitKind::Term));
+        for label in ["New Game", "Continue", "Options", "Gallery", "Exit"] {
+            assert!(
+                units.iter().any(|unit| unit.source == label),
+                "missing title-menu label {label}"
+            );
+        }
+
+        for unit in &mut units {
+            unit.translation = Some(unit.source.clone());
+            unit.status = crate::model::Status::Draft;
+        }
+        let out_root = tempfile::tempdir().unwrap();
+        let out_data = out_root.path().join("data");
+        std::fs::create_dir_all(&out_data).unwrap();
+        engine.inject(game.path(), &units, &out_data).unwrap();
+        for file in ["ScenarioData.rcsv", "UIString.rcsv"] {
+            assert_eq!(
+                std::fs::read(game.path().join("csvs").join(file)).unwrap(),
+                std::fs::read(out_root.path().join("csvs").join(file)).unwrap(),
+                "round-trip altered {file}"
+            );
+        }
+        for file in ["MySystemLocalization.js", "CustomTitleScreen.js"] {
+            assert_eq!(
+                std::fs::read_to_string(game.path().join("js/plugins").join(file)).unwrap(),
+                std::fs::read_to_string(out_root.path().join("js/plugins").join(file)).unwrap(),
+                "round-trip altered {file}"
+            );
+        }
+
+        let mut line = units
+            .into_iter()
+            .find(|unit| unit.source == "New Game")
+            .unwrap();
+        line.translation = Some("เกมใหม่".into());
+        line.status = crate::model::Status::Translated;
+        let translated = tempfile::tempdir().unwrap();
+        let translated_data = translated.path().join("data");
+        std::fs::create_dir_all(&translated_data).unwrap();
+        engine
+            .inject(game.path(), std::slice::from_ref(&line), &translated_data)
+            .unwrap();
+        let output =
+            std::fs::read_to_string(translated.path().join("js/plugins/MySystemLocalization.js"))
+                .unwrap();
+        assert!(output.contains("'เกมใหม่'"));
+        assert!(
+            output.contains("Japanese New Game"),
+            "other locales are preserved"
+        );
     }
 
     #[test]

@@ -6,6 +6,22 @@ use app_lib::model::{Status, TransUnit};
 use app_lib::project::{self, db};
 use std::fs;
 
+fn xor_rcsv(mut bytes: Vec<u8>) -> Vec<u8> {
+    const KEY: &[u8] = b"RMMVSecure123!@";
+    for (index, byte) in bytes.iter_mut().take(1024).enumerate() {
+        *byte ^= KEY[index % KEY.len()];
+    }
+    bytes
+}
+
+fn encrypt_rcsv(text: &str) -> Vec<u8> {
+    xor_rcsv(text.as_bytes().to_vec())
+}
+
+fn decrypt_rcsv(bytes: &[u8]) -> String {
+    String::from_utf8(xor_rcsv(bytes.to_vec())).unwrap()
+}
+
 #[test]
 fn mvmz_rescan_uses_pristine_source_after_export() {
     let tmp = tempfile::tempdir().unwrap();
@@ -60,4 +76,41 @@ fn mvmz_rescan_uses_pristine_source_after_export() {
         1,
         "a shifted later span must not create a duplicate"
     );
+}
+
+#[test]
+fn mvmz_rcsv_rescan_uses_pristine_source_after_export() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let data = root.join("data");
+    let csvs = root.join("csvs");
+    fs::create_dir_all(&data).unwrap();
+    fs::create_dir_all(&csvs).unwrap();
+    fs::write(data.join("System.json"), r#"{"gameTitle":"Korean title"}"#).unwrap();
+    let scenario = concat!(
+        "description,key,Korean,English,Japanese\r\n",
+        "desc,Key,Text_KR,Text_EN,Text_JP\r\n",
+        "scene_1,scene_1,Korean greeting,Hello there.,Japanese greeting\r\n"
+    );
+    fs::write(csvs.join("ScenarioData.rcsv"), encrypt_rcsv(scenario)).unwrap();
+
+    let (mut project, fresh) = project::open_or_create(root, "auto", "Thai").unwrap();
+    assert!(fresh);
+    let line = db::all_units(&project.conn)
+        .unwrap()
+        .into_iter()
+        .find(|unit| unit.source == "Hello there.")
+        .expect("English RCSV line extracted");
+    db::update_unit(&project.conn, line.id, Some("สวัสดีครับ"), "Translated").unwrap();
+    project::export(&mut project, true, false).unwrap();
+    let live = fs::read(csvs.join("ScenarioData.rcsv")).unwrap();
+    assert!(decrypt_rcsv(&live).contains("สวัสดีครับ"));
+
+    let (added, _, removed) = project::rescan(&mut project).unwrap();
+    assert_eq!(added, 0, "rescan must read the original RCSV snapshot");
+    assert_eq!(removed, 0);
+    assert!(db::all_units(&project.conn)
+        .unwrap()
+        .iter()
+        .all(|unit| unit.source != "สวัสดีครับ"));
 }
