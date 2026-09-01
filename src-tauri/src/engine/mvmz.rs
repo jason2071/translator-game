@@ -1291,7 +1291,6 @@ fn extract_rcsv_localization_file(
     let Some((header_row, source_col, source_name)) = rcsv_source_column(&rows, opts) else {
         return Ok(());
     };
-    let key_col = rcsv_column_named(&rows, "Key").map(|(_, column)| column);
     let kind = rcsv_kind(&relative);
 
     for row in header_row + 1..rows.len() {
@@ -1302,14 +1301,16 @@ fn extract_rcsv_localization_file(
         if source.trim().is_empty() {
             continue;
         }
-        let context = key_col
-            .and_then(|column| rows[row].get(column))
-            .and_then(|field| csv_value(field.raw).ok())
-            .filter(|key| !key.trim().is_empty());
-        out.push(
-            TransUnit::new(&relative, format!("rcsv:{row}:{source_name}"), kind, source)
-                .with_context(context),
-        );
+        // `Key` names a scenario record, not its speaker. Treating it as the
+        // dialogue context turns every scene id into a fake character in the
+        // sidebar (for example `1갸루_스토리_10레벨_시작1`). RCSV files do not
+        // carry reliable per-line speaker data, so leave the context unset.
+        out.push(TransUnit::new(
+            &relative,
+            format!("rcsv:{row}:{source_name}"),
+            kind,
+            source,
+        ));
     }
     Ok(())
 }
@@ -2404,7 +2405,7 @@ mod tests {
         assert_eq!(dialogue.file, "csvs/ScenarioData.rcsv");
         assert_eq!(dialogue.pointer, "rcsv:2:Text_EN");
         assert_eq!(dialogue.kind, UnitKind::Dialogue);
-        assert_eq!(dialogue.context.as_deref(), Some("scene_1"));
+        assert_eq!(dialogue.context, None, "scenario keys are not speakers");
         assert!(units
             .iter()
             .any(|unit| unit.source == "Morning" && unit.kind == UnitKind::Term));

@@ -306,9 +306,17 @@ fn glossary_lint(state: tauri::State<AppState>) -> Result<Vec<LintWarning>, Stri
 // --- characters (speaker → gender, for Thai gendered particles) -------------
 
 fn visible_characters(conn: &rusqlite::Connection) -> anyhow::Result<Vec<project::db::Character>> {
+    let active_speakers: std::collections::HashSet<String> =
+        project::db::distinct_speakers(conn)?.into_iter().collect();
     Ok(project::db::characters_list(conn)?
         .into_iter()
-        .filter(|c| !project::db::is_non_character_speaker(&c.name))
+        // A stored character with no live dialogue context cannot filter any
+        // rows. Hide it from the selector (old extractor versions may have
+        // stored scene IDs as characters) while retaining the record so no
+        // manual gender/persona data is discarded.
+        .filter(|c| {
+            active_speakers.contains(&c.name) && !project::db::is_non_character_speaker(&c.name)
+        })
         .collect())
 }
 
@@ -1936,7 +1944,43 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_cjk_lang, looks_like_asset_path};
+    use super::{is_cjk_lang, looks_like_asset_path, visible_characters};
+    use crate::{
+        model::{TransUnit, UnitKind},
+        project::db,
+    };
+    use rusqlite::Connection;
+
+    #[test]
+    fn visible_characters_omits_stale_scenario_keys() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        db::init_schema(&conn).unwrap();
+        let mut alice = TransUnit::new(
+            "ScenarioData.rcsv",
+            "rcsv:2:Text_EN",
+            UnitKind::Dialogue,
+            "Hello",
+        );
+        alice.context = Some("Alice".into());
+        // Rescan has already cleared this old RCSV key from the unit, but its
+        // earlier auto-classification record remains stored in `character`.
+        let old_key = TransUnit::new(
+            "ScenarioData.rcsv",
+            "rcsv:3:Text_EN",
+            UnitKind::Dialogue,
+            "Goodbye",
+        );
+        db::insert_units(&mut conn, &[alice, old_key]).unwrap();
+        db::character_set(&conn, "Alice", "female").unwrap();
+        db::character_set(&conn, "scene_1", "neutral").unwrap();
+
+        let names: Vec<String> = visible_characters(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|character| character.name)
+            .collect();
+        assert_eq!(names, vec!["Alice"]);
+    }
 
     #[test]
     fn asset_paths_are_rejected_as_translations() {
