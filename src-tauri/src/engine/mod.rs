@@ -12,6 +12,7 @@
 //! text engines); only the owning engine interprets it.
 
 pub mod ac_loctext;
+pub mod asar;
 pub mod codes;
 pub mod encoding;
 pub mod forger_acod;
