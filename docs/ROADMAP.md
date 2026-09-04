@@ -40,14 +40,17 @@ Adding an engine touches only the engine seam; model/DB/UI are engine-agnostic.
   <n>` translates via Ollama with the right masking.
 
 ## Done: TyranoScript (`.ks` text) — `engine/tyrano.rs`
-Text-based, reuses the Ren'Py byte-span locator + protect pattern. Detects
-`data/scenario/*.ks`; extracts message text (inline `[tags]` kept in the source,
+Text-based, reuses the Ren'Py byte-span locator + protect pattern. Detects loose
+`data/scenario/*.ks` and Electron-packed `resources/app.asar`; extracts message text (inline `[tags]` kept in the source,
 masked around the AI), `[glink text=]` choices, and `[chara_new jname=]` character
 names; carries `#name` as speaker context. Skips comments (`;`), labels (`*`),
 `@`-command lines, and `[iscript]`/`[html]` code blocks. `mask_tyrano` protects
 KAG `[tags]` and `\` escapes (quote-aware so an attribute value may contain `]`).
-UTF-8 only. Fixture + round-trip test in `tests/tyrano_roundtrip.rs`; verified
-end-to-end through Ollama (inline tags + `[emb]` survive mask/restore).
+UTF-8 only. Packed ASAR exports stream unchanged assets and rebuild only altered
+scenario entries, while the shared source snapshot keeps re-export/rescan/restore
+safe. Fixtures + round-trip tests in `tests/tyrano_roundtrip.rs` and
+`tests/packed_tyrano_roundtrip.rs`; the shared parser keeps inline tags and `[emb]`
+safe through mask/restore.
 
 Known gaps (follow-up): `#name` written as literal display text (games without
 `[chara_new]`) is context-only, not translated; `*label|caption` save titles and

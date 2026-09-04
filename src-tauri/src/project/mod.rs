@@ -774,8 +774,29 @@ fn pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
     match project.engine_id.as_str() {
         "rpgmaker-mvmz" => mvmz_pristine_rescan_root(project),
         "gamecreator" => gamecreator_pristine_rescan_root(project),
+        "tyrano" => packed_tyrano_pristine_rescan_root(project),
         _ => Ok(None),
     }
+}
+
+/// A packed TyranoScript game keeps every scenario inside one `app.asar`. Its
+/// `data_dir` is the game root, so the normal snapshot path already mirrors the
+/// physical archive at `resources/app.asar`; give detection a tiny game-root
+/// mirror with that pristine archive before re-scanning.
+fn packed_tyrano_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
+    if project.engine_id != "tyrano" || project.data_dir != project.root {
+        return Ok(None);
+    }
+    let file = crate::engine::tyrano::PACKED_ASAR_FILE.to_string();
+    let source = rpgtl_dir(&project.root).join("source").join(&file);
+    let backup = earliest_backup_dirs(&rpgtl_dir(&project.root).join("backups"))
+        .into_iter()
+        .map(|dir| dir.join(&file))
+        .any(|path| path.exists());
+    if !source.exists() && !backup {
+        return Ok(None);
+    }
+    Ok(Some(pristine_read_root(project, &[file])?))
 }
 
 /// Make a temporary MV/MZ game root for re-extraction. Its normal data files are

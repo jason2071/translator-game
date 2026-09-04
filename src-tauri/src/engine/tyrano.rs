@@ -22,12 +22,13 @@
 //! `engine::kirikiri` for the Shift-JIS/UTF-16 KiriKiri variant, which wraps it
 //! in an encoding layer.
 
+use super::asar::Archive;
 use super::codes::ExtractOpts;
 use super::{DetectResult, GameEngine};
 use crate::model::{TransUnit, UnitKind};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub struct TyranoEngine;
@@ -42,73 +43,203 @@ impl GameEngine for TyranoEngine {
     }
 
     fn detect(&self, root: &Path) -> bool {
-        scenario_dir(root).is_some()
+        scenario_dir(root).is_some() || packed_asar_path(root).is_some()
     }
 
     fn describe(&self, root: &Path) -> Result<DetectResult> {
-        let dir = scenario_dir(root).ok_or_else(|| anyhow!("not a TyranoScript project"))?;
-        let count = collect_ks(&dir).len();
+        if let Some(dir) = scenario_dir(root) {
+            return Ok(DetectResult {
+                engine_id: self.id().to_string(),
+                engine_name: self.name().to_string(),
+                data_dir: dir.to_string_lossy().to_string(),
+                file_count: collect_ks(&dir).len(),
+                ..Default::default()
+            });
+        }
+        let archive = packed_asar(root).ok_or_else(|| anyhow!("not a TyranoScript project"))?;
         Ok(DetectResult {
             engine_id: self.id().to_string(),
-            engine_name: self.name().to_string(),
-            data_dir: dir.to_string_lossy().to_string(),
-            file_count: count,
-            ..Default::default()
+            engine_name: "TyranoScript (packed ASAR)".to_string(),
+            // The archive is a game-root-relative physical file. This lets the
+            // shared snapshot/export system preserve one original app.asar.
+            data_dir: root.to_string_lossy().to_string(),
+            file_count: packed_scenario_entries(&archive).len(),
+            warnings: vec![
+                "This TyranoScript game is packed in resources/app.asar. Export rebuilds the archive and needs substantial free disk space.".to_string(),
+            ],
         })
     }
 
     fn extract(&self, root: &Path, _opts: &ExtractOpts) -> Result<Vec<TransUnit>> {
-        let dir = scenario_dir(root).ok_or_else(|| anyhow!("not a TyranoScript project"))?;
+        if let Some(dir) = scenario_dir(root) {
+            let mut units = Vec::new();
+            for path in collect_ks(&dir) {
+                let rel = rel_path(&dir, &path);
+                let content =
+                    std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
+                extract_ks(&rel, &content, &mut units);
+            }
+            return Ok(units);
+        }
+
+        let archive = packed_asar(root).ok_or_else(|| anyhow!("not a TyranoScript project"))?;
         let mut units = Vec::new();
-        for path in collect_ks(&dir) {
-            let rel = rel_path(&dir, &path);
-            let content =
-                std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
-            extract_ks(&rel, &content, &mut units);
+        for entry in packed_scenario_entries(&archive) {
+            let content = String::from_utf8(archive.read(&entry)?)
+                .with_context(|| format!("decoding packed TyranoScript scenario {entry}"))?;
+            let mut entry_units = Vec::new();
+            extract_ks(&entry, &content, &mut entry_units);
+            for unit in &mut entry_units {
+                unit.file = PACKED_ASAR_FILE.to_string();
+                unit.pointer = format!("asar:{entry}|{}", unit.pointer);
+            }
+            units.extend(entry_units);
         }
         Ok(units)
     }
 
     fn inject(&self, root: &Path, units: &[TransUnit], out_dir: &Path) -> Result<()> {
-        let dir = scenario_dir(root).ok_or_else(|| anyhow!("not a TyranoScript project"))?;
-
-        // Group applied units by file.
-        let mut by_file: BTreeMap<&str, Vec<&TransUnit>> = BTreeMap::new();
-        for u in units {
-            if u.status.is_applied() && u.translation.is_some() {
-                by_file.entry(u.file.as_str()).or_default().push(u);
-            }
+        if let Some(dir) = scenario_dir(root) {
+            return inject_loose(&dir, units, out_dir);
         }
-
-        for (file, mut file_units) in by_file {
-            let src = dir.join(file);
-            let mut bytes = std::fs::read(&src).with_context(|| format!("reading {file}"))?;
-
-            // Splice from the end backwards so earlier byte offsets stay valid.
-            file_units
-                .sort_by_key(|u| Reverse(parse_pointer(&u.pointer).map(|(s, _)| s).unwrap_or(0)));
-            for u in file_units {
-                let (start, len) = parse_pointer(&u.pointer)
-                    .ok_or_else(|| anyhow!("bad TyranoScript pointer {} in {}", u.pointer, file))?;
-                if start + len > bytes.len() {
-                    return Err(anyhow!(
-                        "stale pointer {} in {} — re-extract needed",
-                        u.pointer,
-                        file
-                    ));
-                }
-                let translation = u.translation.clone().unwrap_or_default();
-                bytes.splice(start..start + len, translation.into_bytes());
-            }
-
-            let out = out_dir.join(file);
-            if let Some(parent) = out.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&out, bytes).with_context(|| format!("writing {file}"))?;
-        }
-        Ok(())
+        inject_packed(root, units, out_dir)
     }
+}
+
+pub const PACKED_ASAR_FILE: &str = "resources/app.asar";
+
+fn inject_loose(dir: &Path, units: &[TransUnit], out_dir: &Path) -> Result<()> {
+    // Group applied units by file.
+    let mut by_file: BTreeMap<&str, Vec<&TransUnit>> = BTreeMap::new();
+    for u in units {
+        if u.status.is_applied() && u.translation.is_some() {
+            by_file.entry(u.file.as_str()).or_default().push(u);
+        }
+    }
+
+    for (file, mut file_units) in by_file {
+        let src = dir.join(file);
+        let mut bytes = std::fs::read(&src).with_context(|| format!("reading {file}"))?;
+
+        // Splice from the end backwards so earlier byte offsets stay valid.
+        file_units.sort_by_key(|u| Reverse(parse_pointer(&u.pointer).map(|(s, _)| s).unwrap_or(0)));
+        for u in file_units {
+            let (start, len) = parse_pointer(&u.pointer)
+                .ok_or_else(|| anyhow!("bad TyranoScript pointer {} in {}", u.pointer, file))?;
+            if start + len > bytes.len() {
+                return Err(anyhow!(
+                    "stale pointer {} in {} — re-extract needed",
+                    u.pointer,
+                    file
+                ));
+            }
+            let translation = u.translation.clone().unwrap_or_default();
+            bytes.splice(start..start + len, translation.into_bytes());
+        }
+
+        let out = out_dir.join(file);
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&out, bytes).with_context(|| format!("writing {file}"))?;
+    }
+    Ok(())
+}
+
+fn inject_packed(root: &Path, units: &[TransUnit], out_dir: &Path) -> Result<()> {
+    let archive = packed_asar(root).ok_or_else(|| anyhow!("not a packed TyranoScript project"))?;
+    let mut by_entry: BTreeMap<String, Vec<&TransUnit>> = BTreeMap::new();
+    for unit in units {
+        if !unit.status.is_applied() || unit.translation.is_none() {
+            continue;
+        }
+        if unit.file != PACKED_ASAR_FILE {
+            continue;
+        }
+        let (entry, _) = parse_packed_pointer(&unit.pointer)
+            .ok_or_else(|| anyhow!("bad packed TyranoScript pointer {}", unit.pointer))?;
+        if !is_scenario_entry(entry) || !archive.contains(entry) {
+            bail!("packed TyranoScript pointer targets an invalid entry: {entry}");
+        }
+        by_entry.entry(entry.to_string()).or_default().push(unit);
+    }
+
+    let mut replacements = HashMap::new();
+    for (entry, mut entry_units) in by_entry {
+        let mut bytes = archive.read(&entry)?;
+        entry_units.sort_by_key(|unit| {
+            Reverse(
+                parse_packed_pointer(&unit.pointer)
+                    .and_then(|(_, span)| parse_pointer(span))
+                    .map(|(start, _)| start)
+                    .unwrap_or(0),
+            )
+        });
+        for unit in entry_units {
+            let (_, span) = parse_packed_pointer(&unit.pointer).unwrap();
+            let (start, len) = parse_pointer(span)
+                .ok_or_else(|| anyhow!("bad packed TyranoScript pointer {}", unit.pointer))?;
+            if start + len > bytes.len() {
+                bail!(
+                    "stale packed TyranoScript pointer {} in {entry} — re-extract needed",
+                    unit.pointer
+                );
+            }
+            bytes.splice(
+                start..start + len,
+                unit.translation.clone().unwrap_or_default().into_bytes(),
+            );
+        }
+        replacements.insert(entry, bytes);
+    }
+
+    if replacements.is_empty() {
+        return Ok(());
+    }
+    let target = out_dir.join(PACKED_ASAR_FILE);
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow!("packed ASAR target has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let temp = parent.join("app.asar.rpgtl.tmp");
+    if temp.exists() {
+        std::fs::remove_file(&temp)?;
+    }
+    archive.rebuild(&temp, &replacements)?;
+    std::fs::rename(&temp, &target).with_context(|| {
+        format!(
+            "replacing packed TyranoScript archive {}; the original is kept in .rpgtl/source",
+            target.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn parse_packed_pointer(pointer: &str) -> Option<(&str, &str)> {
+    pointer.strip_prefix("asar:")?.split_once('|')
+}
+
+fn packed_asar_path(root: &Path) -> Option<PathBuf> {
+    let path = root.join(PACKED_ASAR_FILE);
+    let archive = Archive::open(&path).ok()?;
+    (!packed_scenario_entries(&archive).is_empty()).then_some(path)
+}
+
+fn packed_asar(root: &Path) -> Option<Archive> {
+    Archive::open(&packed_asar_path(root)?).ok()
+}
+
+fn packed_scenario_entries(archive: &Archive) -> Vec<String> {
+    archive
+        .entries()
+        .iter()
+        .filter(|entry| is_scenario_entry(&entry.path) && !entry.is_unpacked())
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
+fn is_scenario_entry(path: &str) -> bool {
+    path.starts_with("data/scenario/") && path.ends_with(".ks")
 }
 
 /// A TyranoScript project keeps scenario `.ks` under `data/scenario/`; accept a
@@ -419,6 +550,8 @@ pub(super) fn extract_ks(file: &str, content: &str, out: &mut Vec<TransUnit>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::asar::write_test_archive;
+    use crate::model::Status;
 
     fn extract(src: &str) -> Vec<TransUnit> {
         let mut out = Vec::new();
@@ -539,5 +672,45 @@ Outro line.[l]
         let s = "[glink text=\"a]b\" x=1]after";
         let end = tag_end(s.as_bytes(), 0).unwrap();
         assert_eq!(&s[end..], "after");
+    }
+
+    #[test]
+    fn packed_asar_extracts_and_injects_scenarios() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let resources = root.join("resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        let archive_path = resources.join("app.asar");
+        write_test_archive(
+            &archive_path,
+            &[
+                ("data/scenario/first.ks", b"#akane\nHello.[l]\n"),
+                ("data/image/keep.bin", b"unchanged asset"),
+            ],
+        );
+
+        let engine = TyranoEngine;
+        assert!(engine.detect(root));
+        let desc = engine.describe(root).unwrap();
+        assert_eq!(desc.engine_name, "TyranoScript (packed ASAR)");
+        assert_eq!(desc.data_dir, root.to_string_lossy());
+
+        let mut units = engine.extract(root, &ExtractOpts::default()).unwrap();
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].file, PACKED_ASAR_FILE);
+        assert_eq!(units[0].pointer, "asar:data/scenario/first.ks|7:9");
+        units[0].translation = Some("สวัสดี[l]".to_string());
+        units[0].status = Status::Translated;
+
+        engine.inject(root, &units, root).unwrap();
+        let rebuilt = Archive::open(&archive_path).unwrap();
+        assert_eq!(
+            String::from_utf8(rebuilt.read("data/scenario/first.ks").unwrap()).unwrap(),
+            "#akane\nสวัสดี[l]\n"
+        );
+        assert_eq!(
+            rebuilt.read("data/image/keep.bin").unwrap(),
+            b"unchanged asset"
+        );
     }
 }

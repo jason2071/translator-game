@@ -19,7 +19,7 @@ and are much riskier.
 |--------|---------------------------|------|-------------|
 | **RPGM** (MV/MZ) | `data/*.json` (event lists, database, System) | text | ✅ Supported |
 | **Ren'Py** | `game/**/*.rpy` (say / menu / `_()`) | text | ✅ Supported |
-| **TyranoScript** | `data/scenario/*.ks` (message / glink / jname) | text | ✅ Supported |
+| **TyranoScript** | `data/scenario/*.ks` or Electron `resources/app.asar` | text/archive | ✅ Supported |
 | **KiriKiri** (KAG) | `*.ks` (same KAG tags, Shift-JIS/UTF-16) | text | ✅ Supported |
 | **RPGM** (VX Ace/VX/XP) | `Data/*.rvdata2` = Ruby Marshal | binary | 🔴 Hard |
 | **RPGM** (2000/2003) | `*.lmu` / `RPG_RT.ldb` (liblcf) | binary | 🔴 Hard |
@@ -50,10 +50,14 @@ and are much riskier.
   `.rpy`) auto-decompile at import via the bundled [unrpyc](https://github.com/CensoredUsername/unrpyc) driven by the game's own
   Python (`ensure_decompiled` → `engine::unrpyc`); falls back to an actionable error
   if no interpreter is present.
-- **TyranoScript** — `.ks` KAG scenario scripts; pointer = byte span; splice-in-place
-  inject. Extracts message text, `[glink text=]` choices, and `[chara_new jname=]`
-  names; skips comments/labels/`@`-commands and `[iscript]`/`[html]` blocks;
-  protects `[tags]`. UTF-8 only. `src-tauri/src/engine/tyrano.rs`.
+- **TyranoScript** — `.ks` KAG scenario scripts, either loose under
+  `data/scenario/` or packed inside Electron's `resources/app.asar`; pointer = byte
+  span; splice-in-place inject. Packed exports rebuild only modified scenario entries
+  while streaming every other ASAR entry unchanged, then use the normal snapshot,
+  re-export, mod-export, and restore flows. Extracts message text, `[glink text=]`
+  choices, and `[chara_new jname=]` names; skips comments/labels/`@`-commands and
+  `[iscript]`/`[html]` blocks; protects `[tags]`. UTF-8 only.
+  `src-tauri/src/engine/tyrano.rs`, `src-tauri/src/engine/asar.rs`.
 - **KiriKiri (KAG)** — `.ks` scripts in **Shift-JIS/UTF-16** (or UTF-8). Reuses
   the TyranoScript KAG parser + `mask_tyrano` verbatim behind an encoding layer
   (`src-tauri/src/engine/encoding.rs`): decode-on-read, re-encode-on-write, so
