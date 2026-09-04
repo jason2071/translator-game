@@ -87,16 +87,6 @@ export interface ExportResult {
   warning?: string | null;
 }
 
-export interface ModResult {
-  /** Absolute path to the written .zip. */
-  zipPath: string;
-  filesWritten: number;
-  unitsApplied: number;
-  note?: string | null;
-  /** See ExportResult.warning — the mod was written, but its font embed failed. */
-  warning?: string | null;
-}
-
 export interface RestoreResult {
   filesRestored: number;
   note: string;
@@ -266,9 +256,6 @@ export const api = {
 
   exportProject: (backup = true, embedFont = false, thaiFontScale?: number) =>
     invoke<ExportResult>("export_project", { backup, embedFont, thaiFontScale }),
-
-  /** Export a distributable mod .zip (overlays onto the game; game untouched). */
-  exportMod: (embedFont = false) => invoke<ModResult>("export_mod", { embedFont }),
 
   /** Undo an in-place export: restore the game's original files from .rpgtl/source/. */
   restoreProject: () => invoke<RestoreResult>("restore_original"),

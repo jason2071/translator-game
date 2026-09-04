@@ -2775,36 +2775,4 @@ mod tests {
         assert!(!fonts.join("Sarabun-Regular.ttf").exists());
         assert!(!js.join("plugins/RPGTL_ThaiText.js").exists());
     }
-
-    #[test]
-    fn mod_export_embed_font_records_nothing() {
-        // A mod export writes to a staging mirror (out_dir != data_dir) outside the
-        // game, so nothing is recorded for restore.
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        let data = root.join("data");
-        std::fs::create_dir_all(&data).unwrap();
-        std::fs::write(
-            data.join("System.json"),
-            r#"{"advanced":{"mainFontFilename":"mz.woff"}}"#,
-        )
-        .unwrap();
-        let stage = tmp.path().join("stage");
-        let stage_data = stage.join("data");
-        std::fs::create_dir_all(&stage_data).unwrap();
-        std::fs::write(
-            stage_data.join("System.json"),
-            r#"{"advanced":{"mainFontFilename":"mz.woff"}}"#,
-        )
-        .unwrap();
-
-        MvMzEngine
-            .embed_font(root, &data, &stage_data, super::super::TARGET_FONT, None)
-            .unwrap();
-
-        assert!(!root.join(".rpgtl").join("font-restore").exists());
-        // The font landed in the staging mirror, not the game.
-        assert!(stage.join("fonts/Sarabun-Regular.ttf").is_file());
-        assert!(!root.join("fonts/Sarabun-Regular.ttf").exists());
-    }
 }

@@ -32,7 +32,6 @@ export function Sidebar({
   const toggleTheme = useTheme((s) => s.toggle);
 
   const [exporting, setExporting] = useState(false);
-  const [exportingMod, setExportingMod] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [applyingTm, setApplyingTm] = useState(false);
   const [result, setResult] = useState<ExportResult | null>(null);
@@ -47,18 +46,7 @@ export function Sidebar({
     "rpgmaker-mvmz",
     "rpgmaker-hendrix",
   ];
-  // Engines whose translation can be packaged as a non-destructive overlay .zip.
-  // Ren'Py + Hendrix build additively into the game, so they're export-to-game only.
-  const MOD_ENGINES = [
-    "rpgmaker-mvmz",
-    "godot",
-    "tyrano",
-    "kirikiri",
-    "forger-acod",
-    "ac-loctext",
-  ];
   const fontCapable = FONT_ENGINES.includes(project.engineId);
-  const modCapable = MOD_ENGINES.includes(project.engineId);
   const renpyThai = project.engineId === "renpy" && /^thai$/i.test(project.targetLang.trim());
   const [embedFont, setEmbedFont] = useState(false);
   const [thaiFontScale, setThaiFontScale] = useState(90);
@@ -100,24 +88,6 @@ export function Sidebar({
       setErr(String(e));
     } finally {
       setExporting(false);
-    }
-  }
-
-  // Export a distributable mod .zip that overlays onto the game (game untouched),
-  // then reveal it in the file manager.
-  async function doExportMod() {
-    setExportingMod(true);
-    setErr(null);
-    setResult(null);
-    try {
-      const r = await api.exportMod(fontCapable && embedFont);
-      setMsg((r.note ?? `Mod: ${r.unitsApplied} units → ${r.filesWritten} files`) + " (.zip)");
-      if (r.warning) setErr(r.warning);
-      await revealItemInDir(r.zipPath).catch(() => {});
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setExportingMod(false);
     }
   }
 
@@ -323,25 +293,14 @@ export function Sidebar({
           <Icon name="settings" />
           <span className="lbl">Settings</span>
         </button>
-        <button className="primary full" onClick={doExport} disabled={exporting || exportingMod || restoring}>
+        <button className="primary full" onClick={doExport} disabled={exporting || restoring}>
           <Icon name="export" />
           <span className="lbl">{exporting ? "Exporting…" : "Export → game"}</span>
         </button>
-        {modCapable && (
-          <button
-            className="ghost full"
-            onClick={doExportMod}
-            disabled={exporting || exportingMod || restoring}
-            title="Build a .zip you copy over the game (game untouched). It makes the game Thai with no in-game language switch."
-          >
-            <Icon name="export" />
-            <span className="lbl">{exportingMod ? "Packaging…" : "Export as mod (.zip)"}</span>
-          </button>
-        )}
         <button
           className="ghost full"
           onClick={doRestore}
-          disabled={exporting || exportingMod || restoring}
+          disabled={exporting || restoring}
           title="Put the game back to its original files (undo the last export). Your translations are kept."
         >
           <Icon name="restore" />
@@ -376,7 +335,7 @@ export function Sidebar({
                 type="checkbox"
                 checked={embedFont}
                 onChange={(e) => setEmbedFont(e.target.checked)}
-                disabled={exporting || exportingMod}
+                disabled={exporting}
               />
               Embed Thai font
             </label>

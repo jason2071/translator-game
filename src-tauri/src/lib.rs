@@ -862,18 +862,6 @@ fn export_project(
     })
 }
 
-/// Export the translation as a distributable mod `.zip` that overlays onto the game
-/// (the game itself is never modified). Returns the zip path for the UI to reveal.
-#[tauri::command]
-fn export_mod(
-    embed_font: Option<bool>,
-    state: tauri::State<AppState>,
-) -> Result<project::ModResult, String> {
-    with_project(&state, |p| {
-        project::export_mod(p, embed_font.unwrap_or(false))
-    })
-}
-
 /// Undo an in-place export: put the game's original files back from the
 /// `.rpgtl/source/` snapshots. Translations stay in the DB (re-export anytime).
 #[tauri::command]
@@ -1910,7 +1898,6 @@ pub fn run() {
             get_stats,
             list_files,
             export_project,
-            export_mod,
             restore_original,
             apply_tm,
             glossary_list,

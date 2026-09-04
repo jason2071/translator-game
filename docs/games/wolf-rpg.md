@@ -256,8 +256,6 @@ straight there; otherwise it is written beside the dump and the note asks the us
 to copy that one file. Running WolfTL with the game folder as its output
 (`WolfTL <game>\Data <game> create`) makes the automatic path the normal one.
 
-Mod export is refused for this engine with an actionable message: the project is a
-dump, so a zip of it would be a folder of JSON no player can install.
 
 ## Fonts
 

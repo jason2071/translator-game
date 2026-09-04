@@ -4,7 +4,6 @@
 use app_lib::engine::asar::Archive;
 use app_lib::model::Status;
 use app_lib::project::{self, db::UnitFilter};
-use std::io::Read;
 use std::path::Path;
 
 fn write_asar(path: &Path, scenario: &[u8]) {
@@ -119,21 +118,6 @@ fn packed_tyrano_export_rescan_reexport_and_restore_are_safe() {
 
     project::export(&mut project, false, false).unwrap();
     assert_eq!(scenario(&archive), "#akane\nหวัดดี[l]\n");
-
-    // Mod export rebuilds from the snapshot and leaves the live archive alone.
-    let live_before_mod = std::fs::read(&archive).unwrap();
-    let exported_mod = project::export_mod(&project, false).unwrap();
-    assert_eq!(std::fs::read(&archive).unwrap(), live_before_mod);
-    let mut zip =
-        zip::ZipArchive::new(std::fs::File::open(exported_mod.zip_path).unwrap()).unwrap();
-    let mut mod_asar = Vec::new();
-    zip.by_name("resources/app.asar")
-        .unwrap()
-        .read_to_end(&mut mod_asar)
-        .unwrap();
-    let mod_path = temp.path().join("packed-tyrano-mod.asar");
-    std::fs::write(&mod_path, mod_asar).unwrap();
-    assert_eq!(scenario(&mod_path), "#akane\nหวัดดี[l]\n");
 
     project::restore_original(&project).unwrap();
     assert_eq!(
