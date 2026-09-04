@@ -102,6 +102,9 @@ src/         React UI; ipc.ts mirrors the command surface; Zustand stores split 
 
 ## Conventions
 
+- **Plan and approval before code changes.** Before editing any code, present a
+  concrete implementation plan and wait for the user's explicit approval. Do not
+  modify code until that approval is received.
 - Match the surrounding code's style, naming, and comment density.
 - Commit messages / PRs / code comments: normal English, exact.
 - Do **not** commit `.env` (gitignored; holds real provider API keys).
