@@ -421,9 +421,79 @@ fn is_plain_value(v: &str) -> bool {
     !v.is_empty() && !v.contains('&') && !v.contains('[')
 }
 
-/// Pull translatable attribute values out of a pure-tag line: choice captions
-/// (`text=` on `glink`/`button`/`link`) and character display names (`jname=` on
-/// `chara_new`/`chara_mod`).
+/// Add a byte-span unit once. Multiple Tyrano tag forms may point at the same
+/// literal, so `seen` is shared across the whole source file.
+fn push_span_unit(
+    file: &str,
+    start: usize,
+    len: usize,
+    kind: UnitKind,
+    source: &str,
+    seen: &mut HashSet<usize>,
+    out: &mut Vec<TransUnit>,
+) {
+    if !source.is_empty() && seen.insert(start) {
+        out.push(TransUnit::new(file, format!("{start}:{len}"), kind, source));
+    }
+}
+
+/// Scan the contents of a JavaScript expression for quoted literal fragments.
+///
+/// Tyrano's `dialog` tag commonly builds its text with a saved variable, e.g.
+/// `&'「'+f.first+'」でよろしいですか？'`. The variable is code and stays intact;
+/// each literal fragment is a separately spliceable translation unit. Escaped
+/// literals are deliberately skipped — their source text would not equal the
+/// on-screen text, so rewriting it could change JavaScript semantics.
+fn scan_js_literal_fragments(
+    file: &str,
+    text: &str,
+    absolute_start: usize,
+    kind: UnitKind,
+    seen: &mut HashSet<usize>,
+    out: &mut Vec<TransUnit>,
+) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let quote = bytes[i];
+        if quote != b'\'' && quote != b'"' {
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut end = start;
+        let mut escaped = false;
+        while end < bytes.len() {
+            if bytes[end] == b'\\' {
+                escaped = true;
+                end += 2;
+                continue;
+            }
+            if bytes[end] == quote {
+                break;
+            }
+            end += 1;
+        }
+        if end >= bytes.len() {
+            break;
+        }
+        if !escaped {
+            push_span_unit(
+                file,
+                absolute_start + start,
+                end - start,
+                kind,
+                &text[start..end],
+                seen,
+                out,
+            );
+        }
+        i = end + 1;
+    }
+}
+
+/// Pull translatable attribute values out of a pure-tag line: choice captions,
+/// positioned labels, confirmation text, and character display names.
 fn scan_tag_attrs(
     file: &str,
     line: &str,
@@ -444,6 +514,7 @@ fn scan_tag_attrs(
         let name = tag_word(&line[inner_start..inner_end]);
         let want: Option<(&str, UnitKind)> = match name {
             "glink" | "button" | "link" => Some(("text", UnitKind::Choice)),
+            "ptext" | "dialog" => Some(("text", UnitKind::Dialogue)),
             "chara_new" | "chara_mod" => Some(("jname", UnitKind::Name)),
             _ => None,
         };
@@ -451,15 +522,36 @@ fn scan_tag_attrs(
             if let Some((vs, vl)) = attr_value_span(line, inner_start, inner_end, key) {
                 let value = &line[vs..vs + vl];
                 if is_plain_value(value) {
-                    let abs = line_start + vs;
-                    if seen.insert(abs) {
-                        out.push(TransUnit::new(file, format!("{abs}:{vl}"), kind, value));
-                    }
+                    push_span_unit(file, line_start + vs, vl, kind, value, seen, out);
+                } else if name == "dialog" && value.starts_with('&') {
+                    scan_js_literal_fragments(file, value, line_start + vs, kind, seen, out);
                 }
             }
         }
         i = end;
     }
+}
+
+/// `data/scenario/system/text.ks` is a common Tyrano convention for saved UI
+/// labels and lookup tables. It is JavaScript inside `[iscript]` blocks, which
+/// scenario extraction correctly skips in general. Its simple `sf.*` string
+/// assignments and `[index, "label"]` rows are display text, however, so scan
+/// only those bounded forms — never arbitrary script code or comments.
+fn scan_system_text_table_line(
+    file: &str,
+    line: &str,
+    line_start: usize,
+    seen: &mut HashSet<usize>,
+    out: &mut Vec<TransUnit>,
+) {
+    if !file.ends_with("system/text.ks") {
+        return;
+    }
+    let trimmed = line.trim_start();
+    if !(trimmed.starts_with("sf.") || trimmed.starts_with('[')) {
+        return;
+    }
+    scan_js_literal_fragments(file, line, line_start, UnitKind::Term, seen, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -490,6 +582,8 @@ pub(super) fn extract_ks(file: &str, content: &str, out: &mut Vec<TransUnit>) {
         if in_block {
             if line_starts_tag(trimmed, "endscript") || line_starts_tag(trimmed, "endhtml") {
                 in_block = false;
+            } else {
+                scan_system_text_table_line(file, raw, line_start, &mut seen, out);
             }
             continue;
         }
@@ -629,6 +723,46 @@ The room fell silent.[l]
     }
 
     #[test]
+    fn positioned_labels_and_confirmation_text_are_extracted() {
+        let src = "\
+[ptext layer=\"0\" text=\"姓\"]
+[glink text=\"リセット\" target=\"*reset\"]
+[dialog text=\"続けますか？\" type=\"confirm\"]
+[dialog text=\"&'「'+f.first+'」でよろしいですか？'\" type=\"confirm\"]
+";
+        let units = extract(src);
+        let texts = sources(&units);
+        assert!(texts.contains(&"姓"));
+        assert!(texts.contains(&"リセット"));
+        assert!(texts.contains(&"続けますか？"));
+        assert!(texts.contains(&"「"));
+        assert!(texts.contains(&"」でよろしいですか？"));
+    }
+
+    #[test]
+    fn system_text_tables_inside_iscript_are_extracted_but_code_is_not() {
+        let src = "\
+[iscript]
+sf.text_yes_or_no = [
+[0,\"▶はい\"],
+[1,\"▶いいえ\"],
+]
+sf.text_none = 'なし'
+sf.runtime = f.choice;
+// sf.comment = \"must stay a comment\"
+[endscript]
+";
+        let mut units = Vec::new();
+        extract_ks("data/scenario/system/text.ks", src, &mut units);
+        let texts = sources(&units);
+        assert!(texts.contains(&"▶はい"));
+        assert!(texts.contains(&"▶いいえ"));
+        assert!(texts.contains(&"なし"));
+        assert!(!texts.iter().any(|text| text.contains("comment")));
+        assert!(!texts.iter().any(|text| text.contains("choice")));
+    }
+
+    #[test]
     fn inline_choice_between_link_tags_is_message_text() {
         // `[link]…[endlink]` wraps literal text, so it is captured as a message.
         let units = extract("[link target=*a]森へ[endlink]\n");
@@ -685,6 +819,10 @@ Outro line.[l]
             &archive_path,
             &[
                 ("data/scenario/first.ks", b"#akane\nHello.[l]\n"),
+                (
+                    "data/scenario/system/text.ks",
+                    b"[iscript]\nsf.text_yes = [[0,\"Yes\"]];\n[endscript]\n",
+                ),
                 ("data/image/keep.bin", b"unchanged asset"),
             ],
         );
@@ -696,11 +834,17 @@ Outro line.[l]
         assert_eq!(desc.data_dir, root.to_string_lossy());
 
         let mut units = engine.extract(root, &ExtractOpts::default()).unwrap();
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].file, PACKED_ASAR_FILE);
-        assert_eq!(units[0].pointer, "asar:data/scenario/first.ks|7:9");
-        units[0].translation = Some("สวัสดี[l]".to_string());
-        units[0].status = Status::Translated;
+        assert_eq!(units.len(), 2);
+        let hello = units
+            .iter_mut()
+            .find(|unit| unit.source == "Hello.[l]")
+            .unwrap();
+        assert_eq!(hello.file, PACKED_ASAR_FILE);
+        assert_eq!(hello.pointer, "asar:data/scenario/first.ks|7:9");
+        hello.translation = Some("สวัสดี[l]".to_string());
+        hello.status = Status::Translated;
+        let label = units.iter().find(|unit| unit.source == "Yes").unwrap();
+        assert_eq!(label.pointer, "asar:data/scenario/system/text.ks|29:3");
 
         engine.inject(root, &units, root).unwrap();
         let rebuilt = Archive::open(&archive_path).unwrap();

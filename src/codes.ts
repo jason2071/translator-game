@@ -17,6 +17,9 @@ const TYRANO_RE = /\\.|\[[^\]]*\]/g;
 // Godot: BBCode [tag], String.format braces {0}/{name}, printf %s/%d/%.2f/%1$s,
 // and backslash escapes. (No space flag: "50% off" is prose, not `% o`.)
 const GODOT_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%/g;
+// Lucky Live content JSON is a web-game text format. It may contain HTML, common
+// JavaScript placeholders and printf substitutions; mirrors `mask_gamecreator`.
+const WEB_JSON_RE = /<\/?[A-Za-z][^>\n]*>|\{[^{}]+\}|\[[^\]]+\]|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%/g;
 // Forger .acod: HTML-ish angle tags by shape (open vocabulary incl. <LF>) — a
 // name then either `=` attributes or a bare/self-closing token, so prose like
 // "5 < 10" or "<low then flee>" isn't a code; {variable}, [bracket] (no nesting,
@@ -35,6 +38,7 @@ function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_RE;
   if (engineId === "tyrano" || engineId === "kirikiri") return TYRANO_RE;
   if (engineId === "godot") return GODOT_RE;
+  if (engineId === "luckylive") return WEB_JSON_RE;
   if (engineId === "forger-acod") return FORGER_RE;
   if (engineId === "ac-loctext") return AC_LOCTEXT_RE;
   if (engineId === "xunity") return XUNITY_RE;

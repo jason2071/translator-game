@@ -125,7 +125,7 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         // GameCreator locale values use HTML spans plus the same placeholder
         // shapes as other JavaScript runtimes. Its U+0005 command payloads are
         // masked whole so a manual unit can never translate their internals.
-        "gamecreator" => mask_gamecreator(input),
+        "gamecreator" | "luckylive" => mask_gamecreator(input),
         // Forger `.acod` uses HTML-ish angle tags plus `{}`/`[]`/`%` placeholders.
         "forger-acod" => mask_forger(input),
         // AC Origins aclocexport text: angle tags + `[…]` audio cues only.

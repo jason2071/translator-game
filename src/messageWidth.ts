@@ -21,6 +21,9 @@ const RENPY_CODE_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}|⟦\d+⟧/g;
 const TYRANO_CODE_RE = /\\.|\[[^\]]*\]|⟦\d+⟧/g;
 // Godot: BBCode [tag], format braces, printf conversions, backslash escapes.
 const GODOT_CODE_RE = /\\.|\[[^\]]+\]|\{[^{}]+\}|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
+// Lucky Live content JSON: HTML + JavaScript-style placeholders; mirrors the
+// backend `mask_gamecreator` branch used by this engine.
+const WEB_JSON_CODE_RE = /<\/?[A-Za-z][^>\n]*>|\{[^{}]+\}|\[[^\]]+\]|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
 // Forger .acod: shape-based angle tags (open vocabulary incl. <LF>), {variable},
 // [bracket] (no nesting), printf (no space flag). No backslash. Mirrors mask_forger.
 const FORGER_CODE_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\{[^{}]+\}|\[[^[\]]+\]|%(?:\d+\$)?[-+0#]*\d*(?:\.\d+)?[sdifgeExXoc]|%%|⟦\d+⟧/g;
@@ -35,6 +38,7 @@ function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_CODE_RE;
   if (engineId === "tyrano" || engineId === "kirikiri") return TYRANO_CODE_RE;
   if (engineId === "godot") return GODOT_CODE_RE;
+  if (engineId === "luckylive") return WEB_JSON_CODE_RE;
   if (engineId === "forger-acod") return FORGER_CODE_RE;
   if (engineId === "ac-loctext") return AC_LOCTEXT_CODE_RE;
   if (engineId === "xunity") return XUNITY_CODE_RE;

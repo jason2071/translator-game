@@ -20,6 +20,7 @@ pub mod gamecreator;
 pub mod godot;
 pub mod hendrix;
 pub mod kirikiri;
+pub mod luckylive;
 pub mod mvmz;
 pub mod protect;
 pub mod renpy;
@@ -178,6 +179,10 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // Godot needs its own `project.godot` fingerprint, so it never overlaps
         // the others; order is immaterial.
         Box::new(godot::GodotEngine),
+        // Lucky Live is an Electron shell whose loose web-game content lives in
+        // `resources/gioco/content/girls/*/girl.json`; its schema fingerprint
+        // keeps it from claiming unrelated Electron games.
+        Box::new(luckylive::LuckyLiveEngine),
         // GameCreator games ship their runtime localization tables in the
         // distinctive `asset/orzi/languages/` tree. It does not overlap the
         // JSON-based RPGMaker engine (which requires `data/System.json`).

@@ -11,6 +11,19 @@ independent backlog items, so work can resume in one step.
 The engine-adding pattern below is the same regardless of which target is chosen
 next.
 
+## Done: Lucky Live (`girl.json`) — `engine/luckylive.rs`
+
+Lucky Live is a custom Electron/web game: its small `app.asar` only boots the
+renderer, while all player-facing content lives in loose
+`resources/gioco/content/girls/*/girl.json` files. The engine fingerprints the
+web root plus the `schemaVersion`/`events` character schema, then extracts profile
+text, dialogue, chat/donation text, captions, secret hints, and event labels.
+It deliberately skips IDs, media paths, triggers, and chat usernames. A recursive
+JSON-string scanner maps each eligible leaf to its original literal span, so export
+splices only changed strings and an identity export remains byte-exact. Re-scan
+uses the original snapshots after export. Fixtures and tests are in
+`tests/luckylive_roundtrip.rs` and `tests/luckylive_rescan_original.rs`.
+
 ## The engine-adding pattern (proven with Ren'Py — reuse it)
 Adding an engine touches only the engine seam; model/DB/UI are engine-agnostic.
 - Implement `GameEngine` in a new `src-tauri/src/engine/<name>.rs`; register it in

@@ -623,6 +623,7 @@ fn pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
     match project.engine_id.as_str() {
         "rpgmaker-mvmz" => mvmz_pristine_rescan_root(project),
         "gamecreator" => gamecreator_pristine_rescan_root(project),
+        "luckylive" => luckylive_pristine_rescan_root(project),
         "tyrano" => packed_tyrano_pristine_rescan_root(project),
         _ => Ok(None),
     }
@@ -745,6 +746,68 @@ fn gamecreator_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>
         project,
         &files.into_iter().collect::<Vec<_>>(),
     )?))
+}
+
+/// Lucky Live keeps its player-facing text in loose `girl.json` files beneath
+/// `resources/gioco/content/girls/`. Once an in-place export writes Thai into
+/// those files, re-scan must read their snapshots while retaining the untouched
+/// `resources/gioco/index.html` marker needed by the engine detector.
+fn luckylive_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
+    if project.engine_id != "luckylive" {
+        return Ok(None);
+    }
+    let source_dir = rpgtl_dir(&project.root).join("source");
+    let backup_dirs = earliest_backup_dirs(&rpgtl_dir(&project.root).join("backups"));
+    if !source_dir.is_dir() && backup_dirs.is_empty() {
+        return Ok(None);
+    }
+
+    let mut files = BTreeSet::new();
+    let girls_dir = project.data_dir.join("content").join("girls");
+    if girls_dir.is_dir() {
+        for entry in walkdir::WalkDir::new(&girls_dir)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
+            if entry.file_type().is_file() && entry.file_name() == "girl.json" {
+                if let Ok(rel) = entry.path().strip_prefix(&project.data_dir) {
+                    files.insert(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    for dir in std::iter::once(source_dir).chain(backup_dirs) {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(&dir)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            if let Ok(rel) = entry.path().strip_prefix(&dir) {
+                files.insert(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    if files.is_empty() {
+        return Ok(None);
+    }
+
+    let root = pristine_read_root(project, &files.into_iter().collect::<Vec<_>>())?;
+    let marker = project.data_dir.join("index.html");
+    let data_rel = project
+        .data_dir
+        .strip_prefix(&project.root)
+        .unwrap_or(Path::new(""));
+    let marker_out = root.join(data_rel).join("index.html");
+    if let Some(parent) = marker_out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(&marker, &marker_out).context("staging Lucky Live index.html")?;
+    Ok(Some(root))
 }
 
 /// A temp mirror of the game root holding **pristine** copies of `files` (each relative
