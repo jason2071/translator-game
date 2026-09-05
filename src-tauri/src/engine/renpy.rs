@@ -2670,6 +2670,24 @@ fn setup_language_with_font_scale(
         "init 1000 python:\n    config.language = \"{lang}\"\n\n"
     ));
 
+    // Some games use a custom language picker instead of Ren'Py's stock
+    // `Language` preference. Those pickers commonly turn `_preferences.language`
+    // into a display label through a closed map; selecting our new language then
+    // raises a KeyError before the menu can render. Wrap the helper, when the game
+    // provides one, so the exported language has a safe label while all of the
+    // game's existing language handling stays intact.
+    let lang_label = renpy_tl::quote_unicode(label);
+    s.push_str("init 1001 python:\n");
+    s.push_str("    try:\n");
+    s.push_str("        _rpgtl_language_label = set_but_lang\n");
+    s.push_str("        def set_but_lang():\n");
+    s.push_str(&format!(
+        "            if _preferences.language == \"{lang}\":\n                return \"{lang_label}\"\n"
+    ));
+    s.push_str("            return _rpgtl_language_label()\n");
+    s.push_str("    except Exception:\n");
+    s.push_str("        pass\n\n");
+
     // Display strings with no skeleton entry, plus the character names (a say-name
     // is translated at display time by `substitute(who)`, so a strings entry renames
     // the speaker without touching the store — see the caller). `old` = the runtime
@@ -3954,6 +3972,33 @@ define twi = Character(_(\"Both\"))
             out.contains("\"Some new conversations are available.\": \""),
             "second segment key missing: {out}"
         );
+    }
+
+    /// Games with a bespoke language menu may map `_preferences.language` to a
+    /// display label with a closed dictionary. The generated hook must supply our
+    /// language label before that menu can look up an unknown `thai` key.
+    #[test]
+    fn setup_language_guards_custom_language_picker() {
+        let d = tempfile::tempdir().unwrap();
+        setup_language(
+            d.path(),
+            "thai",
+            "\u{e44}\u{e17}\u{e22}",
+            &[],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
+
+        assert!(
+            out.contains("_rpgtl_language_label = set_but_lang"),
+            "{out}"
+        );
+        assert!(
+            out.contains("if _preferences.language == \"thai\":\n                return \"ไทย\""),
+            "Thai picker label missing: {out}"
+        );
+        assert!(out.contains("return _rpgtl_language_label()"), "{out}");
     }
 
     /// A project translated before the extractor learned to skip one-character
