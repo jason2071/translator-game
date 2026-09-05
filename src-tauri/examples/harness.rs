@@ -15,6 +15,10 @@
 //!                                         n candidates (the "Translate empty" path).
 //!   one      <project.db> [model]        Translate one untranslated unit and write
 //!                                         it back into the live project.db.
+//!   rescan   <game-dir>                  Merge newly supported extraction units into
+//!                                         an existing project without losing its work.
+//!   terms    <game-dir> [model]          Translate every untranslated UI term and
+//!                                         save it to the live project.db.
 //!   export   <game-dir>                  Export the project twice in place and
 //!                                         verify it is idempotent + valid UTF-8
 //!                                         (regression guard for double-export).
@@ -38,6 +42,8 @@ harness <command> [args]
   ai       <game-dir> [model] [n]
   glossary <project.db> [model] [n]
   one      <project.db> [model]
+  rescan   <game-dir>
+  terms    <game-dir> [model]
   export   <game-dir>
   reconcile <game-dir> [--apply]
   tlcheck  <game-dir> <oracle-tl/thai-dir>
@@ -55,6 +61,8 @@ async fn main() {
         "ai" => cmd_ai(rest).await,
         "glossary" => cmd_glossary(rest).await,
         "one" => cmd_one(rest).await,
+        "rescan" => cmd_rescan(rest),
+        "terms" => cmd_terms(rest).await,
         "export" => cmd_export(rest),
         "reconcile" => cmd_reconcile(rest),
         "tlcheck" => cmd_tlcheck(rest),
@@ -363,7 +371,8 @@ fn cmd_export(rest: &[String]) {
         .map(|f| (f.clone(), std::fs::read(data.join(f)).unwrap_or_default()))
         .collect();
 
-    // Ren'Py / Tyrano / Godot catalogs are UTF-8; KiriKiri/MvMz may not be.
+    // Ren'Py / loose Tyrano / Godot catalogs are UTF-8; KiriKiri/MvMz may not
+    // be. A packed Tyrano `app.asar` is an archive, not a UTF-8 text file.
     let text_utf8 = matches!(engine.as_str(), "renpy" | "tyrano" | "godot");
     let mut drift = 0usize;
     let mut invalid = 0usize;
@@ -372,7 +381,7 @@ fn cmd_export(rest: &[String]) {
             drift += 1;
             println!("  DRIFT (not idempotent): {f}");
         }
-        if text_utf8 && std::str::from_utf8(&after2[f]).is_err() {
+        if text_utf8 && !f.ends_with(".asar") && std::str::from_utf8(&after2[f]).is_err() {
             invalid += 1;
             println!("  INVALID UTF-8: {f}");
         }
@@ -689,4 +698,71 @@ async fn cmd_one(rest: &[String]) {
         }
         None => println!("translation failed"),
     }
+}
+
+fn cmd_rescan(rest: &[String]) {
+    let Some(game) = arg(rest, 0) else {
+        return eprintln!("rescan <game-dir>");
+    };
+    let root = PathBuf::from(game);
+    let (mut project, _fresh) =
+        app_lib::project::open_or_create(&root, "auto", "Thai").expect("open project");
+    let (added, context_filled, removed) = app_lib::project::rescan(&mut project).expect("rescan");
+    println!("rescan: added={added} context_filled={context_filled} removed={removed}");
+}
+
+async fn cmd_terms(rest: &[String]) {
+    let Some(game) = arg(rest, 0) else {
+        return eprintln!("terms <game-dir> [model]");
+    };
+    let model = arg(rest, 1).unwrap_or("gemma4:12b");
+    let root = PathBuf::from(game);
+    let (project, _fresh) =
+        app_lib::project::open_or_create(&root, "auto", "Thai").expect("open project");
+    let (src, tgt) = langs(&project.conn);
+    let candidates = db::list_units(
+        &project.conn,
+        &UnitFilter {
+            untranslated_only: Some(true),
+            limit: Some(2_000),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let terms: Vec<_> = candidates
+        .into_iter()
+        .filter(|unit| unit.kind == UnitKind::Term && !unit.source.trim().is_empty())
+        .collect();
+    if terms.is_empty() {
+        return println!("no untranslated UI terms");
+    }
+
+    println!(
+        "translating {} UI terms via {model} ({src}->{tgt})…",
+        terms.len()
+    );
+    let mut saved = 0usize;
+    let mut failed = 0usize;
+    for batch in terms.chunks(8) {
+        let texts: Vec<String> = batch.iter().map(|unit| unit.source.clone()).collect();
+        let translated = ai_translate(&project.engine_id, model, &texts, &src, &tgt).await;
+        for (unit, result) in batch.iter().zip(translated) {
+            if let Some(translation) = result {
+                db::update_unit(
+                    &project.conn,
+                    unit.id,
+                    Some(&translation),
+                    Status::Translated.as_str(),
+                )
+                .unwrap();
+                db::tm_upsert(&project.conn, &unit.source, &translation).unwrap();
+                saved += 1;
+            } else {
+                failed += 1;
+                eprintln!("FAILED: {}", unit.source);
+            }
+        }
+        println!("progress: saved={saved} failed={failed}/{}", terms.len());
+    }
+    println!("UI terms: saved={saved} failed={failed}");
 }

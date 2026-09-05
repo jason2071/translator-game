@@ -532,11 +532,12 @@ fn scan_tag_attrs(
     }
 }
 
-/// `data/scenario/system/text.ks` is a common Tyrano convention for saved UI
-/// labels and lookup tables. It is JavaScript inside `[iscript]` blocks, which
-/// scenario extraction correctly skips in general. Its simple `sf.*` string
-/// assignments and `[index, "label"]` rows are display text, however, so scan
-/// only those bounded forms — never arbitrary script code or comments.
+/// `data/scenario/system/text.ks` and `system/exp.ks` are common Tyrano
+/// locations for saved UI labels and lookup tables. They are JavaScript inside
+/// `[iscript]` blocks, which scenario extraction correctly skips in general.
+/// Their simple `sf.*` string assignments and `[index, "label"]` rows are
+/// display text, however, so scan only those bounded forms — never arbitrary
+/// script code or comments.
 fn scan_system_text_table_line(
     file: &str,
     line: &str,
@@ -544,7 +545,7 @@ fn scan_system_text_table_line(
     seen: &mut HashSet<usize>,
     out: &mut Vec<TransUnit>,
 ) {
-    if !file.ends_with("system/text.ks") {
+    if !(file.ends_with("system/text.ks") || file.ends_with("system/exp.ks")) {
         return;
     }
     let trimmed = line.trim_start();
@@ -740,26 +741,42 @@ The room fell silent.[l]
     }
 
     #[test]
-    fn system_text_tables_inside_iscript_are_extracted_but_code_is_not() {
+    fn system_text_and_exp_tables_inside_iscript_are_extracted_but_code_is_not() {
         let src = "\
 [iscript]
 sf.text_yes_or_no = [
 [0,\"▶はい\"],
 [1,\"▶いいえ\"],
 ]
+sf.text_home_ui = [
+[0,\"探索\"],
+[1,\"メニュー\"],
+]
 sf.text_none = 'なし'
 sf.runtime = f.choice;
+tf.runtime_label = \"must stay code\";
 // sf.comment = \"must stay a comment\"
 [endscript]
 ";
-        let mut units = Vec::new();
-        extract_ks("data/scenario/system/text.ks", src, &mut units);
-        let texts = sources(&units);
-        assert!(texts.contains(&"▶はい"));
-        assert!(texts.contains(&"▶いいえ"));
-        assert!(texts.contains(&"なし"));
-        assert!(!texts.iter().any(|text| text.contains("comment")));
-        assert!(!texts.iter().any(|text| text.contains("choice")));
+        for file in [
+            "data/scenario/system/text.ks",
+            "data/scenario/system/exp.ks",
+        ] {
+            let mut units = Vec::new();
+            extract_ks(file, src, &mut units);
+            let texts = sources(&units);
+            assert!(texts.contains(&"▶はい"), "{file}");
+            assert!(texts.contains(&"▶いいえ"), "{file}");
+            assert!(texts.contains(&"探索"), "{file}");
+            assert!(texts.contains(&"メニュー"), "{file}");
+            assert!(texts.contains(&"なし"), "{file}");
+            assert!(!texts.iter().any(|text| text.contains("comment")), "{file}");
+            assert!(!texts.iter().any(|text| text.contains("choice")), "{file}");
+            assert!(
+                !texts.iter().any(|text| text.contains("must stay code")),
+                "{file}"
+            );
+        }
     }
 
     #[test]
