@@ -21,6 +21,11 @@
 //!                                         save it to the live project.db.
 //!   refresh-save <game-dir>               Update translated UI strings cached in a
 //!                                         Tyrano global-save file, preserving progress.
+//!   extract-companytrip-buttons <game-dir> Extract the Japanese home-menu PNGs for
+//!                                         localized replacements.
+//!   install-companytrip-buttons <game-dir> Rebuild app.asar with localized PNGs.
+//!   patch-companytrip-time <game-dir>     Replace the segmented time bar with a
+//!                                         Thai time readout.
 //!   export   <game-dir>                  Export the project twice in place and
 //!                                         verify it is idempotent + valid UTF-8
 //!                                         (regression guard for double-export).
@@ -29,14 +34,14 @@
 //! -> Thai, or the project's stored languages when a project.db is given.
 
 use app_lib::ai::{self, BatchItem, BatchReq, ProviderConfig};
-use app_lib::engine::{self, protect, ExtractOpts};
+use app_lib::engine::{self, asar::Archive, protect, ExtractOpts};
 use app_lib::model::{Status, UnitKind};
 use app_lib::project::db::{self, UnitFilter};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const USAGE: &str = "\
@@ -49,6 +54,9 @@ harness <command> [args]
   rescan   <game-dir>
   terms    <game-dir> [model]
   refresh-save <game-dir>
+  extract-companytrip-buttons <game-dir>
+  install-companytrip-buttons <game-dir>
+  patch-companytrip-time <game-dir>
   export   <game-dir>
   reconcile <game-dir> [--apply]
   tlcheck  <game-dir> <oracle-tl/thai-dir>
@@ -69,6 +77,9 @@ async fn main() {
         "rescan" => cmd_rescan(rest),
         "terms" => cmd_terms(rest).await,
         "refresh-save" => cmd_refresh_tyrano_save(rest),
+        "extract-companytrip-buttons" => cmd_extract_companytrip_buttons(rest),
+        "install-companytrip-buttons" => cmd_install_companytrip_buttons(rest),
+        "patch-companytrip-time" => cmd_patch_companytrip_time(rest),
         "export" => cmd_export(rest),
         "reconcile" => cmd_reconcile(rest),
         "tlcheck" => cmd_tlcheck(rest),
@@ -773,21 +784,25 @@ async fn cmd_terms(rest: &[String]) {
     println!("UI terms: saved={saved} failed={failed}");
 }
 
-/// Decode the outer `encodeURIComponent` layer Tyrano uses for persistent data.
+/// Decode the percent-encoded outer layer Tyrano uses for persistent data.
 fn percent_decode(input: &str) -> Result<String, String> {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).map_err(|e| e.to_string())?;
-            let value = u8::from_str_radix(hex, 16).map_err(|e| e.to_string())?;
-            out.push(value);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(value) = u8::from_str_radix(hex, 16) {
+                    out.push(value);
+                    i += 3;
+                    continue;
+                }
+            }
         }
+        // Tyrano leaves legacy `%uXXXX` escape sequences unencoded inside a few
+        // values. They belong to the inner layer and must pass through intact.
+        out.push(bytes[i]);
+        i += 1;
     }
     String::from_utf8(out).map_err(|e| e.to_string())
 }
@@ -827,10 +842,8 @@ fn js_unescape(input: &str) -> String {
 fn js_escape(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '@' | '*' | '_' | '+' | '-' | '.' | '/') {
+        if ch.is_ascii() {
             out.push(ch);
-        } else if ch.is_ascii() {
-            out.push_str(&format!("%{:02X}", ch as u32));
         } else {
             out.push_str(&format!("%u{:04X}", ch as u32));
         }
@@ -838,9 +851,35 @@ fn js_escape(input: &str) -> String {
     out
 }
 
+fn normalize_companytrip_ui_text(text: &str) -> &str {
+    // `f.day` is rendered immediately before this suffix. The model mistakenly
+    // added a protected token while translating the source `日目`.
+    if text == "วันที่ ⟦0⟧" {
+        "วันที่"
+    } else {
+        text
+    }
+}
+
 fn percent_encode(input: &str) -> String {
     let mut out = String::with_capacity(input.len() * 2);
-    for byte in input.bytes() {
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // The global save has a second, legacy JavaScript `escape()` layer inside
+        // selected values. Tyrano expects its `%uXXXX` sequences to remain raw in
+        // the file, rather than becoming `%25uXXXX` through outer encoding.
+        if bytes[i] == b'%'
+            && i + 5 < bytes.len()
+            && bytes[i + 1] == b'u'
+            && bytes[i + 2..=i + 5].iter().all(u8::is_ascii_hexdigit)
+        {
+            out.push_str(&input[i..i + 6]);
+            i += 6;
+            continue;
+        }
+
+        let byte = bytes[i];
         if byte.is_ascii_alphanumeric()
             || matches!(
                 byte,
@@ -851,16 +890,22 @@ fn percent_encode(input: &str) -> String {
         } else {
             out.push_str(&format!("%{byte:02X}"));
         }
+        i += 1;
     }
     out
 }
 
-fn refresh_saved_strings(value: &mut Value, translations: &HashMap<String, String>) -> usize {
+fn refresh_saved_table(value: &mut Value, translations: &HashMap<String, String>) -> usize {
     match value {
         Value::String(text) => {
             let source = js_unescape(text);
-            if let Some(translation) = translations.get(&source) {
-                *text = js_escape(translation);
+            let visible_text = translations
+                .get(&source)
+                .map(String::as_str)
+                .unwrap_or(&source);
+            let encoded = js_escape(normalize_companytrip_ui_text(visible_text));
+            if *text != encoded {
+                *text = encoded;
                 1
             } else {
                 0
@@ -868,14 +913,138 @@ fn refresh_saved_strings(value: &mut Value, translations: &HashMap<String, Strin
         }
         Value::Array(items) => items
             .iter_mut()
-            .map(|item| refresh_saved_strings(item, translations))
+            .map(|item| refresh_saved_table(item, translations))
             .sum(),
         Value::Object(fields) => fields
             .values_mut()
-            .map(|item| refresh_saved_strings(item, translations))
+            .map(|item| refresh_saved_table(item, translations))
             .sum(),
         _ => 0,
     }
+}
+
+const COMPANYTRIP_MAIN_BUTTONS: [&str; 7] = [
+    "search",
+    "menu",
+    "communicate",
+    "create",
+    "cook",
+    "task",
+    "sleep",
+];
+
+fn companytrip_archive_path(root: &Path) -> PathBuf {
+    root.join("resources/app.asar")
+}
+
+fn companytrip_button_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("tmp/companytrip-buttons")
+}
+
+fn companytrip_localized_button_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("tmp/companytrip-buttons-th")
+}
+
+fn cmd_extract_companytrip_buttons(rest: &[String]) {
+    let Some(game) = arg(rest, 0) else {
+        return eprintln!("extract-companytrip-buttons <game-dir>");
+    };
+    let archive = Archive::open(&companytrip_archive_path(Path::new(game))).expect("open app.asar");
+    let destination = companytrip_button_dir();
+    fs::create_dir_all(&destination).expect("create button asset directory");
+    for name in COMPANYTRIP_MAIN_BUTTONS {
+        let source = format!("data/image/main/{name}.png");
+        let bytes = archive.read(&source).expect("read button PNG");
+        fs::write(destination.join(format!("{name}.png")), bytes).expect("write button PNG");
+    }
+    println!("button assets: {}", destination.display());
+}
+
+fn replace_companytrip_asar(root: &Path, replacements: HashMap<String, Vec<u8>>) {
+    let archive_path = companytrip_archive_path(root);
+    let backup = root.join(".rpgtl/companytrip-app.asar-before-ui-patch.bak");
+    if !backup.exists() {
+        fs::copy(&archive_path, &backup).expect("back up app.asar before UI patch");
+    }
+    let temp = archive_path.with_file_name("app.asar.rpgtl-ui-patch.tmp");
+    let archive = Archive::open(&archive_path).expect("open app.asar");
+    archive
+        .rebuild(&temp, &replacements)
+        .expect("rebuild app.asar");
+    drop(archive);
+    fs::remove_file(&archive_path).expect("replace original app.asar");
+    fs::rename(&temp, &archive_path).expect("install patched app.asar");
+}
+
+fn cmd_install_companytrip_buttons(rest: &[String]) {
+    let Some(game) = arg(rest, 0) else {
+        return eprintln!("install-companytrip-buttons <game-dir>");
+    };
+    let source_dir = companytrip_localized_button_dir();
+    let mut replacements = HashMap::new();
+    for name in COMPANYTRIP_MAIN_BUTTONS {
+        let bytes = fs::read(source_dir.join(format!("{name}.png")))
+            .unwrap_or_else(|_| panic!("missing localized button: {name}.png"));
+        replacements.insert(format!("data/image/main/{name}.png"), bytes.clone());
+        replacements.insert(format!("data/image/main/{name}2.png"), bytes);
+    }
+    replace_companytrip_asar(Path::new(game), replacements);
+    println!(
+        "installed {} Thai home-menu buttons",
+        COMPANYTRIP_MAIN_BUTTONS.len()
+    );
+}
+
+fn patched_companytrip_time_macro(input: &str) -> Result<String, String> {
+    if input.contains("name=\"header_time\"") {
+        return Ok(input.to_string());
+    }
+    let marker = "[anim name=\"time_bar4\" width=\"&f.time_bar_width4\" height=\"17\" time=\"1\"]";
+    let replacement = format!(
+        "{marker}\n\n[free layer=\"0\" name=\"time_bar1\"]\n[free layer=\"0\" name=\"time_bar2\"]\n[free layer=\"0\" name=\"time_bar3\"]\n[free layer=\"0\" name=\"time_bar4\"]\n[ptext name=\"header_time\" layer=\"0\" text=\"'เวลา ' + f.time + ':00'\" x=\"315\" y=\"5\" width=\"325\" align=\"center\" edge=\"black\" overwrite=\"true\"]"
+    );
+    input
+        .contains(marker)
+        .then(|| input.replacen(marker, &replacement, 1))
+        .ok_or_else(|| "time-bar marker not found in macro.ks".to_string())
+}
+
+fn cmd_patch_companytrip_time(rest: &[String]) {
+    let Some(game) = arg(rest, 0) else {
+        return eprintln!("patch-companytrip-time <game-dir>");
+    };
+    let root = Path::new(game);
+    let archive = Archive::open(&companytrip_archive_path(root)).expect("open app.asar");
+    let macro_path = "data/scenario/system/macro.ks";
+    let original = String::from_utf8(archive.read(macro_path).expect("read macro.ks"))
+        .expect("macro.ks UTF-8");
+    let patched = patched_companytrip_time_macro(&original).expect("patch time macro");
+    if patched == original {
+        return println!("time UI patch already installed");
+    }
+    let mut replacements = HashMap::new();
+    replacements.insert(macro_path.to_string(), patched.into_bytes());
+    replace_companytrip_asar(root, replacements);
+    println!("replaced segmented time bar with Thai time readout");
+}
+
+fn is_saved_ui_table(name: &str) -> bool {
+    name.starts_with("text_")
+        || matches!(
+            name,
+            "achievement_mission"
+                | "facility_base_info"
+                | "food_base_info"
+                | "inheritance_info"
+                | "material_base_info"
+                | "tool_base_info"
+        )
 }
 
 fn cmd_refresh_tyrano_save(rest: &[String]) {
@@ -898,7 +1067,13 @@ fn cmd_refresh_tyrano_save(rest: &[String]) {
     let raw = fs::read_to_string(&save).expect("read CompanyTrip_sf.sav");
     let decoded = percent_decode(&raw).expect("decode Tyrano save");
     let mut value: Value = serde_json::from_str(&decoded).expect("parse Tyrano save JSON");
-    let updated = refresh_saved_strings(&mut value, &translations);
+    let updated = value
+        .as_object_mut()
+        .expect("Tyrano save root is an object")
+        .iter_mut()
+        .filter(|(name, _)| is_saved_ui_table(name))
+        .map(|(_, table)| refresh_saved_table(table, &translations))
+        .sum::<usize>();
     if updated == 0 {
         return println!("save refresh: no translated UI strings needed updating");
     }
@@ -911,4 +1086,40 @@ fn cmd_refresh_tyrano_save(rest: &[String]) {
         "save refresh: updated={updated} backup={}",
         backup.display()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        js_escape, normalize_companytrip_ui_text, patched_companytrip_time_macro, percent_decode,
+        percent_encode,
+    };
+
+    #[test]
+    fn tyrano_outer_encoding_keeps_legacy_js_unicode_escapes_raw() {
+        let json = r#"{\"text_home_ui\":\"%u0E27%u0E31%u0E19\"}"#;
+        let encoded = percent_encode(json);
+        assert!(encoded.contains("%u0E27%u0E31%u0E19"));
+        assert!(!encoded.contains("%25u0E27"));
+        assert_eq!(percent_decode(&encoded).unwrap(), json);
+    }
+
+    #[test]
+    fn tyrano_ui_escape_leaves_ascii_punctuation_and_spaces_plain() {
+        assert_eq!(js_escape("วันที่ 1: ไปที่จุดนัดพบ"), "%u0E27%u0E31%u0E19%u0E17%u0E35%u0E48 1: %u0E44%u0E1B%u0E17%u0E35%u0E48%u0E08%u0E38%u0E14%u0E19%u0E31%u0E14%u0E1E%u0E1A");
+    }
+
+    #[test]
+    fn companytrip_day_suffix_drops_the_spurious_token() {
+        assert_eq!(normalize_companytrip_ui_text("วันที่ ⟦0⟧"), "วันที่");
+    }
+
+    #[test]
+    fn companytrip_time_patch_replaces_the_segmented_bar_once() {
+        let input =
+            "[anim name=\"time_bar4\" width=\"&f.time_bar_width4\" height=\"17\" time=\"1\"]";
+        let patched = patched_companytrip_time_macro(input).unwrap();
+        assert!(patched.contains("name=\"header_time\""));
+        assert_eq!(patched_companytrip_time_macro(&patched).unwrap(), patched);
+    }
 }
