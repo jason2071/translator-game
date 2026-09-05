@@ -50,11 +50,7 @@ impl GameEngine for RenpyEngine {
         // A packed game has no loose `.rpy` yet — count the source scripts inside
         // its `.rpa` without unpacking (this is a read-only preview; the actual
         // extraction happens at import in `extract`).
-        let count = if has_rpy(&dir) {
-            collect_rpy(&dir).len()
-        } else {
-            rpa_rpy_count(&dir)
-        };
+        let count = source_script_count(&dir);
         Ok(DetectResult {
             engine_id: self.id().to_string(),
             engine_name: self.name().to_string(),
@@ -70,7 +66,7 @@ impl GameEngine for RenpyEngine {
         // out of the archive first (many games ship the `.rpy` alongside the
         // compiled `.rpyc`), so the normal line-based flow below can read them.
         ensure_unpacked(&dir)?;
-        let mut rpys = collect_rpy(&dir);
+        let mut rpys = collect_source_scripts(&dir);
         // Compiled scripts still need decompiling when either no `.rpy` were
         // recoverable at all (a fully compiled-only game) OR the game ships *some*
         // loose `.rpy` (e.g. a `splash.rpy`) yet keeps the bulk of its story as
@@ -81,7 +77,7 @@ impl GameEngine for RenpyEngine {
         let mut decompile_hint = None;
         if is_renpy_game_dir(&dir) && (rpys.is_empty() || needs_decompile(&dir)) {
             decompile_hint = ensure_decompiled(&dir, root)?;
-            rpys = collect_rpy(&dir); // re-scan for the `.rpy` unrpyc just wrote
+            rpys = collect_source_scripts(&dir); // re-scan for the `.rpy` unrpyc just wrote
         }
         // Prefer the user-selected `tl/<language>/` tree. If it is unavailable,
         // keep the base scripts whenever they exist; the fallback locale is only
@@ -231,10 +227,10 @@ impl GameEngine for RenpyEngine {
 /// unpacked straight to the root).
 pub fn game_dir(root: &Path) -> Option<PathBuf> {
     let game = root.join("game");
-    if game.is_dir() && (has_rpy(&game) || is_renpy_game_dir(&game)) {
+    if game.is_dir() && (has_source_script(&game) || is_renpy_game_dir(&game)) {
         return Some(game);
     }
-    if has_rpy(root) {
+    if has_source_script(root) {
         return Some(root.to_path_buf());
     }
     None
@@ -256,39 +252,41 @@ fn archives_in(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// How many distinct source `.rpy` are packed in this dir's `.rpa` archives —
-/// read-only, for the import preview count. Archives with no readable index are
-/// skipped silently (the real unpack in [`ensure_unpacked`] surfaces errors).
-fn rpa_rpy_count(dir: &Path) -> usize {
+/// How many distinct source scripts are available, loose or packed in `.rpa`
+/// archives. This is read-only and counts `.rpy` plus `.rpym` module sources.
+/// Archives with no readable index are skipped silently (the real unpack in
+/// [`ensure_unpacked`] is best-effort too).
+fn source_script_count(dir: &Path) -> usize {
     let mut names = HashSet::new();
+    for path in collect_source_scripts(dir) {
+        names.insert(rel_path(dir, &path));
+    }
     for archive in archives_in(dir) {
-        if let Ok(list) = rpa::list_rpy(&archive) {
+        if let Ok(list) = rpa::list_source_scripts(&archive) {
             names.extend(list);
         }
     }
     names.len()
 }
 
-/// Materialize the source `.rpy` a game ships packed. When `dir` has no loose
-/// `.rpy` but does have `.rpa` archives, extract every `.rpy` out of them into
-/// `dir` so the normal Ren'Py flow (and the game's own runtime, for `tl/` export)
-/// can read them. No-op once loose `.rpy` are present, so it never clobbers a
-/// hand-edited or already-unpacked script and re-import is idempotent.
+/// Materialize the source scripts a game ships packed. Extract every missing
+/// `.rpy` and `.rpym` from its `.rpa` archives into `dir` so the normal Ren'Py
+/// flow (and the game's own runtime, for `tl/` export) can read them. This does
+/// not stop at a loose bootstrap script: games commonly keep that one file loose
+/// while storing the actual story in packed modules. Existing files are never
+/// clobbered, so the operation is idempotent.
 ///
 /// This is the one point the engine writes into the game dir before export — but
 /// it only surfaces source that already exists inside the `.rpa` (exactly what
 /// `unrpa` does by hand), never modifying the archive or any existing file.
 fn ensure_unpacked(dir: &Path) -> Result<usize> {
-    if has_rpy(dir) {
-        return Ok(0);
-    }
     let mut total = 0;
     for archive in archives_in(dir) {
         // Best-effort: an archive we can't read as RPA (corrupt, or a format we
         // don't support) simply yields no source here — the caller then surfaces
         // the actionable "decompile the .rpyc" message. One odd archive must not
         // abort recovering source from the others.
-        if let Ok(n) = rpa::extract_rpy(&archive, dir) {
+        if let Ok(n) = rpa::extract_source_scripts(&archive, dir) {
             total += n;
         }
     }
@@ -552,7 +550,7 @@ fn is_renpy_game_dir(dir: &Path) -> bool {
     })
 }
 
-fn has_rpy(dir: &Path) -> bool {
+fn has_source_script(dir: &Path) -> bool {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&d) else {
@@ -564,7 +562,7 @@ fn has_rpy(dir: &Path) -> bool {
                 if !is_tl_dir(&p) {
                     stack.push(p);
                 }
-            } else if is_rpy(&p) {
+            } else if is_source_script(&p) {
                 return true;
             }
         }
@@ -577,9 +575,9 @@ fn has_rpy(dir: &Path) -> bool {
 /// source, so it must never be re-imported.
 const GENERATED_RPY: &str = "zzz_translator.rpy";
 
-fn is_rpy(p: &Path) -> bool {
+fn is_source_script(p: &Path) -> bool {
     p.is_file()
-        && p.extension().map(|e| e == "rpy").unwrap_or(false)
+        && matches!(p.extension().and_then(|e| e.to_str()), Some("rpy") | Some("rpym"))
         // Skip our export artifact: its quoted font paths (`fonts/tl_font.ttf`, the
         // remapped game fonts) would otherwise be extracted as if they were dialogue.
         && p.file_name().and_then(|n| n.to_str()) != Some(GENERATED_RPY)
@@ -593,9 +591,9 @@ fn is_tl_dir(p: &Path) -> bool {
     p.file_name().and_then(|n| n.to_str()) == Some("tl")
 }
 
-/// Every source `.rpy` under `dir` (excluding the `tl/` translations tree),
-/// sorted for deterministic unit order.
-fn collect_rpy(dir: &Path) -> Vec<PathBuf> {
+/// Every source `.rpy` or `.rpym` under `dir` (excluding the `tl/` translations
+/// tree), sorted for deterministic unit order.
+fn collect_source_scripts(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -608,7 +606,7 @@ fn collect_rpy(dir: &Path) -> Vec<PathBuf> {
                 if !is_tl_dir(&p) {
                     stack.push(p);
                 }
-            } else if is_rpy(&p) {
+            } else if is_source_script(&p) {
                 out.push(p);
             }
         }
@@ -1164,7 +1162,7 @@ fn harvest_screen_literal(
     }
 }
 
-/// Every `.rpy` at or under `dir` (a plain recursive walk — unlike [`collect_rpy`],
+/// Every `.rpy` at or under `dir` (a plain recursive walk — unlike [`collect_source_scripts`],
 /// which skips `tl/`, this is used *on* a `tl/<lang>/` subtree).
 fn rpy_files_under(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -2150,7 +2148,7 @@ pub fn export_tl_with_font_scale(
     // `.rpa`, decompile the `.rpyc`, so `translate` sees the game's own scripts.
     // Guarded on "no source present" so a game that already has `.rpy` (shipped or
     // previously decompiled) skips the work — this must not re-decompile every export.
-    if collect_rpy(data_dir).is_empty() {
+    if collect_source_scripts(data_dir).is_empty() {
         let _ = ensure_unpacked(data_dir);
         let _ = ensure_decompiled(data_dir, root);
     }

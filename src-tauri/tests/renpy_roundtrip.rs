@@ -286,6 +286,54 @@ fn packed_game_with_source_rpy_auto_unpacks() {
 }
 
 #[test]
+fn packed_rpym_modules_are_extracted_even_with_loose_rpy() {
+    // `renpy.load_module` games often leave a small bootstrap `.rpy` loose but
+    // pack every real chapter as `.rpym`. The loose file must not cause import to
+    // skip the archive, and the module source uses the same syntax as `.rpy`.
+    let bootstrap = "init python:\n    renpy.load_module(\"scripts/chapter\")\n";
+    let chapter = "label chapter:\n    m \"The chapter is in a module.\"\n";
+    let archive = build_rpa(0x4242_4242, &[("scripts/chapter.rpym", chapter.as_bytes())]);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let game = root.join("game");
+    std::fs::create_dir_all(&game).unwrap();
+    std::fs::write(game.join("bootstrap.rpy"), bootstrap).unwrap();
+    std::fs::write(game.join("chapters.rpa"), archive).unwrap();
+    std::fs::write(game.join("script_version.txt"), b"8.4.0").unwrap();
+
+    let eng = engine::detect(root).expect("packed Ren'Py game detects");
+    let d = eng.describe(root).unwrap();
+    assert_eq!(d.file_count, 2, "counts loose and packed source scripts");
+    assert!(
+        !game.join("scripts/chapter.rpym").exists(),
+        "describe must not unpack"
+    );
+
+    let units = eng.extract(root, &ExtractOpts::default()).unwrap();
+    let unit = units
+        .iter()
+        .find(|u| u.source == "The chapter is in a module.")
+        .expect("module dialogue extracted");
+    assert_eq!(unit.file, "scripts/chapter.rpym");
+    assert_eq!(unit.kind, UnitKind::Dialogue);
+    assert!(game.join("scripts/chapter.rpym").exists());
+
+    // The module remains pointer-addressable: source-equals-translation preserves
+    // its bytes exactly through the regular injector.
+    let mut same = unit.clone();
+    same.translation = Some(same.source.clone());
+    same.status = Status::Draft;
+    let out = tempfile::tempdir().unwrap();
+    eng.inject(root, std::slice::from_ref(&same), out.path())
+        .unwrap();
+    assert_eq!(
+        std::fs::read(game.join("scripts/chapter.rpym")).unwrap(),
+        std::fs::read(out.path().join("scripts/chapter.rpym")).unwrap()
+    );
+}
+
+#[test]
 fn token_tl_tree_does_not_mask_the_base_script() {
     // A Japanese game ships `tl/japanese/common.rpy` — the Ren'Py SDK's own UI strings
     // ("Are you sure you want to quit?"), which a game gets for free in its own base

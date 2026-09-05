@@ -10,8 +10,8 @@
 //! The index is a Python dict `{ path: [ (offset, length, prefix), … ] }`. Each
 //! file's bytes are `prefix` followed by `length - prefix.len()` bytes read at
 //! `offset` (a file is almost always a single segment). We only ever pull the
-//! small `.rpy` sources out — never the multi-hundred-MB asset blobs — so we
-//! read just the index plus each script's own span, not the whole archive.
+//! small `.rpy` / `.rpym` sources out — never the multi-hundred-MB asset blobs —
+//! so we read just the index plus each script span, not the whole archive.
 //!
 //! [pickle]: https://docs.python.org/3/library/pickle.html
 
@@ -46,6 +46,16 @@ pub fn list_rpy(archive: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Every source Ren'Py script path in `archive` (read-only — index only, no file
+/// bytes). Besides normal `.rpy` scripts, games that load code with
+/// `renpy.load_module` keep their source in `.rpym` files.
+pub fn list_source_scripts(archive: &Path) -> Result<Vec<String>> {
+    Ok(read_index(archive)?
+        .into_keys()
+        .filter(|name| is_source_script_name(name))
+        .collect())
+}
+
 /// Every compiled `.rpyc` path in `archive` (read-only — index only). Used to tell
 /// whether a game still keeps source packed as bytecode that hasn't been decompiled
 /// to a `.rpy` on disk yet (see `renpy::needs_decompile`).
@@ -62,6 +72,12 @@ pub fn list_rpyc(archive: &Path) -> Result<Vec<String>> {
 /// were written.
 pub fn extract_rpy(archive: &Path, out_dir: &Path) -> Result<usize> {
     extract_matching(archive, out_dir, is_rpy_name)
+}
+
+/// Extract every source Ren'Py script (`.rpy` and `.rpym`) from `archive` into
+/// `out_dir`. Existing files are left untouched, matching [`extract_rpy`].
+pub fn extract_source_scripts(archive: &Path, out_dir: &Path) -> Result<usize> {
+    extract_matching(archive, out_dir, is_source_script_name)
 }
 
 /// Like [`extract_rpy`] but for compiled `.rpyc` — used to stage the bytecode of a
@@ -99,6 +115,11 @@ fn extract_matching(archive: &Path, out_dir: &Path, keep: impl Fn(&str) -> bool)
 
 fn is_rpy_name(name: &str) -> bool {
     name.to_ascii_lowercase().ends_with(".rpy")
+}
+
+fn is_source_script_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".rpy") || lower.ends_with(".rpym")
 }
 
 fn is_rpyc_name(name: &str) -> bool {
@@ -314,6 +335,42 @@ mod tests {
         assert_eq!(std::fs::read(out.join("script.rpy")).unwrap(), script);
         // The asset was not extracted.
         assert!(!out.join("images/logo.png").exists());
+    }
+
+    #[test]
+    fn source_script_helpers_include_rpym_modules() {
+        let rpy = b"label start:\n    \"Bootstrap\"\n";
+        let rpym = b"label chapter:\n    \"Story module\"\n";
+        let rpymc = b"RENPY RPC2 fake-bytecode";
+        let archive = build_rpa(
+            0x4242_4242,
+            &[
+                ("bootstrap.rpy", rpy),
+                ("scripts/chapter.rpym", rpym),
+                ("scripts/chapter.rpymc", rpymc),
+            ],
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let rpa = tmp.path().join("archive.rpa");
+        std::fs::write(&rpa, archive).unwrap();
+
+        assert_eq!(
+            list_source_scripts(&rpa).unwrap(),
+            vec![
+                "bootstrap.rpy".to_string(),
+                "scripts/chapter.rpym".to_string()
+            ]
+        );
+
+        let out = tmp.path().join("game");
+        assert_eq!(extract_source_scripts(&rpa, &out).unwrap(), 2);
+        assert_eq!(std::fs::read(out.join("bootstrap.rpy")).unwrap(), rpy);
+        assert_eq!(
+            std::fs::read(out.join("scripts/chapter.rpym")).unwrap(),
+            rpym
+        );
+        assert!(!out.join("scripts/chapter.rpymc").exists());
     }
 
     #[test]
