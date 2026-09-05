@@ -19,6 +19,8 @@
 //!                                         an existing project without losing its work.
 //!   terms    <game-dir> [model]          Translate every untranslated UI term and
 //!                                         save it to the live project.db.
+//!   refresh-save <game-dir>               Update translated UI strings cached in a
+//!                                         Tyrano global-save file, preserving progress.
 //!   export   <game-dir>                  Export the project twice in place and
 //!                                         verify it is idempotent + valid UTF-8
 //!                                         (regression guard for double-export).
@@ -31,7 +33,9 @@ use app_lib::engine::{self, protect, ExtractOpts};
 use app_lib::model::{Status, UnitKind};
 use app_lib::project::db::{self, UnitFilter};
 use rusqlite::Connection;
-use std::collections::{BTreeMap, BTreeSet};
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -44,6 +48,7 @@ harness <command> [args]
   one      <project.db> [model]
   rescan   <game-dir>
   terms    <game-dir> [model]
+  refresh-save <game-dir>
   export   <game-dir>
   reconcile <game-dir> [--apply]
   tlcheck  <game-dir> <oracle-tl/thai-dir>
@@ -63,6 +68,7 @@ async fn main() {
         "one" => cmd_one(rest).await,
         "rescan" => cmd_rescan(rest),
         "terms" => cmd_terms(rest).await,
+        "refresh-save" => cmd_refresh_tyrano_save(rest),
         "export" => cmd_export(rest),
         "reconcile" => cmd_reconcile(rest),
         "tlcheck" => cmd_tlcheck(rest),
@@ -765,4 +771,144 @@ async fn cmd_terms(rest: &[String]) {
         println!("progress: saved={saved} failed={failed}/{}", terms.len());
     }
     println!("UI terms: saved={saved} failed={failed}");
+}
+
+/// Decode the outer `encodeURIComponent` layer Tyrano uses for persistent data.
+fn percent_decode(input: &str) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).map_err(|e| e.to_string())?;
+            let value = u8::from_str_radix(hex, 16).map_err(|e| e.to_string())?;
+            out.push(value);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|e| e.to_string())
+}
+
+/// Decode the legacy JavaScript `escape()` format stored inside Tyrano values.
+fn js_unescape(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 5 < bytes.len() && bytes[i + 1] == b'u' {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 2..i + 6]) {
+                if let Ok(code) = u32::from_str_radix(hex, 16) {
+                    if let Some(ch) = char::from_u32(code) {
+                        out.push(ch);
+                        i += 6;
+                        continue;
+                    }
+                }
+            }
+        }
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(value) = u8::from_str_radix(hex, 16) {
+                    out.push(value as char);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+fn js_escape(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '@' | '*' | '_' | '+' | '-' | '.' | '/') {
+            out.push(ch);
+        } else if ch.is_ascii() {
+            out.push_str(&format!("%{:02X}", ch as u32));
+        } else {
+            out.push_str(&format!("%u{:04X}", ch as u32));
+        }
+    }
+    out
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() * 2);
+    for byte in input.bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            )
+        {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn refresh_saved_strings(value: &mut Value, translations: &HashMap<String, String>) -> usize {
+    match value {
+        Value::String(text) => {
+            let source = js_unescape(text);
+            if let Some(translation) = translations.get(&source) {
+                *text = js_escape(translation);
+                1
+            } else {
+                0
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .map(|item| refresh_saved_strings(item, translations))
+            .sum(),
+        Value::Object(fields) => fields
+            .values_mut()
+            .map(|item| refresh_saved_strings(item, translations))
+            .sum(),
+        _ => 0,
+    }
+}
+
+fn cmd_refresh_tyrano_save(rest: &[String]) {
+    let Some(game) = arg(rest, 0) else {
+        return eprintln!("refresh-save <game-dir>");
+    };
+    let root = PathBuf::from(game);
+    let save = root.join("CompanyTrip_sf.sav");
+    let backup = root.join("CompanyTrip_sf.sav.rpgtl-before-ui-refresh.bak");
+    let conn = open_db(root.join(".rpgtl/project.db").to_str().unwrap());
+    let translations: HashMap<String, String> = db::all_units(&conn)
+        .expect("read translations")
+        .into_iter()
+        .filter_map(|unit| {
+            unit.status
+                .is_applied()
+                .then_some((unit.source, unit.translation?))
+        })
+        .collect();
+    let raw = fs::read_to_string(&save).expect("read CompanyTrip_sf.sav");
+    let decoded = percent_decode(&raw).expect("decode Tyrano save");
+    let mut value: Value = serde_json::from_str(&decoded).expect("parse Tyrano save JSON");
+    let updated = refresh_saved_strings(&mut value, &translations);
+    if updated == 0 {
+        return println!("save refresh: no translated UI strings needed updating");
+    }
+    if !backup.exists() {
+        fs::copy(&save, &backup).expect("back up original global save");
+    }
+    let encoded = percent_encode(&serde_json::to_string(&value).expect("serialize Tyrano save"));
+    fs::write(&save, encoded).expect("write refreshed Tyrano save");
+    println!(
+        "save refresh: updated={updated} backup={}",
+        backup.display()
+    );
 }
