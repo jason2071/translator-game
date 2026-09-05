@@ -119,7 +119,25 @@ export const useStore = create<AppStore>((set, get) => ({
       clearTimeout(statsTimer);
       statsTimer = undefined;
     }
+
+    // Recent projects keep a local snapshot because the import screen has no
+    // project open to query. Refresh it immediately before closing instead of
+    // leaving the value from the last open — otherwise a completed Run still
+    // appears incomplete until the user reopens the project once.
+    const project = get().project;
+    let recentProject = project;
+    if (project) {
+      try {
+        recentProject = { ...project, stats: await api.getStats() };
+      } catch {
+        // A failed final read must not prevent closing; retain the newest
+        // in-memory stats (or the snapshot from opening) as a safe fallback.
+        recentProject = { ...project, stats: get().stats ?? project.stats };
+      }
+    }
+
     await api.closeProject();
+    if (recentProject) useRecents.getState().add(recentProject);
     useGlossarySuggest.getState().reset();
     useErrors.getState().reset();
     set({ project: null, files: [], characters: [], stats: null, total: 0, window: EMPTY_WINDOW });
