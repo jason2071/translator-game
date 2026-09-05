@@ -778,9 +778,15 @@ fn tyrano_tag_len(s: &str) -> Option<usize> {
     None
 }
 
-/// Replace Ren'Py codes with `⟦k⟧` sentinels: `[interpolation]`, `{text tags}`,
-/// and backslash escapes (`\"`, `\n`, `\\`). Escaped `[[` / `{{` are literal
-/// text and left alone. Restores via the shared [`restore`].
+/// Replace Ren'Py runtime codes with `⟦k⟧` sentinels: `[interpolation]`, `{text
+/// tags}`, and backslash escapes that affect the rendered text (`\n`, `\\`,
+/// `\[`, ...). Escaped `[[` / `{{` are literal text and left alone.
+///
+/// `\'` and `\"` are deliberately different: they only quote a literal inside
+/// the source file's surrounding string delimiter. They are not runtime codes and
+/// a translated sentence often has no corresponding quote at all (notably Thai).
+/// Show their character to the model without a sentinel; the Ren'Py `tl/` exporter
+/// re-quotes the completed translation safely.
 pub fn mask_renpy(input: &str) -> Masked {
     let mut text = String::with_capacity(input.len());
     let mut tokens: Vec<String> = Vec::new();
@@ -796,6 +802,19 @@ pub fn mask_renpy(input: &str) -> Masked {
             continue;
         }
         let len = match b[i] {
+            b'\\'
+                if i + 1 < input.len()
+                    && matches!(input[i + 1..].chars().next(), Some('\'' | '\"')) =>
+            {
+                // File-syntax quoting: turn `\'` / `\"` back into its visible
+                // character before asking the model to translate. Requiring a
+                // sentinel here rejected perfectly valid translations that omit a
+                // quote altogether.
+                let quote = input[i + 1..].chars().next().unwrap();
+                text.push(quote);
+                i += 1 + quote.len_utf8();
+                continue;
+            }
             b'\\' if i + 1 < input.len() => {
                 // Backslash + the whole next char (handles multi-byte).
                 Some(1 + input[i + 1..].chars().next().unwrap().len_utf8())
@@ -1056,7 +1075,6 @@ mod tests {
         let samples = [
             "Hello, [player_name]!",
             "This is {b}bold{/b} and {color=#ff0000}red{/color}.",
-            "She said \\\"hi\\\" then left.",
             "Line one\\nLine two",
             "Literal [[bracket]] and {{brace}} stay.",
             "Percent 50% off, no codes.",
@@ -1069,6 +1087,26 @@ mod tests {
             let back = restore(&m.text, &m.tokens).expect("restore ok");
             assert_eq!(back, s, "round-trip failed for {s:?}");
         }
+    }
+
+    #[test]
+    fn renpy_quote_escapes_are_visible_text_not_required_codes() {
+        // `\\'` / `\\\"` only make an apostrophe/quote legal inside the
+        // source literal. They must not force a Thai translation to carry a
+        // meaningless sentinel just because the English source has a contraction.
+        let src = r#"Click [b]Skip[/b] if you don\'t want to solve it."#;
+        let m = mask_renpy(src);
+        assert_eq!(m.tokens, vec!["[b]", "[/b]"]);
+        assert_eq!(m.text, "Click ⟦0⟧Skip⟦1⟧ if you don't want to solve it.");
+
+        let translated = "กด ⟦0⟧ข้าม⟦1⟧ หากไม่ต้องการแก้ปริศนา";
+        let restored = restore(translated, &m.tokens).expect("only real tags are required");
+        assert_eq!(restored, "กด [b]ข้าม[/b] หากไม่ต้องการแก้ปริศนา");
+        assert!(codes_match("renpy", src, &restored));
+
+        let quoted = mask_renpy(r#"She said \"hello\"."#);
+        assert!(quoted.is_plain());
+        assert_eq!(quoted.text, "She said \"hello\".");
     }
 
     #[test]
