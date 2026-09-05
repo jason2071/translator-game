@@ -15,10 +15,15 @@ fn game() -> tempfile::TempDir {
     let source = fixture();
     let target = root.join("resources/gioco/content/girls/luna");
     std::fs::create_dir_all(&target).unwrap();
-    std::fs::create_dir_all(root.join("resources/gioco")).unwrap();
+    std::fs::create_dir_all(root.join("resources/gioco/assets")).unwrap();
     std::fs::copy(
         source.join("resources/gioco/index.html"),
         root.join("resources/gioco/index.html"),
+    )
+    .unwrap();
+    std::fs::copy(
+        source.join("resources/gioco/assets/index-ui.js"),
+        root.join("resources/gioco/assets/index-ui.js"),
     )
     .unwrap();
     std::fs::copy(
@@ -55,5 +60,12 @@ fn rescan_uses_the_pristine_lucky_live_snapshot_after_export() {
             .unwrap()
             .iter()
             .all(|unit| unit.source != "พระจันทร์พาเธอมาที่นี่")
+    );
+    assert!(
+        project::db::list_units(&project.conn, &UnitFilter::default())
+            .unwrap()
+            .iter()
+            .any(|unit| unit.source == "Booting LuckyOS"),
+        "rescan must retain the pristine UI bundle too"
     );
 }

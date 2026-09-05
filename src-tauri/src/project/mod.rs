@@ -776,6 +776,26 @@ fn luckylive_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> 
             }
         }
     }
+    // Lucky Live's UI is a deliberately scoped localization dictionary in the
+    // minified assets bundle. Include the live path on a first export (when no
+    // snapshot exists yet); `pristine_read_root` then prefers its original snapshot
+    // on every later rescan.
+    let assets_dir = project.data_dir.join("assets");
+    if assets_dir.is_dir() {
+        for entry in walkdir::WalkDir::new(&assets_dir)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
+            if entry.file_type().is_file()
+                && entry.path().extension().is_some_and(|ext| ext == "js")
+                && std::fs::read_to_string(entry.path()).is_ok_and(|text| text.contains("var H={"))
+            {
+                if let Ok(rel) = entry.path().strip_prefix(&project.data_dir) {
+                    files.insert(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
     for dir in std::iter::once(source_dir).chain(backup_dirs) {
         if !dir.is_dir() {
             continue;

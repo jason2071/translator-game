@@ -125,7 +125,11 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         // GameCreator locale values use HTML spans plus the same placeholder
         // shapes as other JavaScript runtimes. Its U+0005 command payloads are
         // masked whole so a manual unit can never translate their internals.
-        "gamecreator" | "luckylive" => mask_gamecreator(input),
+        "gamecreator" => mask_gamecreator(input),
+        // Lucky Live uses JavaScript template literals in its UI dictionary.
+        // `${...}` is executable interpolation, so hide the whole expression rather
+        // than only its `{...}` suffix before sending the surrounding prose to AI.
+        "luckylive" => mask_luckylive(input),
         // Forger `.acod` uses HTML-ish angle tags plus `{}`/`[]`/`%` placeholders.
         "forger-acod" => mask_forger(input),
         // AC Origins aclocexport text: angle tags + `[…]` audio cues only.
@@ -371,6 +375,67 @@ pub fn mask_gamecreator(input: &str) -> Masked {
         i += ch.len_utf8();
     }
     Masked { text, tokens }
+}
+
+/// Lucky Live's UI dictionary is JavaScript, including template values such as
+/// `Week ${week}` and `$${paid} / $${total}`. Preserve each interpolation exactly;
+/// changing it would turn a translated label into invalid JavaScript or lose live
+/// values at runtime. Other runtime markup follows GameCreator's established rules.
+pub fn mask_luckylive(input: &str) -> Masked {
+    let mut text = String::with_capacity(input.len());
+    let mut tokens: Vec<String> = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < input.len() {
+        let len = if input[i..].starts_with("${") {
+            js_interpolation_len(&input[i..])
+        } else {
+            match bytes[i] {
+                0x05 => input[i + 1..].find('\u{0005}').map(|end| end + 2),
+                b'<' => angle_tag_len(&input[i..]),
+                b'{' => bracket_len(&input[i..], b'{', b'}'),
+                b'[' => bracket_len(&input[i..], b'[', b']'),
+                b'%' => printf_len(&input[i..]),
+                _ => None,
+            }
+        };
+        if let Some(len) = len {
+            push_token(&mut text, &mut tokens, &input[i..i + len]);
+            i += len;
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap();
+        text.push(ch);
+        i += ch.len_utf8();
+    }
+    Masked { text, tokens }
+}
+
+fn js_interpolation_len(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if !s.starts_with("${") {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut at = 2;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'\\' => at += 2,
+            b'{' => {
+                depth += 1;
+                at += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                at += 1;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => at += s[at..].chars().next()?.len_utf8(),
+        }
+    }
+    None
 }
 
 /// Byte length of a `[...]`/`{...}` code at the start of `s`, or None if it is
@@ -1050,6 +1115,15 @@ mod tests {
         assert!(!mask_for("ac-loctext", "We're here in <i>peace</i>!").is_plain());
         assert!(!mask_for("ac-loctext", "[&scoff]Who is he?").is_plain());
         assert!(mask_for("ac-loctext", "{I am a misthios.} 50% sure").is_plain());
+        let lucky = mask_for("luckylive", "Week ${week}");
+        assert_eq!(lucky.tokens, vec!["${week}"]);
+        assert_eq!(restore(&lucky.text, &lucky.tokens).unwrap(), "Week ${week}");
+        let nested = mask_for("luckylive", "${e===1?`girl is`:`girls are`} unlocked");
+        assert_eq!(nested.tokens, vec!["${e===1?`girl is`:`girls are`}"]);
+        assert_eq!(
+            restore(&nested.text, &nested.tokens).unwrap(),
+            "${e===1?`girl is`:`girls are`} unlocked"
+        );
     }
 
     #[test]
