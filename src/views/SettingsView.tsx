@@ -163,7 +163,7 @@ export default function SettingsView() {
                 e.target.value && s.updateProvider(editing, { model: e.target.value })
               }
             >
-              <option value="">— pick one of {models.length} installed —</option>
+              <option value="">— pick one of {models.length} available —</option>
               {models.map((m) => (
                 <option key={m} value={m}>
                   {m}

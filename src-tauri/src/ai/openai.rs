@@ -1,5 +1,5 @@
-//! OpenAI-compatible chat provider — serves OpenAI, OpenRouter, and Local
-//! (Ollama / LM Studio) backends, which differ only by base URL and auth.
+//! OpenAI-compatible chat provider — serves OpenAI, OpenRouter, Local
+//! (Ollama / LM Studio), and Ollama Cloud backends.
 
 use super::prompt::{build_messages, parse_batch_response};
 use super::retry::{status_is_retryable, with_retry, CallError};
@@ -12,6 +12,7 @@ pub struct OpenAiCompat {
     base: String,
     is_openrouter: bool,
     is_local: bool,
+    is_ollama_cloud: bool,
 }
 
 impl OpenAiCompat {
@@ -20,6 +21,7 @@ impl OpenAiCompat {
             base: base_or(cfg, "https://api.openai.com/v1"),
             is_openrouter: false,
             is_local: false,
+            is_ollama_cloud: false,
         }
     }
     pub fn openrouter(cfg: &ProviderConfig) -> Self {
@@ -27,6 +29,7 @@ impl OpenAiCompat {
             base: base_or(cfg, "https://openrouter.ai/api/v1"),
             is_openrouter: true,
             is_local: false,
+            is_ollama_cloud: false,
         }
     }
     pub fn local(cfg: &ProviderConfig) -> Self {
@@ -35,6 +38,15 @@ impl OpenAiCompat {
             base: base_or(cfg, "http://localhost:11434/v1"),
             is_openrouter: false,
             is_local: true,
+            is_ollama_cloud: false,
+        }
+    }
+    pub fn ollama_cloud(cfg: &ProviderConfig) -> Self {
+        OpenAiCompat {
+            base: base_or(cfg, "https://ollama.com"),
+            is_openrouter: false,
+            is_local: false,
+            is_ollama_cloud: true,
         }
     }
 }
@@ -57,13 +69,14 @@ impl OpenAiCompat {
     async fn ollama_chat(
         &self,
         client: &reqwest::Client,
+        key: Option<&str>,
         sys: &str,
         user: &str,
         model: &str,
         temperature: f32,
         max_tokens: u32,
         thinking: Option<bool>,
-    ) -> Option<String> {
+    ) -> Result<Option<String>> {
         let root = self
             .base
             .strip_suffix("/v1")
@@ -82,12 +95,38 @@ impl OpenAiCompat {
         if let Some(think) = thinking {
             body["think"] = json!(think);
         }
-        let resp = client.post(&url).json(&body).send().await.ok()?;
-        if !resp.status().is_success() {
-            return None;
+        let call = || async {
+            let mut request = client.post(&url).json(&body);
+            if let Some(key) = key {
+                request = request.bearer_auth(key);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|e| CallError::Retryable(e.into()))?;
+            let status = response.status();
+            let text = response
+                .text()
+                .await
+                .map_err(|e| CallError::Retryable(e.into()))?;
+            if status.is_success() {
+                let value: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| CallError::Fatal(e.into()))?;
+                value["message"]["content"]
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| CallError::Fatal(anyhow!("unexpected response: {text}")))
+            } else if status_is_retryable(status.as_u16()) {
+                Err(CallError::Retryable(anyhow!("{status}: {text}")))
+            } else {
+                Err(CallError::Fatal(anyhow!("{status}: {text}")))
+            }
+        };
+
+        if self.is_ollama_cloud {
+            return with_retry(4, 800, call).await.map(Some);
         }
-        let v: serde_json::Value = resp.json().await.ok()?;
-        v["message"]["content"].as_str().map(str::to_string)
+        Ok(call().await.ok())
     }
 }
 
@@ -112,10 +151,11 @@ impl TranslationProvider for OpenAiCompat {
         // Local: prefer Ollama's native /api/chat, where `think:false` truly
         // disables reasoning (fast, no wasted tokens). Falls through to /v1 when
         // it isn't Ollama (e.g. LM Studio) or the call fails.
-        if self.is_local {
+        if self.is_local || self.is_ollama_cloud {
             if let Some(content) = self
                 .ollama_chat(
                     client,
+                    key,
                     &sys,
                     &user,
                     &req.model,
@@ -123,10 +163,14 @@ impl TranslationProvider for OpenAiCompat {
                     req.max_tokens,
                     req.thinking,
                 )
-                .await
+                .await?
             {
                 return parse_batch_response(&content, req.items.len());
             }
+        }
+
+        if self.is_ollama_cloud {
+            return Err(anyhow!("Ollama Cloud returned no chat content"));
         }
 
         let url = format!("{}/chat/completions", self.base);
@@ -212,13 +256,26 @@ impl TranslationProvider for OpenAiCompat {
 
         // Local: prefer Ollama's native /api/chat (think:false truly disables
         // reasoning), falling through to /v1 for LM Studio or on failure.
-        if self.is_local {
+        if self.is_local || self.is_ollama_cloud {
             if let Some(content) = self
-                .ollama_chat(client, system, user, model, 0.2, max_tokens, Some(false))
-                .await
+                .ollama_chat(
+                    client,
+                    key,
+                    system,
+                    user,
+                    model,
+                    0.2,
+                    max_tokens,
+                    Some(false),
+                )
+                .await?
             {
                 return Ok(content);
             }
+        }
+
+        if self.is_ollama_cloud {
+            return Err(anyhow!("Ollama Cloud returned no chat content"));
         }
 
         let url = format!("{}/chat/completions", self.base);
@@ -271,5 +328,101 @@ impl TranslationProvider for OpenAiCompat {
             }
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OpenAiCompat;
+    use crate::ai::ProviderConfig;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        let mut bytes = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let (header_end, content_len) = loop {
+            let count = stream.read(&mut chunk).expect("read request");
+            assert!(count > 0, "client closed before sending a complete request");
+            bytes.extend_from_slice(&chunk[..count]);
+            if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                let header_end = end + 4;
+                let headers = std::str::from_utf8(&bytes[..header_end]).expect("UTF-8 headers");
+                let content_len = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .expect("content length")
+                    .parse::<usize>()
+                    .expect("numeric content length");
+                break (header_end, content_len);
+            }
+        };
+        while bytes.len() < header_end + content_len {
+            let count = stream.read(&mut chunk).expect("read request body");
+            assert!(count > 0, "client closed before sending the complete body");
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        String::from_utf8(bytes).expect("UTF-8 request")
+    }
+
+    #[tokio::test]
+    async fn ollama_cloud_uses_bearer_auth_and_native_chat_api() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept client");
+            let request = read_request(&mut stream);
+            let body = r#"{"message":{"content":"translated"}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write response");
+            sender.send(request).expect("send captured request");
+        });
+
+        let cfg = ProviderConfig {
+            kind: "ollama".into(),
+            base_url: Some(format!("http://{address}")),
+            model: "gpt-oss:120b".into(),
+            temperature: None,
+            max_tokens: None,
+            batch_size: None,
+            rpm: None,
+            concurrency: None,
+            tone: None,
+            system_prompt: None,
+            thinking: None,
+        };
+        let provider = OpenAiCompat::ollama_cloud(&cfg);
+        let content = provider
+            .ollama_chat(
+                &reqwest::Client::new(),
+                Some("ollama-test-key"),
+                "system prompt",
+                "user prompt",
+                "gpt-oss:120b",
+                0.25,
+                512,
+                Some(false),
+            )
+            .await
+            .expect("successful cloud response");
+        assert_eq!(content.as_deref(), Some("translated"));
+
+        let request = receiver.recv().expect("captured request");
+        assert!(request.starts_with("POST /api/chat HTTP/1.1\r\n"));
+        assert!(request.contains("authorization: Bearer ollama-test-key\r\n"));
+        let body = request.split_once("\r\n\r\n").expect("request body").1;
+        let body: serde_json::Value = serde_json::from_str(body).expect("JSON body");
+        assert_eq!(body["model"], "gpt-oss:120b");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["think"], false);
+        assert_eq!(body["options"]["temperature"], 0.25);
+        assert_eq!(body["options"]["num_predict"], 512);
     }
 }

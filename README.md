@@ -76,8 +76,10 @@ pnpm tauri dev      # launches the app with hot-reload
 ```
 
 For dev you can supply provider API keys via a `.env` (copy `.env.example`) — it
-is loaded only in debug builds, so `pnpm tauri dev` picks up `RPGTL_KEY_OPENAI`
-etc. without touching the OS keychain. Release builds ignore `.env`.
+is loaded only in debug builds, so `pnpm tauri dev` picks up `RPGTL_KEY_OPENAI`,
+`RPGTL_KEY_OLLAMA`, etc. without touching the OS keychain. Release builds ignore
+`.env`. Ollama Cloud connects directly to `https://ollama.com/api` with an API
+key; it does not require a local Ollama process.
 
 ## Build a release / installer
 

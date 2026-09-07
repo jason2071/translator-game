@@ -1,6 +1,6 @@
 //! AI translation layer.
 //!
-//! One [`TranslationProvider`] trait, five concrete providers behind it:
+//! One [`TranslationProvider`] trait, six concrete providers behind it:
 //! OpenAI / OpenRouter / Local share the OpenAI-compatible chat API
 //! ([`openai`]); Claude ([`anthropic`]) and Gemini ([`gemini`]) have their own
 //! wire formats. All share the numbered-JSON batching in [`prompt`] so a batch
@@ -60,7 +60,7 @@ pub struct BatchReq {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
-    /// "openai" | "openrouter" | "local" | "anthropic" | "gemini"
+    /// "openai" | "openrouter" | "local" | "ollama" | "anthropic" | "gemini"
     pub kind: String,
     pub base_url: Option<String>,
     pub model: String,
@@ -202,6 +202,7 @@ fn resolve_base(cfg: &ProviderConfig) -> String {
         "openai" => "https://api.openai.com/v1",
         "openrouter" => "https://openrouter.ai/api/v1",
         "local" => "http://localhost:11434/v1",
+        "ollama" => "https://ollama.com",
         "anthropic" => "https://api.anthropic.com",
         "gemini" => "https://generativelanguage.googleapis.com",
         _ => "",
@@ -274,13 +275,14 @@ pub async fn list_models(
                     if !ids.is_empty() {
                         ids
                     } else {
-                        ollama_tags(client, &base).await?
+                        ollama_tags(client, None, &base).await?
                     }
                 }
                 // 2) Fall back to Ollama's native tags API.
-                Err(_) => ollama_tags(client, &base).await?,
+                Err(_) => ollama_tags(client, None, &base).await?,
             }
         }
+        "ollama" => ollama_tags(client, key, &base).await?,
         "anthropic" => {
             let url = format!("{base}/v1/models");
             let rb = client
@@ -311,14 +313,23 @@ pub async fn list_models(
 }
 
 /// Ollama's native model list: `GET {host}/api/tags` → `models[].name`.
-async fn ollama_tags(client: &reqwest::Client, base: &str) -> Result<Vec<String>> {
+/// Cloud calls pass a bearer key; local calls leave it absent.
+async fn ollama_tags(
+    client: &reqwest::Client,
+    key: Option<&str>,
+    base: &str,
+) -> Result<Vec<String>> {
     // base is typically http://localhost:11434/v1 — the tags API lives at the host.
     let host = base
         .strip_suffix("/v1")
         .unwrap_or(base)
         .trim_end_matches('/');
     let url = format!("{host}/api/tags");
-    let v = get_json(client.get(&url), &url).await?;
+    let mut request = client.get(&url);
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
+    }
+    let v = get_json(request, &url).await?;
     Ok(v["models"]
         .as_array()
         .map(|a| {
@@ -336,6 +347,7 @@ pub fn make_provider(cfg: &ProviderConfig) -> Result<Box<dyn TranslationProvider
         "openai" => Ok(Box::new(openai::OpenAiCompat::openai(cfg))),
         "openrouter" => Ok(Box::new(openai::OpenAiCompat::openrouter(cfg))),
         "local" => Ok(Box::new(openai::OpenAiCompat::local(cfg))),
+        "ollama" => Ok(Box::new(openai::OpenAiCompat::ollama_cloud(cfg))),
         "anthropic" => Ok(Box::new(anthropic::Anthropic::new(cfg))),
         "gemini" => Ok(Box::new(gemini::Gemini::new(cfg))),
         other => Err(anyhow!("unknown provider kind: {other}")),
@@ -344,7 +356,7 @@ pub fn make_provider(cfg: &ProviderConfig) -> Result<Box<dyn TranslationProvider
 
 #[cfg(test)]
 mod tests {
-    use super::align_outer_whitespace;
+    use super::{align_outer_whitespace, resolve_base, ProviderConfig};
 
     #[test]
     fn align_outer_whitespace_drops_invented_padding_and_keeps_the_source_s() {
@@ -366,5 +378,24 @@ mod tests {
         // A blank answer is left for the caller to judge, not silently reshaped.
         assert_eq!(align_outer_whitespace("x", "   "), "   ");
         assert_eq!(align_outer_whitespace("", "ok"), "ok");
+    }
+
+    #[test]
+    fn ollama_cloud_uses_its_remote_default_and_requires_a_key() {
+        let cfg = ProviderConfig {
+            kind: "ollama".into(),
+            base_url: None,
+            model: "gpt-oss:120b".into(),
+            temperature: None,
+            max_tokens: None,
+            batch_size: None,
+            rpm: None,
+            concurrency: None,
+            tone: None,
+            system_prompt: None,
+            thinking: None,
+        };
+        assert_eq!(resolve_base(&cfg), "https://ollama.com");
+        assert!(cfg.needs_key());
     }
 }

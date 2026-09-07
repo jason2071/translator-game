@@ -14,6 +14,7 @@ export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   openai: "OpenAI",
   openrouter: "OpenRouter",
   local: "Local (Ollama / LM Studio)",
+  ollama: "Ollama Cloud",
   anthropic: "Claude (Anthropic)",
   gemini: "Gemini (Google)",
 };
@@ -23,6 +24,7 @@ export const PROVIDER_LABELS_SHORT: Record<ProviderKind, string> = {
   openai: "OpenAI",
   openrouter: "OpenRouter",
   local: "Local",
+  ollama: "Ollama",
   anthropic: "Claude",
   gemini: "Gemini",
 };
@@ -30,6 +32,7 @@ export const PROVIDER_LABELS_SHORT: Record<ProviderKind, string> = {
 /** All provider kinds, in display order (top selector + settings tabs). */
 export const PROVIDER_KINDS: ProviderKind[] = [
   "local",
+  "ollama",
   "openai",
   "anthropic",
   "gemini",
@@ -47,6 +50,12 @@ const DEFAULTS: Record<ProviderKind, ProviderConfig> = {
     kind: "local",
     baseUrl: "http://localhost:11434/v1",
     model: "llama3.1",
+    temperature: 0.3,
+  },
+  ollama: {
+    kind: "ollama",
+    baseUrl: "https://ollama.com",
+    model: "gpt-oss:120b",
     temperature: 0.3,
   },
   anthropic: { kind: "anthropic", model: "claude-sonnet-5", temperature: 0.3 },

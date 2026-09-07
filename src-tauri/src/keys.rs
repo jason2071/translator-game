@@ -25,6 +25,7 @@ fn env_key(provider: &str) -> Option<String> {
     let conventional = match provider {
         "openai" => Some("OPENAI_API_KEY"),
         "openrouter" => Some("OPENROUTER_API_KEY"),
+        "ollama" => Some("OLLAMA_API_KEY"),
         "anthropic" => Some("ANTHROPIC_API_KEY"),
         "gemini" => Some("GEMINI_API_KEY"),
         _ => None,

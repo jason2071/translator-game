@@ -147,6 +147,7 @@ export type ProviderKind =
   | "openai"
   | "openrouter"
   | "local"
+  | "ollama"
   | "anthropic"
   | "gemini";
 
