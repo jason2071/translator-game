@@ -21,6 +21,7 @@ and are much riskier.
 | **Ren'Py** | `game/**/*.rpy` (say / menu / `_()`) | text | ✅ Supported |
 | **TyranoScript** | `data/scenario/*.ks` or Electron `resources/app.asar` | text/archive | ✅ Supported |
 | **Lucky Live** | Electron `resources/gioco/content/girls/*/girl.json` | JSON | ✅ Supported |
+| **Rebirth Pub** | Unity (Mono) runtime tables `LocalizeData/<lang>/*.json` (`{key: {text, version}}`) | text | ✅ Supported |
 | **KiriKiri** (KAG) | `*.ks` (same KAG tags, Shift-JIS/UTF-16) | text | ✅ Supported |
 | **RPGM** (VX Ace/VX/XP) | `Data/*.rvdata2` = Ruby Marshal | binary | 🔴 Hard |
 | **RPGM** (2000/2003) | `*.lmu` / `RPG_RT.ldb` (liblcf) | binary | 🔴 Hard |
@@ -66,6 +67,17 @@ and are much riskier.
   paths, event triggers, avatar/user metadata, and other game data. String-literal
   spans are mapped to RFC-6901 JSON Pointers and spliced in place, preserving the
   original JSON byte-for-byte on identity export. `src-tauri/src/engine/luckylive.rs`.
+- **Rebirth Pub** — a Unity (Mono) game whose whole text lives in plain JSON the
+  game re-reads at startup: `LocalizeData/<code>/*.json`, one `{key: {text,
+  version}}` table per domain (UI, items, cast, per-scenario scripts). Pointer =
+  byte span into the `text` string literal, spliced in place (GameCreator's
+  contract); detection fingerprints the Unity `<Title>_Data` folder plus the
+  table schema. Translating the English table in place is all it takes — players
+  pick "English" in the game's language menu. Markup: Text Animator
+  (`<shake>`/`<wave>`/`<bounce>`), timing tags (`<interval>`/`<waitfor>`),
+  `<param=PlayerName>`, `{0}` placeholders, and `[Squelch- …]` sound-cue bracket
+  groups — all masked via `mask_rebirth`. Rendered with Unity 6 TMP, whose OS
+  font fallback covers Thai on Windows. `src-tauri/src/engine/rebirth.rs`.
 - **KiriKiri (KAG)** — `.ks` scripts in **Shift-JIS/UTF-16** (or UTF-8). Reuses
   the TyranoScript KAG parser + `mask_tyrano` verbatim behind an encoding layer
   (`src-tauri/src/engine/encoding.rs`): decode-on-read, re-encode-on-write, so

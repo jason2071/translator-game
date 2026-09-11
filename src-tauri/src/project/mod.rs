@@ -625,6 +625,7 @@ fn pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
         "gamecreator" => gamecreator_pristine_rescan_root(project),
         "luckylive" => luckylive_pristine_rescan_root(project),
         "tyrano" => packed_tyrano_pristine_rescan_root(project),
+        "rebirth" => rebirth_pristine_rescan_root(project),
         _ => Ok(None),
     }
 }
@@ -693,6 +694,33 @@ fn mvmz_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
                 continue;
             }
             if let Ok(rel) = entry.path().strip_prefix(&dir) {
+                files.insert(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    if files.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(pristine_read_root(
+        project,
+        &files.into_iter().collect::<Vec<_>>(),
+    )?))
+}
+
+/// Rebirth Pub's source is the game's runtime `LocalizeData/<code>/` JSON tree,
+/// which an in-place export overwrites. Mirror the whole tree — snapshots for the
+/// exported files, live bytes for the rest (unexported tables are pristine
+/// anyway) — so a rescan never reads the exported Thai as new source. Detection
+/// runs on the live game root, so the mirror needs nothing else.
+fn rebirth_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
+    let localize = project.data_dir.join(crate::engine::rebirth::LANG_DIR);
+    if !localize.is_dir() {
+        return Ok(None);
+    }
+    let mut files = BTreeSet::new();
+    for entry in walkdir::WalkDir::new(&localize).into_iter().flatten() {
+        if entry.file_type().is_file() {
+            if let Ok(rel) = entry.path().strip_prefix(&project.data_dir) {
                 files.insert(rel.to_string_lossy().replace('\\', "/"));
             }
         }

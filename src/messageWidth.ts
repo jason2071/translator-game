@@ -33,6 +33,9 @@ const AC_LOCTEXT_CODE_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\
 // XUnity.AutoTranslator: Unity rich text, \n escapes, {{A}} substitution params.
 // Mirrors mask_xunity.
 const XUNITY_CODE_RE = /<\/?[A-Za-z][^>\n]*>|\{\{[^{}]*\}\}|\\[nrt]|⟦\d+⟧/g;
+// Rebirth Pub LocalizeData JSON: Text Animator / TMPro angle tags, {0}/{size}
+// placeholders, sound-cue bracket groups, literal \n escapes. Mirrors mask_rebirth.
+const REBIRTH_CODE_RE = /<[/?]?[A-Za-z][^>\n]*>|\{[^{}]+\}|\[[^\]]+\]|\\[nrt]|⟦\d+⟧/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_CODE_RE;
@@ -42,6 +45,7 @@ function codeRe(engineId?: string | null): RegExp {
   if (engineId === "forger-acod") return FORGER_CODE_RE;
   if (engineId === "ac-loctext") return AC_LOCTEXT_CODE_RE;
   if (engineId === "xunity") return XUNITY_CODE_RE;
+  if (engineId === "rebirth") return REBIRTH_CODE_RE;
   return CODE_RE;
 }
 

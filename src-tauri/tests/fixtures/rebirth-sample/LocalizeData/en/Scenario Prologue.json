@@ -1,0 +1,26 @@
+{
+  "Scenario_Prologue_1_001": {
+    "text": "<shake>Wow!!</shake> <interval=0.3><bounce>Teddy Bear!!!</bounce>",
+    "version": "0"
+  },
+  "Scenario_Prologue_1_002": {
+    "text": "Do you want to\ntake a picture with Teddy Bear?",
+    "version": "0"
+  },
+  "Scenario_Prologue_2_006": {
+    "text": "<size=50>{size}Bear{/size}...!?!?</size>",
+    "version": "0"
+  },
+  "Scenario_Prologue_2_009": {
+    "text": "<shake>Am I...<interval=2> dead...? <interval=1><?customFunction=0>Really...?</shake>",
+    "version": "0"
+  },
+  "Scenario_Prologue_2_012": {
+    "text": "<param=PlayerName>....<interval=0.5>\nYou've had quite a troubled life...",
+    "version": "0"
+  },
+  "Scenario_Prologue_3_001": {
+    "text": "[Squelch- <interval=0.5>Squelch-] [Slop-]",
+    "version": "0"
+  }
+}

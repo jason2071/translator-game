@@ -1,0 +1,10 @@
+{
+  "Scenario_Prologue_1_001": {
+    "text": "<shake>わあ!!</shake> <interval=0.3><bounce>テディベア!!!</bounce>",
+    "version": "0"
+  },
+  "Scenario_Prologue_1_002": {
+    "text": "テディベアと\nいっしょに写真を撮る？",
+    "version": "0"
+  }
+}

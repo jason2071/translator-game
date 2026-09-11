@@ -130,6 +130,9 @@ pub fn mask_for(engine_id: &str, input: &str) -> Masked {
         // `${...}` is executable interpolation, so hide the whole expression rather
         // than only its `{...}` suffix before sending the surrounding prose to AI.
         "luckylive" => mask_luckylive(input),
+        // Rebirth Pub's LocalizeData tables carry Text Animator/TMPro angle tags,
+        // `{0}` placeholders, and `[Squelch- …]` sound-cue bracket groups.
+        "rebirth" => mask_rebirth(input),
         // Forger `.acod` uses HTML-ish angle tags plus `{}`/`[]`/`%` placeholders.
         "forger-acod" => mask_forger(input),
         // AC Origins aclocexport text: angle tags + `[…]` audio cues only.
@@ -243,7 +246,12 @@ const THAI_PARTICLES: [&str; 8] = ["ครับผม", "ครับ", "ค่
 /// be followed by whitespace or punctuation. So `คะแนน` (score) and `จ้าละหวั่น` keep
 /// their syllables — the particle there is followed by another Thai letter. Whitespace
 /// left behind by a removal is collapsed, and a space before punctuation is dropped.
-/// Thai target only (the caller gates on the language).
+///
+/// A particle directly after the bare vowel `เ` is **kept**: it is the final syllable
+/// of a real word, never politeness — `เจ้า` (พระเจ้า "god", the archaic pronoun,
+/// ข้าพเจ้า) ends in `จ้า` and `เขา` (him/they) in `ขา`, and no Thai word ends in a
+/// bare `เ`. Stripping there cut `God` to `พระเ` on a real project. Thai target only
+/// (the caller gates on the language).
 pub fn strip_thai_particles(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
@@ -261,7 +269,9 @@ pub fn strip_thai_particles(s: &str) -> String {
                 // Must follow something — a line that *is* only a particle keeps it
                 // rather than becoming empty.
                 let has_prefix = !out.trim().is_empty();
-                if boundary && has_prefix {
+                // And must not complete a word after the bare vowel `เ` (เจ้า/เขา).
+                let after_e = s[..i].chars().next_back() == Some('เ');
+                if boundary && has_prefix && !after_e {
                     matched = Some(p.len());
                 }
                 break; // longest-first: the first prefix hit is the only candidate
@@ -377,6 +387,79 @@ pub fn mask_gamecreator(input: &str) -> Masked {
     Masked { text, tokens }
 }
 
+/// Replace Rebirth Pub localization markup with `⟦k⟧` sentinels: Text Animator /
+/// TMPro angle tags (`<shake>`, `</size>`, `<interval=0.5>`, `<param=PlayerName>`,
+/// `<color=#fff>`, and the game's `<?customFunction=N>` events), `{0}`-style format
+/// placeholders plus the `{size}…{/size}` pseudo-tags, the `[Squelch- …]` sound-cue
+/// bracket groups (which may span lines and carry tags inside), and the literal
+/// `\n` escape one entry carries. Restores via the shared [`restore`].
+pub fn mask_rebirth(input: &str) -> Masked {
+    let mut text = String::with_capacity(input.len());
+    let mut tokens: Vec<String> = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < input.len() {
+        let len = match bytes[i] {
+            b'<' => rebirth_angle_len(&input[i..]),
+            b'{' => bracket_len(&input[i..], b'{', b'}'),
+            b'[' => rebirth_bracket_len(&input[i..]),
+            // A literal `\n` escape surviving into a decoded value — the game
+            // treats it as a line break, not as text.
+            b'\\' if matches!(bytes.get(i + 1), Some(b'n' | b'r' | b't')) => Some(2),
+            _ => None,
+        };
+        if let Some(len) = len {
+            push_token(&mut text, &mut tokens, &input[i..i + len]);
+            i += len;
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap();
+        text.push(ch);
+        i += ch.len_utf8();
+    }
+    Masked { text, tokens }
+}
+
+/// Byte length of a Rebirth `<…>` tag at `s[0] == '<'`: after an optional `/`
+/// (closing tag) or `?` (the game's `<?customFunction=0>` events) there must be
+/// an ASCII letter, then any bytes up to the first `>` **on the same line**.
+/// Prose like `<3`, `5 < 10`, or `< 5` never matches.
+fn rebirth_angle_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    debug_assert_eq!(b[0], b'<');
+    let mut k = 1;
+    if k < b.len() && (b[k] == b'/' || b[k] == b'?') {
+        k += 1;
+    }
+    if k >= b.len() || !b[k].is_ascii_alphabetic() {
+        return None;
+    }
+    while k < b.len() {
+        match b[k] {
+            b'>' => return Some(k + 1),
+            b'\n' | b'\r' => return None,
+            _ => k += 1,
+        }
+    }
+    None
+}
+
+/// Byte length of a Rebirth `[…]` sound-cue group at `s[0] == '['`: the run to
+/// the next `]`, which may span lines and carry `<…>` tags inside, but never
+/// nests another `[`. None when unterminated or empty (`[]` is prose).
+fn rebirth_bracket_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut k = 1;
+    while k < b.len() {
+        match b[k] {
+            b']' => return if k > 1 { Some(k + 1) } else { None },
+            b'[' => return None,
+            _ => k += 1,
+        }
+    }
+    None
+}
+
 /// Lucky Live's UI dictionary is JavaScript, including template values such as
 /// `Week ${week}` and `$${paid} / $${total}`. Preserve each interpolation exactly;
 /// changing it would turn a translated label into invalid JavaScript or lose live
@@ -410,7 +493,6 @@ pub fn mask_luckylive(input: &str) -> Masked {
     }
     Masked { text, tokens }
 }
-
 fn js_interpolation_len(s: &str) -> Option<usize> {
     let bytes = s.as_bytes();
     if !s.starts_with("${") {
@@ -1198,6 +1280,54 @@ mod tests {
     }
 
     #[test]
+    fn rebirth_mask_unmask_is_identity() {
+        let samples = [
+            "<shake>Wow!!</shake> <interval=0.3><bounce>Teddy Bear!!!</bounce>",
+            "<size=50>{size}Bear{/size}...!?!?</size>",
+            "<param=PlayerName>....<interval=0.5>\nYou've had quite a troubled life...",
+            "You can enter up to {0} characters.",
+            "<shake>Am I...<interval=2> dead...? <interval=1><?customFunction=0>Really...?</shake>",
+            "[Squelch- <interval=0.5>Squelch-] [Slop-]",
+            "[Pound-! Pound-!\nPound-! Pound-!]",
+            "Do you want to\ntake a picture with Teddy Bear?",
+            "No markup here at all.",
+            "",
+        ];
+        for s in samples {
+            let m = mask_rebirth(s);
+            let back = restore(&m.text, &m.tokens).expect("restore ok");
+            assert_eq!(back, s, "round-trip failed for {s:?}");
+        }
+    }
+
+    #[test]
+    fn rebirth_masks_tag_shapes_but_not_prose() {
+        // Angle tags (incl. the `<?…>` event form) and braces all mask; the
+        // bracket group masks WHOLE, swallowing its inner `<interval>` tag.
+        let m = mask_rebirth("<wave>Yes</wave>, {0}! [Slop- <interval=0.5>Slop-]");
+        assert_eq!(
+            m.tokens,
+            vec!["<wave>", "</wave>", "{0}", "[Slop- <interval=0.5>Slop-]"]
+        );
+        // Prose-shaped `<…>` stays visible and translatable.
+        assert!(mask_rebirth("I <3 it, 5 < 10").is_plain());
+        // An unterminated `[` must not eat the rest of the line: it stays
+        // literal prose while the following tag still masks.
+        let open = mask_rebirth("[Squelch- without a close <interval=1> stays");
+        assert!(open.text.contains("[Squelch- without a close"), "left as prose");
+        assert_eq!(open.tokens, vec!["<interval=1>"]);
+    }
+
+    #[test]
+    fn rebirth_codes_match_rejects_translated_markup() {
+        let src = "<shake>Wow!!</shake> up to {0} characters.";
+        let good = "<shake>ว้าว!!</shake> สูงสุด {0} ตัวอักษร";
+        let bad = "ว้าว!! สูงสุด ตัวอักษร";
+        assert!(codes_match("rebirth", src, good));
+        assert!(!codes_match("rebirth", src, bad), "dropped codes");
+    }
+
+    #[test]
     fn forger_mask_unmask_is_identity() {
         let samples = [
             "<font face='DINPro_Bold'>I wish I could retire.</font>",
@@ -1339,6 +1469,33 @@ mod tests {
         assert_eq!(strip_thai_particles("Hello there"), "Hello there");
         // A line that is *only* a particle is left alone rather than emptied.
         assert_eq!(strip_thai_particles("ครับ"), "ครับ");
+    }
+
+    /// The เจ้า/เขา guard: "God" and "him/they" end in a listed particle's
+    /// spelling (จ้า / ขา). Measured on a real project, 25 lines shipped with
+    /// the syllable cut (`God → พระเ`) before this guard existed.
+    #[test]
+    fn strip_thai_particles_keeps_jao_after_e_and_khao_after_e() {
+        // พระเจ้า (God) — at end of line, before a symbol, and after other words.
+        assert_eq!(strip_thai_particles("พระเจ้า"), "พระเจ้า");
+        assert_eq!(strip_thai_particles("โอ้พระเจ้า♥"), "โอ้พระเจ้า♥");
+        assert_eq!(strip_thai_particles("ขอบคุณพระเจ้า"), "ขอบคุณพระเจ้า");
+        assert_eq!(strip_thai_particles("บุตรแห่งพระเจ้า"), "บุตรแห่งพระเจ้า");
+        // The archaic pronoun เจ้า (you), standalone and possessed.
+        assert_eq!(strip_thai_particles("ถ้าไม่มีเจ้า"), "ถ้าไม่มีเจ้า");
+        assert_eq!(strip_thai_particles("จ้องอะไรของเจ้า"), "จ้องอะไรของเจ้า");
+        // เขา (him / they) — same shape via the ขา particle.
+        assert_eq!(strip_thai_particles("ถ้าไม่มีเขา"), "ถ้าไม่มีเขา");
+        assert_eq!(strip_thai_particles("ของพวกเขา"), "ของพวกเขา");
+        assert_eq!(strip_thai_particles("อีกไม่นานเธอจะได้เห็นเขา"), "อีกไม่นานเธอจะได้เห็นเขา");
+        // ข้าพเจ้า (formal I).
+        assert_eq!(strip_thai_particles("ข้าพเจ้าทำเอง"), "ข้าพเจ้าทำเอง");
+
+        // Real particles after complete words still strip.
+        assert_eq!(strip_thai_particles("ไปด้วยกันจ้า"), "ไปด้วยกัน");
+        assert_eq!(strip_thai_particles("พี่ขา"), "พี่");
+        // A real เจ้า still loses a particle that FOLLOWS it.
+        assert_eq!(strip_thai_particles("เจ้าคะ"), "เจ้า");
     }
 
     #[test]

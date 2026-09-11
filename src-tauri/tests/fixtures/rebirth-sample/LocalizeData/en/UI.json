@@ -1,0 +1,22 @@
+{
+  "UI_GameTitle": {
+    "text": "Rebirth Pub",
+    "version": "0"
+  },
+  "UI_NewGame": {
+    "text": "New Game",
+    "version": "0"
+  },
+  "UI_InputName": {
+    "text": "Please enter a name.",
+    "version": "0"
+  },
+  "UI_InputName_LengthLimit": {
+    "text": "You can enter up to {0} characters.",
+    "version": "0"
+  },
+  "UI_Morning": {
+    "text": "Morning",
+    "version": "0"
+  }
+}

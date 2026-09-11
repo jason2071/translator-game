@@ -33,6 +33,11 @@ const AC_LOCTEXT_RE = /<\s*\/?\s*[A-Za-z][A-Za-z0-9]*(?:[^<>]*=[^<>]*)?\s*\/?>|\
 // letter-after-< rule as RPGMaker, XUnity's \n / \r / \t line-break escapes, and
 // {{A}} substitution parameters. Mirrors mask_xunity.
 const XUNITY_RE = /<\/?[A-Za-z][^>\n]*>|\{\{[^{}]*\}\}|\\[nrt]/g;
+// Rebirth Pub LocalizeData JSON: Text Animator / TMPro angle tags (<shake>,
+// <interval=0.5>, <param=PlayerName>, the game's <?customFunction=0> events),
+// {0}/{size} placeholders, [Squelch-…] sound-cue bracket groups (may span lines),
+// and a literal \n escape. Mirrors mask_rebirth.
+const REBIRTH_RE = /<[/?]?[A-Za-z][^>\n]*>|\{[^{}]+\}|\[[^\]]+\]|\\[nrt]/g;
 
 function codeRe(engineId?: string | null): RegExp {
   if (engineId === "renpy") return RENPY_RE;
@@ -42,6 +47,7 @@ function codeRe(engineId?: string | null): RegExp {
   if (engineId === "forger-acod") return FORGER_RE;
   if (engineId === "ac-loctext") return AC_LOCTEXT_RE;
   if (engineId === "xunity") return XUNITY_RE;
+  if (engineId === "rebirth") return REBIRTH_RE;
   return RPGMAKER_RE;
 }
 

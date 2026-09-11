@@ -23,6 +23,7 @@ pub mod kirikiri;
 pub mod luckylive;
 pub mod mvmz;
 pub mod protect;
+pub mod rebirth;
 pub mod renpy;
 pub mod renpy_tl;
 pub mod rpa;
@@ -187,6 +188,12 @@ pub fn engines() -> Vec<Box<dyn GameEngine>> {
         // distinctive `asset/orzi/languages/` tree. It does not overlap the
         // JSON-based RPGMaker engine (which requires `data/System.json`).
         Box::new(gamecreator::GameCreatorEngine),
+        // Rebirth Pub (Unity/Mono) keeps its whole text as runtime JSON tables
+        // under `LocalizeData/<code>/`, re-read at startup. The `<Title>_Data`
+        // build folder plus the `{key: {text, version}}` schema keep it from
+        // claiming unrelated games, and it never overlaps RPGMaker (whose games
+        // have no `LocalizeData` tree).
+        Box::new(rebirth::RebirthEngine),
         // Forger `.acod` string tables (Assassin's Creed). Unique extension +
         // UTF-16LE BOM fingerprint, so it never overlaps the others; order is
         // immaterial. Kept last as the most specialized/niche target.

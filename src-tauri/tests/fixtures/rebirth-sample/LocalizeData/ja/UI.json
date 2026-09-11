@@ -1,0 +1,14 @@
+{
+  "UI_GameTitle": {
+    "text": "Rebirth Pub",
+    "version": "0"
+  },
+  "UI_NewGame": {
+    "text": "ニューゲーム",
+    "version": "0"
+  },
+  "UI_InputName": {
+    "text": "名前を入力してください。",
+    "version": "0"
+  }
+}
