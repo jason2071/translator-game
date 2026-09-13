@@ -78,198 +78,213 @@ export default function ImportView() {
   const theme = useTheme((s) => s.theme);
   const toggleTheme = useTheme((s) => s.toggle);
 
-  // Show a fixed cap of recents in a column-first 2-column grid (newest top-left).
-  // The row count is balanced (≤10 rows → ≤10 per column) so the left column fills
-  // first and the grid stays even for any count.
-  const shownRecents = recents.slice(0, 20);
-  const recentRows = Math.min(10, Math.ceil(shownRecents.length / 2));
+  const shownRecents = recents.slice(0, 8);
 
   return (
     <div className="import-view">
-      <div className="import-topbar">
-        {version && <span className="app-version">v{version}</span>}
-        <button
-          className="theme-fab iconbtn"
-          onClick={() => setShowSettings(true)}
-          title="Settings (AI providers, updates)"
-          aria-label="Open settings"
-        >
-          <Icon name="settings" />
-        </button>
-        <button
-          className="theme-fab iconbtn"
-          onClick={toggleTheme}
-          title="Toggle theme"
-          aria-label="Toggle light/dark theme"
-        >
-          <Icon name={theme === "dark" ? "sun" : "moon"} />
-        </button>
-      </div>
+      <header className="import-header">
+        <div className="import-brand">
+          <span className="import-brand-mark"><Icon name="folder" size={18} /></span>
+          <span className="import-brand-copy">
+            <strong>RPGMaker Translator</strong>
+            <small>Game localization</small>
+          </span>
+        </div>
+        <div className="import-topbar">
+          {version && <span className="app-version">v{version}</span>}
+          <button
+            className="theme-fab iconbtn"
+            onClick={() => setShowSettings(true)}
+            title="Settings (AI providers, updates)"
+            aria-label="Open settings"
+          >
+            <Icon name="settings" />
+          </button>
+          <button
+            className="theme-fab iconbtn"
+            onClick={toggleTheme}
+            title="Toggle theme"
+            aria-label="Toggle light/dark theme"
+          >
+            <Icon name={theme === "dark" ? "sun" : "moon"} />
+          </button>
+        </div>
+      </header>
 
       {showSettings && (
-        <Modal title="AI providers & settings" onClose={() => setShowSettings(false)}>
+        <Modal title="Settings" onClose={() => setShowSettings(false)}>
           <SettingsView />
         </Modal>
       )}
-      <h1>RPGMaker Translator</h1>
-      <p className="subtitle">
-        {detected
-          ? "Review the detected engine and languages, then open"
-          : "Import a game folder to begin"}
-      </p>
+      <main className={`import-content${detected ? " detect-mode" : recents.length === 0 ? " solo" : ""}`}>
+        {!detected ? (
+          <>
+            <section className="import-open-card">
+              <span className="import-open-icon"><Icon name="folder" size={24} /></span>
+              <p className="import-kicker">New project</p>
+              <h1>Translate a game</h1>
+              <p className="subtitle">Open a supported game folder to begin.</p>
+              <button className="primary" onClick={pickFolder} disabled={checking || loading}>
+                {checking ? "Checking" : "Open folder"}
+              </button>
+              {(error || storeError) && (
+                <p className="import-error-card">
+                  <Icon name="warn" size={15} className="import-error-icon" />
+                  <span>{error || storeError}</span>
+                </p>
+              )}
+            </section>
 
-      <button className="primary" onClick={pickFolder} disabled={checking || loading}>
-        {checking ? "Detecting…" : "Choose game folder…"}
-      </button>
-
-      {path && <p className="path">{path}</p>}
-      {(error || storeError) && (
-        <p className="import-error-card">
-          <Icon name="warn" size={15} className="import-error-icon" />
-          <span>{error || storeError}</span>
-        </p>
-      )}
-
-      {detected && (
-        <div className="detect-card">
-          <div className="detect-head">
-            <h2 className="detect-title">Detected game</h2>
-            <button
-              className="detect-dismiss iconbtn"
-              onClick={resetSelection}
-              disabled={loading}
-              aria-label="Cancel — choose a different folder"
-              title="Cancel"
-            >
-              <Icon name="close" size={14} />
-            </button>
-          </div>
-          <div className="detect-row">
-            <span>Engine</span>
-            <strong>{detected.engineName}</strong>
-          </div>
-          <div className="detect-row">
-            <span>Data files</span>
-            <strong>{detected.fileCount}</strong>
-          </div>
-          <div className="detect-row detect-row-block">
-            <span>Data dir</span>
-            <code>{detected.dataDir}</code>
-          </div>
-
-          {detected.warnings?.map((w, i) => (
-            <p key={i} className="detect-warning">
-              <Icon name="warn" size={15} className="detect-warning-icon" />
-              <span>{w}</span>
-            </p>
-          ))}
-
-          <div className="lang-pick">
-            <label>
-              From
-              <select
-                value={sourceLang}
-                disabled={loading}
-                onChange={(e) => setSourceLang(e.target.value)}
-              >
-                {SOURCE_LANGS.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <span className="arrow">→</span>
-            <label>
-              To
-              <select
-                value={targetLang}
-                disabled={loading}
-                onChange={(e) => setTargetLang(e.target.value)}
-              >
-                {TARGET_LANGS.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <button
-            className="primary"
-            disabled={loading}
-            onClick={() => path && openProject(path, sourceLang, targetLang)}
-          >
-            {loading ? "Extracting…" : "Open project"}
-          </button>
-        </div>
-      )}
-
-      {recents.length > 0 && !detected && (
-        <section className="recent-section">
-          <div className="recent-header">
-            <h2 className="recent-title">Recent</h2>
-            <button className="linklike" onClick={clearRecents} disabled={loading}>
-              Clear
-            </button>
-          </div>
-          <ul
-            className="recent-list"
-            style={{ gridTemplateRows: `repeat(${recentRows}, auto)` }}
-          >
-            {shownRecents.map((r) => {
-              const total = Math.max(r.stats.total, 1);
-              const done = doneCount(r.stats);
-              return (
-                <li key={r.root} className="recent-item">
-                  <button
-                    className="recent-row"
-                    disabled={loading}
-                    aria-label={`${basename(r.root)} — ${Math.round((done / total) * 100)}% translated, opened ${timeAgo(r.lastOpened)}`}
-                    onClick={() => reopenRecent(r.root)}
-                  >
-                    <Icon name="folder" size={18} className="recent-icon" />
-                    <span className="recent-name" title={r.root}>
-                      {pendingRoot === r.root ? "Opening…" : basename(r.root)}
-                    </span>
-                    <span className="recent-progress" aria-hidden="true">
-                      <span className="recent-bar">
-                        <span
-                          className="recent-bar-fill"
-                          style={{ width: `${(done / total) * 100}%` }}
-                        />
-                      </span>
-                      <span className={`recent-pct${done >= r.stats.total && r.stats.total > 0 ? " done" : ""}`}>
-                        {Math.round((done / total) * 100)}%
-                      </span>
-                    </span>
-                    <span className="recent-time">{timeAgo(r.lastOpened)}</span>
+            {recents.length > 0 && (
+              <section className="recent-section">
+                <div className="recent-header">
+                  <div>
+                    <p className="import-kicker">Workspace</p>
+                    <h2 className="recent-title">Recent projects</h2>
+                  </div>
+                  <button className="linklike" onClick={clearRecents} disabled={loading}>
+                    Clear
                   </button>
+                </div>
+                <ul className="recent-list">
+                  {shownRecents.map((r) => {
+                    const total = Math.max(r.stats.total, 1);
+                    const done = doneCount(r.stats);
+                    return (
+                      <li key={r.root} className="recent-item">
+                        <button
+                          className="recent-row"
+                          disabled={loading}
+                          aria-label={`${basename(r.root)} — ${Math.round((done / total) * 100)}% translated, opened ${timeAgo(r.lastOpened)}`}
+                          onClick={() => reopenRecent(r.root)}
+                        >
+                          <Icon name="folder" size={18} className="recent-icon" />
+                          <span className="recent-copy" title={r.root}>
+                            <span className="recent-name">
+                              {pendingRoot === r.root ? "Opening" : basename(r.root)}
+                            </span>
+                            <span className="recent-meta">
+                              {r.engineName} · {r.sourceLang} → {r.targetLang}
+                            </span>
+                          </span>
+                          <span className="recent-summary">
+                            <span className={`recent-pct${done >= r.stats.total && r.stats.total > 0 ? " done" : ""}`}>
+                              {Math.round((done / total) * 100)}%
+                            </span>
+                            <span className="recent-time">{timeAgo(r.lastOpened)}</span>
+                          </span>
+                        </button>
 
-                  <button
-                    className="recent-remove iconbtn"
+                        <button
+                          className="recent-remove iconbtn"
+                          disabled={loading}
+                          aria-label={`Remove ${basename(r.root)} from recent projects`}
+                          onClick={() => removeRecent(r.root)}
+                        >
+                          <Icon name="close" size={14} />
+                        </button>
+
+                        {failedRoot === r.root && (
+                          <p className="recent-error">
+                            Couldn't open — the folder may have moved or been deleted.{" "}
+                            <button className="linklike" onClick={() => removeRecent(r.root)}>
+                              Remove
+                            </button>
+                          </p>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
+          </>
+        ) : (
+          <section className="import-detect-flow">
+            <div className="import-detect-intro">
+              <p className="import-kicker">Project setup</p>
+              <h1>Check project</h1>
+              <p className="subtitle">Review the engine and languages before opening.</p>
+            </div>
+            {(error || storeError) && (
+              <p className="import-error-card">
+                <Icon name="warn" size={15} className="import-error-icon" />
+                <span>{error || storeError}</span>
+              </p>
+            )}
+            <div className="detect-card">
+              <div className="detect-head">
+                <h2 className="detect-title">{path ? basename(path) : "Game"}</h2>
+                <button
+                  className="detect-dismiss iconbtn"
+                  onClick={resetSelection}
+                  disabled={loading}
+                  aria-label="Cancel — choose a different folder"
+                  title="Cancel"
+                >
+                  <Icon name="close" size={14} />
+                </button>
+              </div>
+              <div className="detect-row detect-engine">
+                <span>Engine</span>
+                <strong>{detected.engineName}</strong>
+              </div>
+
+              {detected.warnings?.map((w, i) => (
+                <p key={i} className="detect-warning">
+                  <Icon name="warn" size={15} className="detect-warning-icon" />
+                  <span>{w}</span>
+                </p>
+              ))}
+
+              <div className="lang-pick">
+                <label>
+                  From
+                  <select
+                    value={sourceLang}
                     disabled={loading}
-                    aria-label={`Remove ${basename(r.root)} from recent projects`}
-                    onClick={() => removeRecent(r.root)}
+                    onChange={(e) => setSourceLang(e.target.value)}
                   >
-                    <Icon name="close" size={14} />
-                  </button>
+                    {SOURCE_LANGS.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                </label>
+                <span className="arrow">→</span>
+                <label>
+                  To
+                  <select
+                    value={targetLang}
+                    disabled={loading}
+                    onChange={(e) => setTargetLang(e.target.value)}
+                  >
+                    {TARGET_LANGS.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                </label>
+              </div>
 
-                  {failedRoot === r.root && (
-                    <p className="recent-error">
-                      Couldn't open — the folder may have moved or been deleted.{" "}
-                      <button className="linklike" onClick={() => removeRecent(r.root)}>
-                        Remove
-                      </button>
-                    </p>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      )}
+              <details className="detect-details">
+                <summary>Details</summary>
+                <div className="detect-row">
+                  <span>Files</span>
+                  <strong>{detected.fileCount}</strong>
+                </div>
+                <div className="detect-row detect-row-block">
+                  <span>Data</span>
+                  <code>{detected.dataDir}</code>
+                </div>
+                {path && <p className="path">{path}</p>}
+              </details>
+
+              <button
+                className="primary"
+                disabled={loading}
+                onClick={() => path && openProject(path, sourceLang, targetLang)}
+              >
+                {loading ? "Opening" : "Open"}
+              </button>
+            </div>
+          </section>
+        )}
+      </main>
     </div>
   );
 }

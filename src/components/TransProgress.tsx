@@ -10,7 +10,7 @@ export default function TransProgress({ kind }: { kind: RunKind }) {
   if (st.phase === "queued") {
     return (
       <div className="tb-progress">
-        <span className="tb-count queued">{label}: queued…</span>
+        <span className="tb-count queued">{label}: queued</span>
       </div>
     );
   }
@@ -23,7 +23,7 @@ export default function TransProgress({ kind }: { kind: RunKind }) {
         <div className="bar-fill" style={{ width: `${pct}%` }} />
       </div>
       <span className="tb-count">
-        {label}: {p ? `${p.done}/${p.total}` : "…"}
+        {label}: {p ? `${p.done}/${p.total}` : "waiting"}
         {p && p.failed > 0 ? ` · ${p.failed} failed` : ""}
       </span>
     </div>

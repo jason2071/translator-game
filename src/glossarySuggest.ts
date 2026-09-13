@@ -107,15 +107,15 @@ export const useGlossarySuggest = create<SuggestState>((set, get) => {
     },
 
     suggestAi: async (cfg) => {
-      set({ loading: true, msg: null, suggestStage: "Scanning game…" });
+      set({ loading: true, msg: null, suggestStage: "Scanning game" });
       // Follow the backend's phase events so the button shows real progress (the
       // whole-game scan, then the AI wait) instead of a silent spinner.
       const unlisten = await api.onGlossarySuggest((s) => {
         set({
           suggestStage:
             s.stage === "asking"
-              ? `Asking AI · ${s.count} term${s.count === 1 ? "" : "s"}…`
-              : "Scanning game…",
+              ? `Asking AI · ${s.count} term${s.count === 1 ? "" : "s"}`
+              : "Scanning game",
         });
       });
       try {

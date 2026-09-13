@@ -48,8 +48,9 @@ export function UpdateBanner() {
       </span>
       {err && <span className="error">{err}</span>}
       <button className="primary" onClick={install} disabled={busy}>
-        {busy ? "Installing…" : "Install & restart"}
+        Install
       </button>
+      {busy && <span className="hint">Installing</span>}
       <button
         className="iconbtn"
         onClick={() => setDismissed(true)}

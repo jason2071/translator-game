@@ -1,12 +1,14 @@
-import { useState, useEffect, type CSSProperties } from "react";
+import { useState, useEffect } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { api, type ExportResult, type Status } from "../ipc";
+import { api, type Status } from "../ipc";
 import { useStore } from "../store";
 import { useTheme } from "../theme";
 import { statusColor } from "../status";
+import { useTranslation } from "../translation";
 import { Icon } from "./Icon";
+import type { AppNotice } from "../notice";
 
 type Panel = "none" | "glossary" | "lint" | "settings";
 
@@ -14,10 +16,12 @@ export function Sidebar({
   openPanel,
   collapsed,
   onToggleCollapse,
+  onNotice,
 }: {
   openPanel: (p: Panel) => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  onNotice: (notice: AppNotice) => void;
 }) {
   const project = useStore((s) => s.project)!;
   const stats = useStore((s) => s.stats);
@@ -30,13 +34,12 @@ export function Sidebar({
   const reloadUnits = useStore((s) => s.reloadUnits);
   const theme = useTheme((s) => s.theme);
   const toggleTheme = useTheme((s) => s.toggle);
+  const unitsBusy = useTranslation((s) => s.units.phase !== "idle");
 
   const [exporting, setExporting] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [rescanning, setRescanning] = useState(false);
   const [applyingTm, setApplyingTm] = useState(false);
-  const [result, setResult] = useState<ExportResult | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [version, setVersion] = useState("");
 
   // Stock game fonts often have no Thai glyphs, so offer to embed a Thai-capable font
@@ -56,16 +59,15 @@ export function Sidebar({
   }, []);
 
   async function doApplyTm() {
-    setMsg(null);
-    setErr(null);
     setApplyingTm(true);
+    onNotice({ tone: "neutral", text: "Applying translation memory" });
     try {
       const n = await api.applyTm();
-      setMsg(`Filled ${n} from memory`);
+      onNotice({ tone: "success", text: `Filled ${n} from memory` });
       await refreshMeta();
       await reloadUnits();
     } catch (e) {
-      setErr(String(e));
+      onNotice({ tone: "error", text: String(e) });
     } finally {
       setApplyingTm(false);
     }
@@ -73,19 +75,20 @@ export function Sidebar({
 
   async function doExport() {
     setExporting(true);
-    setErr(null);
-    setResult(null);
+    onNotice({ tone: "neutral", text: "Exporting" });
     try {
       const r = await api.exportProject(true, fontCapable && embedFont, renpyThai ? thaiFontScale : undefined);
-      setResult(r);
-      setMsg(r.note ?? `Exported ${r.unitsApplied} units → ${r.filesWritten} files`);
+      const text = (r.note ?? `Exported ${r.unitsApplied} units → ${r.filesWritten} files`) +
+        (r.backupDir ? " (backup saved)" : "");
       // The text landed, but something the export promised didn't (a failed font
       // embed → the game renders boxes). Show it where failures go, not as part of
       // the success line.
-      if (r.warning) setErr(r.warning);
+      onNotice(r.warning
+        ? { tone: "error", text: r.warning }
+        : { tone: "success", text });
       await refreshMeta();
     } catch (e) {
-      setErr(String(e));
+      onNotice({ tone: "error", text: String(e) });
     } finally {
       setExporting(false);
     }
@@ -100,26 +103,56 @@ export function Sidebar({
     );
     if (!ok) return;
     setRestoring(true);
-    setErr(null);
-    setResult(null);
+    onNotice({ tone: "neutral", text: "Restoring" });
     try {
       const r = await api.restoreProject();
-      setMsg(r.note);
+      onNotice({ tone: "success", text: r.note });
       await refreshMeta();
     } catch (e) {
-      setErr(String(e));
+      onNotice({ tone: "error", text: String(e) });
     } finally {
       setRestoring(false);
     }
   }
 
-  const pct =
-    stats && stats.total > 0
-      ? Math.round(((stats.total - stats.untranslated) / stats.total) * 100)
-      : 0;
-  const done = stats ? stats.translated + stats.reviewed : 0;
-  const todo = stats?.untranslated ?? 0;
-  const failed = stats?.failed ?? 0;
+  async function doRescan() {
+    setRescanning(true);
+    onNotice({ tone: "neutral", text: "Rescanning" });
+    try {
+      const r = await api.rescanProject();
+      await refreshMeta();
+      await reloadUnits();
+      const text = r.added > 0 || r.contextFilled > 0 || r.removed > 0
+        ? `Rescanned: +${r.added} lines, ${r.contextFilled} speakers` +
+          (r.removed > 0 ? `, ${r.removed} removed` : "")
+        : "Rescanned: no changes";
+      onNotice({ tone: "success", text });
+    } catch (e) {
+      onNotice({ tone: "error", text: String(e) });
+    } finally {
+      setRescanning(false);
+    }
+  }
+
+  async function doCopySource() {
+    const file = filter.file;
+    if (!file) return;
+    const name = file.split(/[\\/]/).pop() ?? file;
+    const ok = await ask(
+      `Copy source text into empty or failed translations in ${name}? Existing translations stay unchanged.`,
+      { title: "Copy source?", kind: "info" }
+    );
+    if (!ok) return;
+    onNotice({ tone: "neutral", text: `Copying source in ${name}` });
+    try {
+      const count = await api.copySourceToTranslation({ file });
+      await refreshMeta();
+      await reloadUnits();
+      onNotice({ tone: "success", text: `Copied ${count} lines in ${name}` });
+    } catch (e) {
+      onNotice({ tone: "error", text: String(e) });
+    }
+  }
 
   const statusRows: { status?: Status; label: string; count: number; color: string }[] = stats
     ? [
@@ -132,15 +165,16 @@ export function Sidebar({
         { status: "Locked", label: "Locked", count: stats.locked, color: statusColor("Locked") },
       ]
     : [];
+  const visibleStatusRows = statusRows.filter(
+    (row) => row.status === undefined || row.count > 0 || filter.status === row.status
+  );
+  const toolsBusy = exporting || restoring || rescanning || applyingTm || unitsBusy;
 
   const allCount = files.reduce((a, f) => a + f.count, 0);
 
-  // Show the game folder name in full, with a leading … standing in for the (long,
-  // less useful) parent path — so the name is never clipped at its end.
-  const pathSegs = project.root.split(/[\\/]/).filter(Boolean);
-  const gameName = pathSegs[pathSegs.length - 1] ?? project.root;
+  // The overview owns the project identity; this compact label keeps the filter
+  // rail focused on the game name rather than its long parent path.
   const sep = project.root.includes("\\") ? "\\" : "/";
-  const shownPath = pathSegs.length > 1 ? `…${sep}${gameName}` : project.root;
 
   // Open the game folder in the OS file manager, showing its contents. openPath
   // opens the folder itself; if that command isn't available (an older build's
@@ -159,24 +193,12 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="sb-top">
-        <div className="sb-title">
-          <span className="sb-name">{project.engineName}</span>
-          <span className="sb-path" title={project.root}>
-            {shownPath}
-          </span>
-        </div>
-        {!collapsed && (
-          <button
-            className="iconbtn"
-            onClick={openFolder}
-            aria-label="Open game folder in Explorer"
-            title="Open game folder in Explorer"
-          >
-            <Icon name="folder" />
-          </button>
-        )}
+        <button className="iconbtn sb-folder" onClick={openFolder} aria-label="Open game folder" title="Open folder">
+          <Icon name="folder" />
+        </button>
+        <span className="sb-top-label">Project</span>
         <button
-          className="iconbtn"
+          className="iconbtn sb-collapse"
           onClick={onToggleCollapse}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           title={collapsed ? "Expand" : "Collapse"}
@@ -185,36 +207,10 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="sb-progress">
-        <div className="ring" style={{ "--pct": pct } as CSSProperties}>
-          <span className="ring-pct">{pct}%</span>
-        </div>
-        <div className="sb-sub">
-          <span className="sb-stat done">
-            <i className="dot" />
-            <b>{done.toLocaleString()}</b> done
-          </span>
-          <span className="sb-stat todo">
-            <i className="dot" />
-            <b>{todo.toLocaleString()}</b> todo
-          </span>
-          {failed > 0 && (
-            <button
-              className="sb-stat failed"
-              onClick={() => setFilter({ status: "Failed", untranslatedOnly: false })}
-              title="Show the failed units"
-            >
-              <i className="dot" />
-              <b>{failed.toLocaleString()}</b> failed
-            </button>
-          )}
-        </div>
-      </div>
-
       <div className="sb-scroll">
         <div className="sb-section-title">Status</div>
         <div className="sb-list">
-          {statusRows.map((r) => (
+          {visibleStatusRows.map((r) => (
             <button
               key={r.label}
               className={`sb-item${(filter.status ?? undefined) === r.status ? " active" : ""}`}
@@ -262,92 +258,62 @@ export function Sidebar({
               onClick={() => setFilter({ file: f.file })}
               title={f.file}
             >
-              <span className="lbl">{f.file}</span>
+              <span className="lbl">{f.file.split(/[\\/]/).pop() ?? f.file}</span>
               <span className="count">{f.count}</span>
             </button>
           ))}
         </div>
       </div>
 
-      {(msg || err) && (
-        <div className={`sb-msg ${err ? "error" : "ok-msg"}`} title={err ?? msg ?? ""}>
-          {err ?? msg}
-          {result?.backupDir ? " (backup saved)" : ""}
-        </div>
-      )}
-
       <div className="sb-actions">
-        <button className="ghost" onClick={doApplyTm} disabled={applyingTm} title="Fill from translation memory + duplicates">
-          <Icon name="memory" />
-          <span className="lbl">{applyingTm ? "Applying…" : "Apply TM"}</span>
-        </button>
-        <button className="ghost" onClick={() => openPanel("glossary")}>
-          <Icon name="glossary" />
-          <span className="lbl">Glossary</span>
-        </button>
-        <button className="ghost" onClick={() => openPanel("lint")}>
-          <Icon name="lint" />
-          <span className="lbl">Lint</span>
-        </button>
-        <button className="ghost" onClick={() => openPanel("settings")}>
-          <Icon name="settings" />
-          <span className="lbl">Settings</span>
-        </button>
         <button className="primary full" onClick={doExport} disabled={exporting || restoring}>
           <Icon name="export" />
-          <span className="lbl">{exporting ? "Exporting…" : "Export → game"}</span>
+          <span className="lbl">{exporting ? "Exporting" : "Export"}</span>
         </button>
-        <button
-          className="ghost full"
-          onClick={doRestore}
-          disabled={exporting || restoring}
-          title="Put the game back to its original files (undo the last export). Your translations are kept."
-        >
-          <Icon name="restore" />
-          <span className="lbl">{restoring ? "Restoring…" : "Restore original"}</span>
-        </button>
-        <div className="row">
-          {renpyThai && !collapsed && (
-            <label
-              className="renpy-font-scale"
-              title="Scale the bundled Thai font for this Ren’Py export. 90% is the safe default; the exporter only accepts 70–120%."
+        <details className="sb-tools">
+          <summary><Icon name="more" size={16} /><span className="lbl">Tools</span></summary>
+          <div className="sb-tools-list">
+            <button className="ghost" onClick={() => void doRescan()} disabled={toolsBusy}>
+              <Icon name="retry" /> Rescan
+            </button>
+            <button className="ghost" onClick={doApplyTm} disabled={toolsBusy}>
+              <Icon name="memory" /> Apply TM
+            </button>
+            <button
+              className="ghost"
+              onClick={() => void doCopySource()}
+              disabled={!filter.file || toolsBusy}
+              title={filter.file ? "Copy source into empty translations in this file" : "Select a file first"}
             >
-              Thai font
-              <input
-                type="number"
-                min="70"
-                max="120"
-                step="1"
-                value={thaiFontScale}
-                onChange={(e) => {
-                  const value = Number(e.target.value);
-                  if (Number.isInteger(value)) setThaiFontScale(Math.min(120, Math.max(70, value)));
-                }}
-                disabled={exporting}
-                aria-label="Thai font size percentage"
-              />
-              %
-            </label>
-          )}
-          {fontCapable && !collapsed && (
-            <label className="chk embed-font-chk" title="Drop a Thai-capable font into the game and repoint its fonts at it, so translated Thai renders instead of missing-glyph boxes">
-              <input
-                type="checkbox"
-                checked={embedFont}
-                onChange={(e) => setEmbedFont(e.target.checked)}
-                disabled={exporting}
-              />
-              Embed Thai font
-            </label>
-          )}
-          <button className="iconbtn" onClick={toggleTheme} aria-label="Toggle light/dark theme" title="Toggle theme">
-            <Icon name={theme === "dark" ? "sun" : "moon"} />
-          </button>
-          <button className="iconbtn" onClick={closeProject} aria-label="Close project" title="Close project">
-            <Icon name="close" />
-          </button>
+              <Icon name="copy" /> Copy source
+            </button>
+            <button className="ghost" onClick={() => openPanel("lint")} disabled={toolsBusy}>
+              <Icon name="lint" /> Lint
+            </button>
+            <button className="ghost" onClick={doRestore} disabled={toolsBusy}>
+              <Icon name="restore" /> {restoring ? "Restoring" : "Restore"}
+            </button>
+            {renpyThai && !collapsed && (
+              <label className="renpy-font-scale">
+                Thai font
+                <input type="number" min="70" max="120" step="1" value={thaiFontScale}
+                  onChange={(e) => { const value = Number(e.target.value); if (Number.isInteger(value)) setThaiFontScale(Math.min(120, Math.max(70, value))); }}
+                  disabled={exporting} aria-label="Thai font size percentage" /> %
+              </label>
+            )}
+            {fontCapable && !collapsed && (
+              <label className="chk embed-font-chk">
+                <input type="checkbox" checked={embedFont} onChange={(e) => setEmbedFont(e.target.checked)} disabled={exporting} />
+                Embed Thai font
+              </label>
+            )}
+          </div>
+        </details>
+        <div className="sb-tools-bottom">
+          <button className="iconbtn" onClick={toggleTheme} aria-label="Toggle light/dark theme" title="Toggle theme"><Icon name={theme === "dark" ? "sun" : "moon"} /></button>
+          <button className="iconbtn" onClick={closeProject} aria-label="Close project" title="Close project"><Icon name="close" /></button>
+          {version && <span className="sidebar-version">v{version}</span>}
         </div>
-        {!collapsed && version && <p className="sidebar-version">v{version}</p>}
       </div>
     </aside>
   );

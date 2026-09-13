@@ -7,8 +7,17 @@ import { SOURCE_LANGS, TARGET_LANGS } from "../langs";
 import { useTranslation } from "../translation";
 import TransProgress from "../components/TransProgress";
 import { Icon } from "../components/Icon";
+import type { AppNotice } from "../notice";
 
-export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => void }) {
+export default function TranslateBar({
+  onOpenErrors,
+  notice,
+  clearNotice,
+}: {
+  onOpenErrors: () => void;
+  notice: AppNotice | null;
+  clearNotice: () => void;
+}) {
   const filter = useStore((s) => s.filter);
   const setFilter = useStore((s) => s.setFilter);
   const stats = useStore((s) => s.stats);
@@ -16,7 +25,6 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
   const total = useStore((s) => s.total);
   const refreshTotal = useStore((s) => s.refreshTotal);
   const refreshMeta = useStore((s) => s.refreshMeta);
-  const fillSourceForFilter = useStore((s) => s.fillSourceForFilter);
   const project = useStore((s) => s.project);
   const setLanguages = useStore((s) => s.setLanguages);
   const active = useSettings((s) => s.active);
@@ -36,10 +44,9 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
   // Only command-level failures (no API key / no project) surface here; per-unit
   // AI failures live in the Errors modal, so a Run no longer paints a red banner.
   const [err, setErr] = useState<string | null>(null);
-  const [rescanning, setRescanning] = useState(false);
-  const [rescanMsg, setRescanMsg] = useState<string | null>(null);
 
   async function translate(scope: TranslateScope) {
+    clearNotice();
     setErr(null);
     setSummary(null);
     try {
@@ -88,200 +95,73 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
     translate({ filter, overwrite: true });
   }
 
-  // Copy the source text into the translation for the current view's still-empty
-  // (Untranslated/Failed) lines — a manual fallback when heavy inline markup makes
-  // an AI pass unreliable (keep the codes, edit only the words). Existing
-  // translations are never overwritten.
-  async function fillSource() {
-    const ok = await ask(
-      `Fill the untranslated/failed line(s) in this view with their source text? ` +
-        `You can then hand-edit them; existing translations are left untouched.`,
-      { title: "Copy source → translation?", kind: "info" }
-    );
-    if (!ok) return;
-    setErr(null);
-    setSummary(null);
-    try {
-      await fillSourceForFilter();
-      await refreshMeta();
-      await refreshTotal();
-    } catch (e) {
-      setErr(String(e));
-    }
-  }
-
-  // Re-scan the game into this project: pick up text the engine gained support
-  // for since import (new tiers, new harvests) + backfill speaker context —
-  // keeping every translation. Same op as the Glossary panel's "Rescan game".
-  async function rescan() {
-    setRescanning(true);
-    setErr(null);
-    setSummary(null);
-    setRescanMsg(null);
-    try {
-      const r = await api.rescanProject();
-      await refreshMeta();
-      await refreshTotal();
-      await useStore.getState().reloadUnits();
-      setRescanMsg(
-        r.added > 0 || r.contextFilled > 0 || r.removed > 0
-          ? `Rescanned: +${r.added} new line(s), filled ${r.contextFilled} speaker(s)` +
-            (r.removed > 0 ? `, dropped ${r.removed} stale line(s).` : ".")
-          : "Rescanned — nothing new in the game.",
-      );
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setRescanning(false);
-    }
-  }
-
   const failed = stats?.failed ?? 0;
+  const scopeLabel = filter.file?.split(/[\\/]/).pop() ?? "All files";
 
   // Secondary/contextual actions, shown as visible buttons next to Run (no
   // overflow menu — everything findable at a glance). Contextual ones still only
   // appear when they apply.
   const showRetranslate = (filter.search || filter.context) && total > 0 && !running;
-  const showCopySource = (filter.search || filter.context || filter.file) && total > 0 && !running;
-  // Long character names would blow the button row up — the full name stays in
-  // the tooltip.
-  const ctx = filter.context;
-  const ctxShort = ctx && ctx.length > 14 ? `${ctx.slice(0, 13)}…` : ctx;
-
   return (
     <>
       <div className="toolbar">
-        {/* Left: Run configuration — language pair, AI provider, target scope,
-            and the overwrite option (everything that shapes what Run does). */}
-        <div className="tb-config">
-          <div className="lang-switch">
-            <select
-              value={project?.sourceLang ?? "Auto"}
-              onChange={(e) => setLanguages(e.target.value, project?.targetLang ?? "Thai")}
-              disabled={running}
-              title="Source language"
-            >
-              {SOURCE_LANGS.map((l) => (
-                <option key={l} value={l}>
-                  {l}
-                </option>
-              ))}
-            </select>
-            <span className="arrow">→</span>
-            <select
-              value={project?.targetLang ?? "Thai"}
-              onChange={(e) => setLanguages(project?.sourceLang ?? "Auto", e.target.value)}
-              disabled={running}
-              title="Target language"
-            >
-              {TARGET_LANGS.map((l) => (
-                <option key={l} value={l}>
-                  {l}
-                </option>
-              ))}
-            </select>
+        <span
+          className="tb-scope"
+          title={filter.file ?? "All files"}
+        >
+          <b>{scopeLabel}</b>
+        </span>
+        <details className="tb-options">
+          <summary>Options</summary>
+          <div className="tb-options-menu">
+            <div className="tb-options-row">
+              <span>Language</span>
+              <div className="lang-switch">
+                <select
+                  value={project?.sourceLang ?? "Auto"}
+                  onChange={(e) => setLanguages(e.target.value, project?.targetLang ?? "Thai")}
+                  disabled={running}
+                  aria-label="Source language"
+                >
+                  {SOURCE_LANGS.map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+                <span className="arrow">→</span>
+                <select
+                  value={project?.targetLang ?? "Thai"}
+                  onChange={(e) => setLanguages(project?.sourceLang ?? "Auto", e.target.value)}
+                  disabled={running}
+                  aria-label="Target language"
+                >
+                  {TARGET_LANGS.map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+            </div>
+            <label className="tb-options-row">
+              <span>Provider</span>
+              <select
+                className="tb-provider"
+                value={active}
+                onChange={(e) => setActive(e.target.value as typeof active)}
+                disabled={running}
+              >
+                {PROVIDER_KINDS.map((k) => <option key={k} value={k}>{PROVIDER_LABELS_SHORT[k]}</option>)}
+              </select>
+            </label>
+            <label className="chk" title="Re-translate lines that already have a translation">
+              <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} disabled={running} />
+              Overwrite
+            </label>
+            <div className="tb-options-actions">
+              {showRetranslate && <button className="ghost tb-act" onClick={retranslateMatches}><Icon name="retry" size={14} />Retry</button>}
+              {failed > 0 && !running && <button className="ghost tb-act" onClick={retryFailed}><Icon name="retry" size={14} />Retry</button>}
+              {failed > 0 && <button className="ghost tb-act tb-act-warn" onClick={onOpenErrors}><Icon name="warn" size={14} />Errors</button>}
+            </div>
           </div>
-
-          <select
-            className="tb-provider"
-            value={active}
-            onChange={(e) => setActive(e.target.value as typeof active)}
-            disabled={running}
-            title="AI provider used for Run (configure providers in Settings)"
-          >
-            {PROVIDER_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {PROVIDER_LABELS_SHORT[k]}
-              </option>
-            ))}
-          </select>
-
-          <span
-            className="tb-scope"
-            title="Run translates this — click a file (or 'All files') in the sidebar to change it"
-          >
-            <b>{filter.file ?? "All files"}</b>
-          </span>
-
-          <label className="chk" title="Re-translate units that already have a translation">
-            <input
-              type="checkbox"
-              checked={overwrite}
-              onChange={(e) => setOverwrite(e.target.checked)}
-              disabled={running}
-            />
-            Overwrite
-          </label>
-        </div>
-
-        {/* Right: the secondary actions as plain visible buttons (contextual
-            ones appear only when relevant), then the primary Run/Cancel at the
-            far right edge. */}
+        </details>
         <div className="tb-actions">
-          {showRetranslate && (
-            <button
-              className="ghost tb-act"
-              onClick={retranslateMatches}
-              title={
-                ctx
-                  ? `Re-translate every line of "${ctx}" (overwrites their translations)`
-                  : "Re-translate every unit matching the current search (overwrites their translations)"
-              }
-            >
-              <Icon name="retry" size={14} />
-              {ctx ? `Re-translate ${ctxShort} (${total})` : `Re-translate (${total})`}
-            </button>
-          )}
-          {showCopySource && (
-            <button
-              className="ghost tb-act"
-              onClick={fillSource}
-              title="Fill the untranslated/failed lines in this view with their source text, to hand-edit (keeps existing translations)"
-            >
-              <Icon name="copy" size={14} />
-              Copy source
-            </button>
-          )}
-          {failed > 0 && !running && (
-            <button
-              className="ghost tb-act"
-              onClick={retryFailed}
-              title="Re-translate every unit that failed a previous run"
-            >
-              <Icon name="retry" size={14} />
-              Retry failed ({failed})
-            </button>
-          )}
-          {failed > 0 && (
-            <button
-              className="ghost tb-act tb-act-warn"
-              onClick={onOpenErrors}
-              title="See which units failed and why"
-            >
-              <Icon name="warn" size={14} />
-              Errors ({failed})
-            </button>
-          )}
-          {!running && (
-            <button
-              className="ghost tb-act"
-              onClick={() => {
-                if (!rescanning) rescan();
-              }}
-              disabled={rescanning}
-              title="Re-scan the game: pull in new text the engine now supports + fill in speakers on existing lines (keeps translations)"
-            >
-              <Icon name="retry" size={14} />
-              {rescanning ? "Rescanning…" : "Rescan game"}
-            </button>
-          )}
-
-          {(showRetranslate || showCopySource || failed > 0 || !running) && (
-            <span className="tb-sep" />
-          )}
           {!running ? (
             <button className="primary tb-run" onClick={run}>
-              Run
+              Translate
             </button>
           ) : (
             <button className="ghost tb-run" onClick={() => cancel("units")}>
@@ -291,13 +171,17 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
         </div>
       </div>
 
-      {(running || glossaryBusy || summary || err || rescanning || rescanMsg) && (
-        <div className="tb-status">
+      <div className="tb-status" role="status" aria-live="polite">
+        {running || glossaryBusy ? (
+          <>
           <TransProgress kind="units" />
           <TransProgress kind="glossary" />
-          {rescanning && <span>Rescanning the game…</span>}
-          {rescanMsg && !rescanning && <span className="export-ok">{rescanMsg}</span>}
-          {summary && (
+          </>
+        ) : notice ? (
+          <span className={`footer-notice ${notice.tone}`} title={notice.text}>{notice.text}</span>
+        ) : err ? (
+          <span className="error" title={err}>{err}</span>
+        ) : summary ? (
             <span className="export-ok">
               {summary.cancelled ? "Cancelled — " : "Done — "}
               {summary.translated} translated
@@ -315,10 +199,10 @@ export default function TranslateBar({ onOpenErrors }: { onOpenErrors: () => voi
                 </>
               )}
             </span>
-          )}
-          {err && <span className="error">{err}</span>}
-        </div>
-      )}
+        ) : (
+          <span className="footer-default">Changes are saved automatically.</span>
+        )}
+      </div>
     </>
   );
 }

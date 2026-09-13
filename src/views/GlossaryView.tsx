@@ -45,7 +45,6 @@ export default function GlossaryView() {
 
   return (
     <div className="glossary">
-      <GlossaryAiBar />
       <GlossaryTabs entries={entries} onAdded={reload}>
         <div className="gloss-add">
           <input placeholder="Source term" value={term} onChange={(e) => setTerm(e.target.value)} />
@@ -78,7 +77,7 @@ export default function GlossaryView() {
             type="search"
             role="searchbox"
             aria-label="Search glossary terms"
-            placeholder="Search term, translation, or note…"
+            placeholder="Search glossary"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -172,6 +171,7 @@ function GlossaryTabs({
           </button>
         ))}
       </div>
+      {tab !== "terms" && <GlossaryAiBar />}
       <div className="gloss-tab-body">
         {tab === "terms" && children}
         {tab === "context" && <GameContextPanel />}
@@ -183,9 +183,7 @@ function GlossaryTabs({
 }
 
 // The AI provider + model used by everything on this screen (game-context draft,
-// character classify, term suggestions) — independent of the Run provider. Lives
-// at the top of the modal, outside every collapsible panel, so it stays visible
-// when the panels below are collapsed.
+// character classify, term suggestions) — independent of the Run provider.
 function GlossaryAiBar() {
   const glossaryProvider = useSettings((s) => s.glossaryProvider);
   const setGlossaryProvider = useSettings((s) => s.setGlossaryProvider);
@@ -258,7 +256,7 @@ function GlossaryAiBar() {
         />
       )}
       <button className="ghost" onClick={refresh} disabled={loading}>
-        <Icon name="retry" size={14} /> {loading ? "…" : "Models"}
+        <Icon name="retry" size={14} className={loading ? "spin" : undefined} /> Models
       </button>
       {err && <span className="error">{err}</span>}
     </div>
@@ -345,14 +343,14 @@ function GameContextPanel() {
             disabled={drafting}
             title="Draft a setting/character brief from this game's own text with AI"
           >
-            <Icon name="sparkle" size={14} /> {drafting ? "Drafting…" : "AI draft"}
+            <Icon name="sparkle" size={14} /> Draft
           </button>
         </div>
       </div>
       <div className="gloss-panel-body">
         <textarea
           rows={6}
-          placeholder="Lore/setting for THIS game — era, characters, relationships, tone, world rules. Fed to the AI on every Run. e.g. Modern-day Thailand; Callum and Daisy are siblings; casual speech."
+          placeholder="Setting, characters, relationships, and tone"
           value={project.gameContext}
           onChange={(e) => setGameContext(e.target.value)}
         />
@@ -380,35 +378,11 @@ function CharactersPanel() {
   const glossaryConfig = useSettings((s) => s.glossaryConfig);
   const [chars, setChars] = useState<Character[] | null>(null);
   const [busy, setBusy] = useState(false);
-  const [rescanning, setRescanning] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   async function reload() {
     setChars(await api.charactersList());
   }
 
-  // Re-scan the game into this project: pick up tiers the engine gained since the
-  // project was created + backfill speaker context on existing lines (so the cast
-  // shows up here), keeping every translation.
-  async function rescan() {
-    setRescanning(true);
-    setMsg(null);
-    try {
-      const r = await api.rescanProject();
-      await useStore.getState().refreshMeta();
-      await useStore.getState().reloadUnits();
-      await reload();
-      setMsg(
-        r.added > 0 || r.contextFilled > 0 || r.removed > 0
-          ? `Rescanned: +${r.added} new line(s), filled ${r.contextFilled} speaker(s)` +
-            (r.removed > 0 ? `, dropped ${r.removed} stale line(s).` : ".")
-          : "Rescanned — nothing new in the game.",
-      );
-    } catch (e) {
-      setMsg(String(e));
-    } finally {
-      setRescanning(false);
-    }
-  }
   useEffect(() => {
     reload().catch(() => setChars([]));
   }, []);
@@ -463,7 +437,6 @@ function CharactersPanel() {
   const unset = (chars ?? []).filter((c) => !c.gender).length;
   const noNote = (chars ?? []).filter((c) => !c.note).length;
   const empty = chars !== null && chars.length === 0;
-  const locked = busy || rescanning;
 
   return (
     <div className="gloss-panel">
@@ -475,8 +448,6 @@ function CharactersPanel() {
         </label>
       </div>
       <div className="gloss-panel-body">
-          {/* Every action as a visible button on its own tidy row — nothing
-              tucked behind a ⋯ menu (and no crowding next to the title). */}
           <div className="gloss-context-actions">
             <button
               className="ghost"
@@ -485,42 +456,33 @@ function CharactersPanel() {
               title="Find the game's characters and label each one's gender with AI (review the result)"
             >
               <Icon name="sparkle" size={14} />{" "}
-              {busy
-                ? "Finding…"
-                : empty
-                  ? "AI find characters"
-                  : unset > 0
-                    ? `Auto-classify (${unset})`
-                    : "Re-classify"}
+              Find{unset > 0 && !empty ? ` (${unset})` : ""}
             </button>
             {!empty && (
               <button
                 className="ghost"
                 onClick={classifyNotes}
-                disabled={locked}
+                disabled={busy}
                 title="Read each character's sample lines and draft a persona/register note with AI, so pronouns and politeness fit them (doesn't change gender)"
               >
                 <Icon name="sparkle" size={14} />{" "}
-                {busy ? "Filling…" : noNote > 0 ? `AI fill notes (${noNote})` : "Redo notes"}
+                Fill{noNote > 0 ? ` (${noNote})` : ""}
               </button>
             )}
-            <button
-              className="ghost"
-              onClick={rescan}
-              disabled={locked}
-              title="Re-scan the game: pull in new text the engine now supports + fill in speakers on existing lines (keeps translations)"
-            >
-              <Icon name="retry" size={14} /> {rescanning ? "Rescanning…" : "Rescan game"}
-            </button>
             {!empty && (
-              <button
-                className="ghost"
-                onClick={clearAll}
-                disabled={locked}
-                title="Remove every character (e.g. to redo the AI find from scratch)"
-              >
-                <Icon name="trash" size={14} /> Clear all
-              </button>
+              <details className="gloss-more">
+                <summary>More</summary>
+                <div className="gloss-more-menu">
+                  <button
+                    className="ghost"
+                    onClick={clearAll}
+                    disabled={busy}
+                    title="Remove every character"
+                  >
+                    <Icon name="trash" size={14} /> Clear
+                  </button>
+                </div>
+              </details>
             )}
           </div>
           <label
@@ -547,13 +509,10 @@ function CharactersPanel() {
           </label>
           {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
           {chars === null ? (
-            <p className="hint">Loading…</p>
+            <p className="hint">Loading</p>
           ) : empty ? (
             <p className="hint">
-              No characters yet. Click <strong>AI find characters</strong> — it finds the cast
-              from the game and assigns each a gender (right Thai particle ครับ / ค่ะ) plus a short
-              persona/register note (so pronouns and politeness fit the character). Review and fix any
-              below.
+              No characters yet. Use <strong>Find</strong> to scan the cast with AI, then review the results.
             </p>
           ) : (
             <div className="char-grid">
@@ -604,7 +563,6 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
     loading,
     adding,
     msg,
-    suggestStage,
     suggest,
     suggestAi,
     translateEmpty,
@@ -643,7 +601,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
           disabled={loading}
           title="Scan the game's Name/Term fields locally to propose glossary terms — no AI, free"
         >
-          <Icon name="search" size={14} /> {loading ? "Scanning…" : "Auto-suggest from game"}
+          <Icon name="search" size={14} /> Scan
         </button>
         <button
           className="ghost"
@@ -651,9 +609,9 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
           disabled={loading}
           title="Use AI to mine proper nouns/terms from the game's dialogue (catches names the heuristic misses)"
         >
-          <Icon name="sparkle" size={14} /> {suggestStage ?? "AI suggest"}
+          <Icon name="sparkle" size={14} /> AI scan
         </button>
-        {translating && <span className="hint">Translating in background…</span>}
+        {translating && <span className="hint">Translating in background</span>}
         {msg && <span className={/fail|error|no api/i.test(msg) ? "error" : "ok-msg"}>{msg}</span>}
       </div>
     );
@@ -690,12 +648,12 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
             title="Mine more terms from the game's dialogue with AI (provider chosen at the top)"
           >
             <Icon name="sparkle" size={14} />{" "}
-            {suggestStage ?? (loading ? "AI scanning…" : "AI suggest")}
+            AI scan
           </button>
 
           {glossBusy ? (
             <button className="ghost" onClick={() => cancel("glossary")}>
-              {translating ? "Cancel translate" : "Cancel queued"}
+              Cancel
             </button>
           ) : (
             <>
@@ -706,7 +664,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
                   title="Translate every empty/failed/skipped term (queues behind a running Run)"
                 >
                   <Icon name={filled > 0 ? "retry" : "globe"} size={14} />{" "}
-                  {filled > 0 ? `Remaining (${remaining})` : `Translate empty (${remaining})`}
+                  Translate ({remaining})
                 </button>
               )}
               {filled > 0 && (
@@ -715,7 +673,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
                   onClick={() => translateEmpty(glossaryConfig(), true)}
                   title="Re-translate every term with AI, overwriting ones already filled"
                 >
-                  <Icon name="retry" size={14} /> Re-translate all ({cands.length})
+                  <Icon name="retry" size={14} /> All ({cands.length})
                 </button>
               )}
             </>
@@ -727,7 +685,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
             onClick={() => addSelected(onAdded)}
             disabled={glossBusy || adding}
           >
-            {adding ? "Adding…" : "Add selected"}
+            Add
           </button>
           <button className="ghost" onClick={clear} disabled={glossBusy}>
             Cancel
@@ -765,7 +723,7 @@ function SuggestPanel({ onAdded }: { onAdded: () => void }) {
               </span>
               <input
                 className="cand-tr"
-                placeholder="translation…"
+                placeholder="Translation"
                 value={rows[c.term]?.tr ?? ""}
                 onChange={(e) => setRow(c.term, { tr: e.target.value })}
               />

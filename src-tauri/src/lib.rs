@@ -1508,7 +1508,7 @@ async fn translate_units(
                     }
                     // The model returned text but a masked ⟦…⟧ placeholder came back
                     // altered, so we can't safely reinsert the game's codes.
-                    Err(_) => "Inline codes changed — a ⟦…⟧ placeholder was altered".to_string(),
+                    Err(_) => "Inline codes changed — a protected placeholder was altered".to_string(),
                 },
                 None => batch_error
                     .clone()

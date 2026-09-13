@@ -8,14 +8,15 @@ import { useTranslation } from "./translation";
 import ImportView from "./views/ImportView";
 import GridView from "./views/GridView";
 import GlossaryView from "./views/GlossaryView";
-import LintPanel from "./views/LintPanel";
 import SettingsView from "./views/SettingsView";
-import ErrorsPanel from "./views/ErrorsPanel";
+import QAPanel from "./views/QAPanel";
 import TranslateBar from "./views/TranslateBar";
 import { useErrors } from "./errors";
 import { Sidebar } from "./components/Sidebar";
 import { Modal } from "./components/Modal";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { ProjectOverview } from "./components/ProjectOverview";
+import type { AppNotice } from "./notice";
 
 type Panel = "none" | "glossary" | "lint" | "settings" | "errors";
 
@@ -28,6 +29,11 @@ export default function App() {
   const applyUnitUpdates = useStore((s) => s.applyUnitUpdates);
   const [panel, setPanel] = useState<Panel>("none");
   const [collapsed, setCollapsed] = useState(false);
+  const [notice, setNotice] = useState<AppNotice | null>(null);
+
+  useEffect(() => {
+    setNotice(null);
+  }, [project?.root]);
 
   // Fill grid rows live as a Run persists each batch (like the glossary panel),
   // instead of only refreshing when the whole Run finishes.
@@ -95,9 +101,18 @@ export default function App() {
         openPanel={setPanel}
         collapsed={collapsed}
         onToggleCollapse={() => setCollapsed((c) => !c)}
+        onNotice={setNotice}
       />
       <div className="main">
-        <TranslateBar onOpenErrors={() => setPanel("errors")} />
+        <ProjectOverview
+          onOpenGlossary={() => setPanel("glossary")}
+          onOpenSettings={() => setPanel("settings")}
+        />
+        <TranslateBar
+          onOpenErrors={() => setPanel("errors")}
+          notice={notice}
+          clearNotice={() => setNotice(null)}
+        />
         <GridView />
       </div>
 
@@ -106,19 +121,17 @@ export default function App() {
           <GlossaryView />
         </Modal>
       )}
-      {panel === "lint" && (
-        <Modal title="Glossary lint" onClose={() => setPanel("none")}>
-          <LintPanel onClose={() => setPanel("none")} />
+      {(panel === "lint" || panel === "errors") && (
+        <Modal title="QA" onClose={() => setPanel("none")}>
+          <QAPanel
+            initialTab={panel === "errors" ? "errors" : "lint"}
+            onClose={() => setPanel("none")}
+          />
         </Modal>
       )}
       {panel === "settings" && (
-        <Modal title="AI providers & settings" onClose={() => setPanel("none")}>
+        <Modal title="Settings" onClose={() => setPanel("none")}>
           <SettingsView />
-        </Modal>
-      )}
-      {panel === "errors" && (
-        <Modal title="Translation errors" onClose={() => setPanel("none")}>
-          <ErrorsPanel onClose={() => setPanel("none")} />
         </Modal>
       )}
     </div>

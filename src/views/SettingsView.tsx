@@ -139,6 +139,7 @@ export default function SettingsView() {
         <label>Model</label>
         <div className="model-row">
           <input
+            list={models.length > 0 ? `models-${editing}` : undefined}
             placeholder="model id"
             value={cfg.model}
             onChange={(e) => s.updateProvider(editing, { model: e.target.value })}
@@ -149,29 +150,13 @@ export default function SettingsView() {
             disabled={loadingModels}
             style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
           >
-            <Icon name="retry" size={14} /> {loadingModels ? "…" : "Refresh"}
+            <Icon name="retry" size={14} className={loadingModels ? "spin" : undefined} /> Refresh
           </button>
+          <datalist id={`models-${editing}`}>
+            {models.map((m) => <option key={m} value={m} />)}
+          </datalist>
         </div>
 
-        {models.length > 0 && (
-          <>
-            <span />
-            <select
-              className="model-select"
-              value={models.includes(cfg.model) ? cfg.model : ""}
-              onChange={(e) =>
-                e.target.value && s.updateProvider(editing, { model: e.target.value })
-              }
-            >
-              <option value="">— pick one of {models.length} available —</option>
-              {models.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </>
-        )}
         {modelsErr && (
           <>
             <span />
@@ -179,30 +164,13 @@ export default function SettingsView() {
           </>
         )}
 
-        <label>Base URL</label>
-        <input
-          placeholder="(default)"
-          value={cfg.baseUrl ?? ""}
-          onChange={(e) => s.updateProvider(editing, { baseUrl: e.target.value || undefined })}
-        />
-
-        <label>Temperature</label>
-        <input
-          type="number"
-          step="0.1"
-          min="0"
-          max="2"
-          value={cfg.temperature ?? 0.3}
-          onChange={(e) => s.updateProvider(editing, { temperature: Number(e.target.value) })}
-        />
-
         {needsKey && (
           <>
             <label>API key</label>
             <div className="key-row">
               <input
                 type="password"
-                placeholder={hasKey ? "•••••••• (stored)" : "paste key…"}
+                placeholder={hasKey ? "Stored" : "API key"}
                 value={keyInput}
                 onChange={(e) => setKeyInput(e.target.value)}
               />
@@ -217,111 +185,128 @@ export default function SettingsView() {
             </div>
           </>
         )}
-      </div>
 
-      <hr />
-      <h3>Shared</h3>
-      <div className="field-grid">
         <label>Target tone</label>
         <input value={s.tone} onChange={(e) => s.setShared({ tone: e.target.value })} />
 
-        <label>Batch size</label>
-        <input
-          type="number"
-          min="1"
-          max="200"
-          value={s.batchSize}
-          onChange={(e) => s.setShared({ batchSize: Number(e.target.value) })}
-        />
-
-        <label>Parallel requests</label>
-        <input
-          type="number"
-          min="1"
-          max="16"
-          value={s.concurrency}
-          onChange={(e) => s.setShared({ concurrency: Number(e.target.value) })}
-        />
-
-        <label>Rate limit (req/min, 0 = off)</label>
-        <input
-          type="number"
-          min="0"
-          value={s.rpm}
-          onChange={(e) => s.setShared({ rpm: Number(e.target.value) })}
-        />
-
-        <label>Message width guard (chars, 0 = off)</label>
-        <input
-          type="number"
-          min="0"
-          max="120"
-          value={s.maxLineWidth}
-          onChange={(e) => s.setShared({ maxLineWidth: Number(e.target.value) })}
-        />
-
-        <label>Thinking / reasoning</label>
+        <label>Reasoning</label>
         <label className="chk">
           <input
             type="checkbox"
             checked={s.thinking}
             onChange={(e) => s.setShared({ thinking: e.target.checked })}
           />
-          {s.thinking ? "On — slower, may improve quality" : "Off — faster, recommended for translation"}
+          Enabled
         </label>
-
-        <label className="label-top">
-          Extra prompt <span className="hint">(all projects)</span>
-        </label>
-        <div className="prompt-field">
-          <textarea
-            rows={4}
-            placeholder="Applies to every game. e.g. keep honorifics; the protagonist is a boy…"
-            value={s.systemPrompt}
-            onChange={(e) => s.setShared({ systemPrompt: e.target.value })}
-          />
-          <button
-            type="button"
-            className="btn-reset prompt-reset"
-            onClick={() => s.resetSystemPrompt()}
-            title="Refill with the bundled default translation prompt"
-          >
-            <Icon name="retry" size={13} /> Reset to default
-          </button>
-        </div>
       </div>
 
       <div className="test-row">
-        <button onClick={runTest} disabled={testing}>
-          {testing ? "Testing…" : "Test connection"}
-        </button>
+        <button onClick={runTest} disabled={testing}>Test</button>
+        {testing && <span className="hint">Testing</span>}
         {test && <span className={test.startsWith("✓") ? "ok-msg" : "error"}>{test}</span>}
       </div>
 
-      <hr />
-      <div className="update-row">
-        <button
-          className="btn-reset"
-          onClick={checkUpdate}
-          disabled={upState === "checking" || !UPDATES_ENABLED}
-          title={UPDATES_ENABLED ? "Check GitHub for a newer release" : "Updates are disabled in development"}
-        >
-          <Icon name="retry" size={13} className={upState === "checking" ? "spin" : undefined} />
-          {upState === "checking" ? "Checking…" : "Check for updates"}
-        </button>
-        {version && <span className="hint">Current: v{version}</span>}
-        {!UPDATES_ENABLED && <span className="hint">Updates are disabled in development.</span>}
-        {upMsg && (
-          <span className={upState === "error" ? "error" : upState === "avail" ? "ok-msg" : "hint"}>
-            {upMsg}
-          </span>
-        )}
-        {upState === "avail" && upAvail && (
-          <button className="primary" onClick={installUpdate} disabled={upInstalling}>
-            {upInstalling ? "Installing…" : "Install & restart"}
+      <details className="settings-section">
+        <summary>Advanced</summary>
+        <div className="field-grid settings-section-body">
+          <label>Base URL</label>
+          <input
+            placeholder="Default"
+            value={cfg.baseUrl ?? ""}
+            onChange={(e) => s.updateProvider(editing, { baseUrl: e.target.value || undefined })}
+          />
+
+          <label>Temperature</label>
+          <input
+            type="number"
+            step="0.1"
+            min="0"
+            max="2"
+            value={cfg.temperature ?? 0.3}
+            onChange={(e) => s.updateProvider(editing, { temperature: Number(e.target.value) })}
+          />
+
+          <label>Batch size</label>
+          <input
+            type="number"
+            min="1"
+            max="200"
+            value={s.batchSize}
+            onChange={(e) => s.setShared({ batchSize: Number(e.target.value) })}
+          />
+
+          <label>Parallel requests</label>
+          <input
+            type="number"
+            min="1"
+            max="16"
+            value={s.concurrency}
+            onChange={(e) => s.setShared({ concurrency: Number(e.target.value) })}
+          />
+
+          <label>Rate limit</label>
+          <input
+            type="number"
+            min="0"
+            value={s.rpm}
+            onChange={(e) => s.setShared({ rpm: Number(e.target.value) })}
+          />
+
+          <label>Width guard</label>
+          <input
+            type="number"
+            min="0"
+            max="120"
+            value={s.maxLineWidth}
+            onChange={(e) => s.setShared({ maxLineWidth: Number(e.target.value) })}
+          />
+
+          <label className="label-top">Extra prompt</label>
+          <div className="prompt-field">
+            <textarea
+              rows={4}
+              placeholder="Instructions for every game"
+              value={s.systemPrompt}
+              onChange={(e) => s.setShared({ systemPrompt: e.target.value })}
+            />
+            <button
+              type="button"
+              className="btn-reset prompt-reset"
+              onClick={() => s.resetSystemPrompt()}
+              title="Restore the bundled prompt"
+            >
+              <Icon name="retry" size={13} /> Reset
+            </button>
+          </div>
+        </div>
+      </details>
+
+      <details className="settings-section">
+        <summary>About</summary>
+        <div className="update-row settings-section-body">
+          <button
+            className="btn-reset"
+            onClick={checkUpdate}
+            disabled={upState === "checking" || !UPDATES_ENABLED}
+            title={UPDATES_ENABLED ? "Check GitHub for a newer release" : "Updates are disabled in development"}
+          >
+            <Icon name="retry" size={13} className={upState === "checking" ? "spin" : undefined} /> Check
           </button>
-        )}
-      </div>
+          {version && <span className="hint">v{version}</span>}
+          {!UPDATES_ENABLED && <span className="hint">Updates disabled in development</span>}
+          {upMsg && (
+            <span className={upState === "error" ? "error" : upState === "avail" ? "ok-msg" : "hint"}>
+              {upMsg}
+            </span>
+          )}
+          {upState === "avail" && upAvail && (
+            <button className="primary" onClick={installUpdate} disabled={upInstalling}>
+              Install
+            </button>
+          )}
+          {upInstalling && <span className="hint">Installing</span>}
+        </div>
+      </details>
     </div>
   );
 }
