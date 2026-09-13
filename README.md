@@ -1,4 +1,4 @@
-# RPGMaker Translator
+# Game Translator
 
 Desktop app to translate RPG / visual-novel games — **RPGMaker MV/MZ**,
 **Ren'Py**, **TyranoScript**, **KiriKiri**, **Godot** (`.po`/`.csv`),

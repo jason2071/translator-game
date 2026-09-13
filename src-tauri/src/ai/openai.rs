@@ -206,7 +206,7 @@ impl TranslationProvider for OpenAiCompat {
             if self.is_openrouter {
                 rb = rb
                     .header("HTTP-Referer", "https://github.com/rpgtl")
-                    .header("X-Title", "RPGMaker Translator");
+                    .header("X-Title", "Game Translator");
             }
             let resp = rb
                 .send()
@@ -303,7 +303,7 @@ impl TranslationProvider for OpenAiCompat {
             if self.is_openrouter {
                 rb = rb
                     .header("HTTP-Referer", "https://github.com/rpgtl")
-                    .header("X-Title", "RPGMaker Translator");
+                    .header("X-Title", "Game Translator");
             }
             let resp = rb
                 .send()

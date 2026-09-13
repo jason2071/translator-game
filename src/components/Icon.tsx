@@ -6,6 +6,7 @@ export type IconName =
   | "glossary"
   | "lint"
   | "settings"
+  | "theme"
   | "sun"
   | "moon"
   | "close"
@@ -50,6 +51,12 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <circle cx="12" cy="12" r="3" />
       <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1" />
+    </>
+  ),
+  theme: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none" />
     </>
   ),
   sun: (

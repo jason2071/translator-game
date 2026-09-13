@@ -8,6 +8,17 @@ import { PROVIDER_LABELS, PROVIDER_KINDS, useSettings } from "../settings";
 const UPDATES_ENABLED = !import.meta.env.DEV;
 import { Icon } from "../components/Icon";
 
+const TRANSLATION_STYLES = [
+  { value: "natural", label: "Natural" },
+  { value: "casual", label: "Casual" },
+  { value: "formal", label: "Formal" },
+  { value: "literary", label: "Literary" },
+  { value: "dramatic", label: "Dramatic" },
+  { value: "lighthearted", label: "Lighthearted" },
+  { value: "dark fantasy", label: "Dark fantasy" },
+  { value: "concise", label: "Concise" },
+] as const;
+
 export default function SettingsView() {
   const s = useSettings();
   // Which provider this modal is *configuring* — independent of the active (Run)
@@ -186,11 +197,18 @@ export default function SettingsView() {
           </>
         )}
 
-        <label>Target tone</label>
-        <input value={s.tone} onChange={(e) => s.setShared({ tone: e.target.value })} />
+        <label>Translation style</label>
+        <select value={s.tone} onChange={(e) => s.setShared({ tone: e.target.value })}>
+          {!TRANSLATION_STYLES.some((style) => style.value === s.tone) && (
+            <option value={s.tone}>{s.tone || "None"} (Saved)</option>
+          )}
+          {TRANSLATION_STYLES.map((style) => (
+            <option key={style.value} value={style.value}>{style.label}</option>
+          ))}
+        </select>
 
         <label>Reasoning</label>
-        <label className="chk">
+        <label className="chk settings-toggle">
           <input
             type="checkbox"
             checked={s.thinking}
@@ -198,12 +216,12 @@ export default function SettingsView() {
           />
           Enabled
         </label>
-      </div>
 
-      <div className="test-row">
-        <button onClick={runTest} disabled={testing}>Test</button>
-        {testing && <span className="hint">Testing</span>}
-        {test && <span className={test.startsWith("✓") ? "ok-msg" : "error"}>{test}</span>}
+        <div className="test-row settings-test-row">
+          <button onClick={runTest} disabled={testing}>Test</button>
+          {testing && <span className="hint">Testing</span>}
+          {test && <span className={test.startsWith("✓") ? "ok-msg" : "error"}>{test}</span>}
+        </div>
       </div>
 
       <details className="settings-section">

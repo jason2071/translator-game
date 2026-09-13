@@ -310,7 +310,14 @@ export function Sidebar({
           </div>
         </details>
         <div className="sb-tools-bottom">
-          <button className="iconbtn" onClick={toggleTheme} aria-label="Toggle light/dark theme" title="Toggle theme"><Icon name={theme === "dark" ? "sun" : "moon"} /></button>
+          <button
+            className="iconbtn"
+            onClick={toggleTheme}
+            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            title={theme === "dark" ? "Switch to light" : "Switch to dark"}
+          >
+            <Icon name="theme" />
+          </button>
           <button className="iconbtn" onClick={closeProject} aria-label="Close project" title="Close project"><Icon name="close" /></button>
           {version && <span className="sidebar-version">v{version}</span>}
         </div>

@@ -1,4 +1,4 @@
-# QA Test Plan — RPGMaker Translator (Tauri v2 / Rust + React)
+# QA Test Plan — Game Translator (Tauri v2 / Rust + React)
 
 **Product**: Desktop app to translate RPGMaker MV/MZ games by hand or via AI.
 **Stack**: Rust core (`src-tauri/src/`) behind `#[tauri::command]`, React 18 + TS + Vite frontend (`src/`), SQLite sidecar (`.rpgtl/project.db`), OS keychain for secrets.

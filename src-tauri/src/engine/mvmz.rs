@@ -348,7 +348,7 @@ impl GameEngine for MvMzEngine {
             // a family wins in NW.js/Chromium, and writing a constant keeps
             // re-export idempotent.
             let patched = format!(
-                "/* Repointed by RPGMaker Translator to embed a Thai-capable font. */\n\
+                "/* Repointed by Game Translator to embed a Thai-capable font. */\n\
                  @font-face {{ font-family: GameFont; src: url(\"{FONT_FILE}\"); }}\n\
                  @font-face {{ font-family: GameFontFallback; src: url(\"{FONT_FILE}\"); }}\n"
             );
@@ -398,7 +398,7 @@ impl GameEngine for MvMzEngine {
 /// stacked marks don't merge under it. Loaded last so it wins over other plugins.
 const THIN_OUTLINE_PLUGIN: &str = r#"/*:
  * @target MZ
- * @plugindesc Thinner text outline so stacked Thai tone/vowel marks stay legible. Added by RPGMaker Translator.
+ * @plugindesc Thinner text outline so stacked Thai tone/vowel marks stay legible. Added by Game Translator.
  * @help RPGMaker strokes text with a thick outline (MV 4px / MZ 3px). Around Thai
  * clusters that stack a vowel and a tone mark (e.g. a mai-ek over a sara-ii), the
  * outline fills the gap and blobs them together. This drops the outline width.
@@ -485,7 +485,7 @@ fn install_thin_outline_plugin(
     arr.push(serde_json::json!({
         "name": PLUGIN_NAME,
         "status": true,
-        "description": "Thinner text outline so stacked Thai marks stay legible (RPGMaker Translator).",
+        "description": "Thinner text outline so stacked Thai marks stay legible (Game Translator).",
         "parameters": {}
     }));
     let rebuilt = format!(

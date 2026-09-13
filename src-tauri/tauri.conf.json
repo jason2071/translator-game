@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "RPGMaker Translator",
+  "productName": "Game Translator",
   "version": "0.18.0",
   "identifier": "com.rpgtl.translator",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "RPGMaker Translator",
+        "title": "Game Translator",
         "width": 1280,
         "height": 800,
         "minWidth": 900,

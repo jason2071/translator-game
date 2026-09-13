@@ -1,4 +1,4 @@
-//! RPGMaker Translator — Rust core.
+//! Game Translator — Rust core.
 //!
 //! Command surface for the frontend: detect/open a project, browse & edit the
 //! translation grid, and export patched game files. Heavy logic lives in the

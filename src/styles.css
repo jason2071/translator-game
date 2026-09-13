@@ -1672,35 +1672,6 @@ code {
 .gloss-context-actions button svg {
   flex-shrink: 0;
 }
-.gloss-more {
-  position: relative;
-}
-.gloss-more > summary {
-  list-style: none;
-  padding: 0.3rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  color: var(--muted);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-}
-.gloss-more > summary::-webkit-details-marker { display: none; }
-.gloss-more-menu {
-  position: absolute;
-  z-index: 5;
-  top: calc(100% + 0.35rem);
-  right: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  min-width: 110px;
-  padding: var(--sp-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--elevated);
-  box-shadow: var(--shadow-2);
-}
-
 /* Character → gender + persona/register grid (speaker particles). One card per
    character: name + gender on the first line, the note on its own line. A green
    left edge marks characters that are already set up. */
@@ -2131,9 +2102,18 @@ button.link {
   align-self: start;
   padding-top: 0.4rem;
 }
-.field-grid input,
+.field-grid input:not([type="checkbox"]),
+.field-grid > select,
 .field-grid textarea {
   width: 100%;
+}
+.settings-toggle {
+  justify-self: start;
+}
+.settings-toggle input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+  margin: 0;
 }
 /* Right-column wrapper for the Extra-prompt textarea. The "Reset to default"
    action is pinned inside the textarea's own top-right padding rather than
@@ -2173,6 +2153,10 @@ button.link {
   display: flex;
   align-items: center;
   gap: 0.8rem;
+}
+.settings-test-row {
+  grid-column: 2;
+  margin-top: var(--sp-1);
 }
 .update-row {
   display: flex;

@@ -2655,7 +2655,7 @@ fn setup_language_with_font_scale(
     add_language_option(data_dir, lang, label)?;
 
     let mut s = String::new();
-    s.push_str("# Added by RPGMaker Translator — makes the translation selectable + readable.\n");
+    s.push_str("# Added by Game Translator — makes the translation selectable + readable.\n");
     s.push_str("# Delete this file (and fonts/tl_font.ttf) to remove it.\n\n");
     // Select the translation, unconditionally. This used to fire only when
     // `config.language` was still None — but a game that ships its own localization

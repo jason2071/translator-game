@@ -86,7 +86,7 @@ export default function ImportView() {
         <div className="import-brand">
           <span className="import-brand-mark"><Icon name="folder" size={18} /></span>
           <span className="import-brand-copy">
-            <strong>RPGMaker Translator</strong>
+            <strong>Game Translator</strong>
             <small>Game localization</small>
           </span>
         </div>
@@ -103,10 +103,10 @@ export default function ImportView() {
           <button
             className="theme-fab iconbtn"
             onClick={toggleTheme}
-            title="Toggle theme"
-            aria-label="Toggle light/dark theme"
+            title={theme === "dark" ? "Switch to light" : "Switch to dark"}
+            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
           >
-            <Icon name={theme === "dark" ? "sun" : "moon"} />
+            <Icon name="theme" />
           </button>
         </div>
       </header>

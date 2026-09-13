@@ -470,19 +470,14 @@ function CharactersPanel() {
               </button>
             )}
             {!empty && (
-              <details className="gloss-more">
-                <summary>More</summary>
-                <div className="gloss-more-menu">
-                  <button
-                    className="ghost"
-                    onClick={clearAll}
-                    disabled={busy}
-                    title="Remove every character"
-                  >
-                    <Icon name="trash" size={14} /> Clear
-                  </button>
-                </div>
-              </details>
+              <button
+                className="ghost"
+                onClick={clearAll}
+                disabled={busy}
+                title="Remove every character"
+              >
+                <Icon name="trash" size={14} /> Clear
+              </button>
             )}
           </div>
           <label
