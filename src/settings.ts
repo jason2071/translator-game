@@ -135,7 +135,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
   active: saved.active ?? "openai",
   glossaryProvider: saved.glossaryProvider ?? saved.active ?? "openai",
   providers: migrateProviders({ ...DEFAULTS, ...(saved.providers ?? {}) }),
-  tone: saved.tone ?? "casual",
+  tone: saved.tone ?? "natural",
   // Seed the bundled default Extra prompt exactly ONCE (first run). After that the
   // saved value wins — including an empty string the user deliberately cleared — so a
   // cleared prompt stays cleared instead of reappearing on the next launch. The

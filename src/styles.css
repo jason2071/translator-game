@@ -1031,24 +1031,61 @@ code {
   left: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
-  width: max-content;
-  min-width: 238px;
+  gap: var(--sp-3);
+  width: 300px;
   padding: var(--sp-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   background: var(--elevated);
   box-shadow: var(--shadow-2);
 }
-.tb-options-row {
+.tb-options-field {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
+  flex-direction: column;
+  gap: var(--sp-1);
   color: var(--muted);
   font-size: var(--fs-sm);
 }
-.tb-options-row select { min-width: 6.8rem; }
+.tb-options-field select {
+  width: 100%;
+  min-width: 0;
+}
+.tb-language-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: var(--sp-2);
+}
+.tb-language-arrow {
+  align-self: end;
+  display: flex;
+  align-items: center;
+  height: 30px;
+  color: var(--muted);
+}
+.tb-overwrite {
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel2);
+}
+.tb-overwrite input {
+  margin-top: 0.15rem;
+}
+.tb-overwrite-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.tb-overwrite-copy strong {
+  color: var(--fg);
+  font-size: var(--fs-sm);
+}
+.tb-overwrite-copy small {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
 .tb-options-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2114,6 +2151,13 @@ button.link {
   width: auto;
   flex: 0 0 auto;
   margin: 0;
+}
+.translation-style-control select {
+  width: 100%;
+}
+.translation-style-description {
+  display: block;
+  margin-top: var(--sp-1);
 }
 /* Right-column wrapper for the Extra-prompt textarea. The "Reset to default"
    action is pinned inside the textarea's own top-right padding rather than

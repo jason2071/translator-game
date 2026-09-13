@@ -9,14 +9,12 @@ const UPDATES_ENABLED = !import.meta.env.DEV;
 import { Icon } from "../components/Icon";
 
 const TRANSLATION_STYLES = [
-  { value: "natural", label: "Natural" },
-  { value: "casual", label: "Casual" },
-  { value: "formal", label: "Formal" },
-  { value: "literary", label: "Literary" },
-  { value: "dramatic", label: "Dramatic" },
-  { value: "lighthearted", label: "Lighthearted" },
-  { value: "dark fantasy", label: "Dark fantasy" },
-  { value: "concise", label: "Concise" },
+  { value: "natural", label: "Natural", description: "Clear, natural dialogue" },
+  { value: "faithful", label: "Faithful", description: "Stay close to the source" },
+  { value: "casual", label: "Casual", description: "Relaxed, conversational language" },
+  { value: "formal", label: "Formal", description: "Polite, formal language" },
+  { value: "literary", label: "Literary", description: "Polished narrative prose" },
+  { value: "concise", label: "Concise", description: "Short text for compact UI" },
 ] as const;
 
 export default function SettingsView() {
@@ -198,14 +196,20 @@ export default function SettingsView() {
         )}
 
         <label>Translation style</label>
-        <select value={s.tone} onChange={(e) => s.setShared({ tone: e.target.value })}>
-          {!TRANSLATION_STYLES.some((style) => style.value === s.tone) && (
-            <option value={s.tone}>{s.tone || "None"} (Saved)</option>
-          )}
-          {TRANSLATION_STYLES.map((style) => (
-            <option key={style.value} value={style.value}>{style.label}</option>
-          ))}
-        </select>
+        <div className="translation-style-control">
+          <select value={s.tone} onChange={(e) => s.setShared({ tone: e.target.value })}>
+            {!TRANSLATION_STYLES.some((style) => style.value === s.tone) && (
+              <option value={s.tone}>{s.tone || "None"} (Saved)</option>
+            )}
+            {TRANSLATION_STYLES.map((style) => (
+              <option key={style.value} value={style.value}>{style.label}</option>
+            ))}
+          </select>
+          <span className="hint translation-style-description">
+            {TRANSLATION_STYLES.find((style) => style.value === s.tone)?.description
+              ?? "Previously saved translation style"}
+          </span>
+        </div>
 
         <label>Reasoning</label>
         <label className="chk settings-toggle">

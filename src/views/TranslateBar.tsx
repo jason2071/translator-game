@@ -114,9 +114,9 @@ export default function TranslateBar({
         <details className="tb-options">
           <summary>Options</summary>
           <div className="tb-options-menu">
-            <div className="tb-options-row">
-              <span>Language</span>
-              <div className="lang-switch">
+            <div className="tb-language-grid">
+              <label className="tb-options-field">
+                <span>From</span>
                 <select
                   value={project?.sourceLang ?? "Auto"}
                   onChange={(e) => setLanguages(e.target.value, project?.targetLang ?? "Thai")}
@@ -125,7 +125,10 @@ export default function TranslateBar({
                 >
                   {SOURCE_LANGS.map((l) => <option key={l} value={l}>{l}</option>)}
                 </select>
-                <span className="arrow">→</span>
+              </label>
+              <span className="tb-language-arrow" aria-hidden="true">→</span>
+              <label className="tb-options-field">
+                <span>To</span>
                 <select
                   value={project?.targetLang ?? "Thai"}
                   onChange={(e) => setLanguages(project?.sourceLang ?? "Auto", e.target.value)}
@@ -134,9 +137,9 @@ export default function TranslateBar({
                 >
                   {TARGET_LANGS.map((l) => <option key={l} value={l}>{l}</option>)}
                 </select>
-              </div>
+              </label>
             </div>
-            <label className="tb-options-row">
+            <label className="tb-options-field">
               <span>Provider</span>
               <select
                 className="tb-provider"
@@ -147,15 +150,20 @@ export default function TranslateBar({
                 {PROVIDER_KINDS.map((k) => <option key={k} value={k}>{PROVIDER_LABELS_SHORT[k]}</option>)}
               </select>
             </label>
-            <label className="chk" title="Re-translate lines that already have a translation">
+            <label className="chk tb-overwrite" title="Re-translate lines that already have a translation">
               <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} disabled={running} />
-              Overwrite
+              <span className="tb-overwrite-copy">
+                <strong>Overwrite</strong>
+                <small>Translate completed lines again</small>
+              </span>
             </label>
-            <div className="tb-options-actions">
-              {showRetranslate && <button className="ghost tb-act" onClick={retranslateMatches}><Icon name="retry" size={14} />Retry</button>}
-              {failed > 0 && !running && <button className="ghost tb-act" onClick={retryFailed}><Icon name="retry" size={14} />Retry</button>}
-              {failed > 0 && <button className="ghost tb-act tb-act-warn" onClick={onOpenErrors}><Icon name="warn" size={14} />Errors</button>}
-            </div>
+            {(showRetranslate || failed > 0) && (
+              <div className="tb-options-actions">
+                {showRetranslate && <button className="ghost tb-act" onClick={retranslateMatches}><Icon name="retry" size={14} />Retry</button>}
+                {failed > 0 && !running && <button className="ghost tb-act" onClick={retryFailed}><Icon name="retry" size={14} />Retry</button>}
+                {failed > 0 && <button className="ghost tb-act tb-act-warn" onClick={onOpenErrors}><Icon name="warn" size={14} />Errors</button>}
+              </div>
+            )}
           </div>
         </details>
         <div className="tb-actions">
