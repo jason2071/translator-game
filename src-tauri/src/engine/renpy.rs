@@ -2475,9 +2475,9 @@ fn language_label(target_lang: &str, lang: &str) -> String {
 }
 
 /// Add a `<label>` button to the game's language-selection screen (a
-/// `textbutton "…" action Language(…)` block) so the translation can be chosen
-/// from Settings. Idempotent, and touches only screen files (no version-sensitive
-/// statements). No-op if the game has no such menu.
+/// `textbutton` or `imagebutton` using `action Language(…)`) so the translation
+/// can be chosen from Settings. Idempotent, and touches only screen files (no
+/// version-sensitive statements). No-op if the game has no such menu.
 fn add_language_option(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
     let already = format!("Language(\"{lang}\")");
     let mut stack = vec![data_dir.to_path_buf()];
@@ -2499,34 +2499,150 @@ fn add_language_option(data_dir: &Path, lang: &str, label: &str) -> Result<()> {
             let Ok(content) = std::fs::read_to_string(&p) else {
                 continue;
             };
-            if !content.contains("action Language(") || content.contains(&already) {
+            let lines: Vec<&str> = content.split_inclusive('\n').collect();
+            if content.contains(&already) {
+                // v0.19.0 could put its generated textbutton inside an
+                // imagebutton block. Repair that exact invalid shape in place;
+                // a legitimate existing language control remains untouched.
+                let nested = lines.iter().enumerate().find_map(|(idx, line)| {
+                    (line.contains(&already) && is_button_statement(line))
+                        .then(|| button_ancestor(&lines, idx).map(|owner| (idx, owner)))
+                        .flatten()
+                });
+                if let Some((bad_idx, owner_idx)) = nested {
+                    let out = place_language_button(
+                        &content,
+                        &lines,
+                        owner_idx,
+                        Some(bad_idx),
+                        lang,
+                        label,
+                    );
+                    std::fs::write(&p, out)
+                        .with_context(|| format!("repairing language button in {}", p.display()))?;
+                }
                 continue;
             }
-            let lines: Vec<&str> = content.split_inclusive('\n').collect();
-            let Some(idx) = lines.iter().rposition(|l| l.contains("action Language(")) else {
+            if !content.contains("action Language(") {
+                continue;
+            }
+            let Some(owner_idx) = lines
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, line)| line.contains("action Language("))
+                .find_map(|(action_idx, _)| language_control_owner(&lines, action_idx))
+            else {
                 continue;
             };
-            let indent: String = lines[idx]
-                .chars()
-                .take_while(|c| *c == ' ' || *c == '\t')
-                .collect();
-            let button = format!("{indent}textbutton \"{label}\" action Language(\"{lang}\")\n");
-
-            let mut out = String::with_capacity(content.len() + button.len());
-            for (i, l) in lines.iter().enumerate() {
-                out.push_str(l);
-                if i == idx {
-                    if !l.ends_with('\n') {
-                        out.push('\n');
-                    }
-                    out.push_str(&button);
-                }
-            }
+            let out = place_language_button(&content, &lines, owner_idx, None, lang, label);
             std::fs::write(&p, out)
                 .with_context(|| format!("adding language button to {}", p.display()))?;
         }
     }
     Ok(())
+}
+
+fn leading_indent(line: &str) -> &str {
+    let len = line
+        .bytes()
+        .take_while(|byte| *byte == b' ' || *byte == b'\t')
+        .count();
+    &line[..len]
+}
+
+fn is_button_statement(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    ["textbutton", "imagebutton", "button"]
+        .iter()
+        .any(|keyword| {
+            trimmed.strip_prefix(keyword).is_some_and(|rest| {
+                matches!(
+                    rest.as_bytes().first(),
+                    None | Some(b' ') | Some(b'\t') | Some(b':')
+                )
+            })
+        })
+}
+
+/// Return the button statement that owns a `Language` action. For an inline
+/// textbutton this is the action line itself; for a block-form imagebutton it is
+/// the nearest button ancestor at a shallower indentation level.
+fn language_control_owner(lines: &[&str], action_idx: usize) -> Option<usize> {
+    if is_button_statement(lines[action_idx]) {
+        return Some(action_idx);
+    }
+
+    button_ancestor(lines, action_idx)
+}
+
+fn button_ancestor(lines: &[&str], child_idx: usize) -> Option<usize> {
+    let mut child_indent = leading_indent(lines[child_idx]).len();
+    for idx in (0..child_idx).rev() {
+        let trimmed = lines[idx].trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = leading_indent(lines[idx]).len();
+        if indent >= child_indent {
+            continue;
+        }
+        if is_button_statement(lines[idx]) {
+            return Some(idx);
+        }
+        child_indent = indent;
+    }
+    None
+}
+
+fn place_language_button(
+    content: &str,
+    lines: &[&str],
+    owner_idx: usize,
+    remove_idx: Option<usize>,
+    lang: &str,
+    label: &str,
+) -> String {
+    let indent = leading_indent(lines[owner_idx]);
+    let indent_len = indent.len();
+    // A block-form imagebutton/textbutton owns indented properties after its
+    // declaration. Insert only after that whole block; inserting after the
+    // `action` property itself makes the new textbutton an invalid child.
+    let insert_before = (owner_idx + 1..lines.len())
+        .find(|idx| {
+            let line = lines[*idx];
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with('#')
+                && leading_indent(line).len() <= indent_len
+        })
+        .unwrap_or(lines.len());
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let button = format!("{indent}textbutton \"{label}\" action Language(\"{lang}\"){newline}");
+
+    let mut out = String::with_capacity(content.len() + button.len());
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == insert_before {
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push_str(newline);
+            }
+            out.push_str(&button);
+        }
+        if Some(idx) != remove_idx {
+            out.push_str(line);
+        }
+    }
+    if insert_before == lines.len() {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push_str(newline);
+        }
+        out.push_str(&button);
+    }
+    out
 }
 
 /// Evaluate the escape sequences of a `.rpy` string literal's raw inner text
@@ -3708,6 +3824,85 @@ label start:
         add_language_option(root, "thai", "\u{e44}\u{e17}\u{e22}").unwrap();
         let c2 = std::fs::read_to_string(root.join("screens.rpy")).unwrap();
         assert_eq!(c2.matches("Language(\"thai\")").count(), 1);
+    }
+
+    #[test]
+    fn add_language_button_after_imagebutton_block() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::write(
+            root.join("screens.rpy"),
+            r#"screen preferences():
+    vbox:
+        imagebutton:
+            idle "english_idle.png"
+            action Language(None)
+            hover "english_hover.png"
+        imagebutton:
+            idle "spanish_idle.png"
+            action Language("spanish")
+            hover "spanish_hover.png"
+        text "Language footer"
+"#,
+        )
+        .unwrap();
+
+        add_language_option(root, "thai", "\u{e44}\u{e17}\u{e22}").unwrap();
+        let content = std::fs::read_to_string(root.join("screens.rpy")).unwrap();
+        let hover = content
+            .find("            hover \"spanish_hover.png\"")
+            .unwrap();
+        let thai = content
+            .find("        textbutton \"\u{e44}\u{e17}\u{e22}\" action Language(\"thai\")")
+            .unwrap();
+        let footer = content.find("        text \"Language footer\"").unwrap();
+
+        assert!(
+            thai > hover,
+            "the new button must follow the complete imagebutton block"
+        );
+        assert!(
+            thai < footer,
+            "the new button must remain beside the other controls"
+        );
+        assert!(!content.contains(
+            "            textbutton \"\u{e44}\u{e17}\u{e22}\" action Language(\"thai\")"
+        ));
+    }
+
+    #[test]
+    fn repairs_language_button_nested_by_v0190() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::write(
+            root.join("screens.rpy"),
+            r#"screen preferences():
+    vbox:
+        imagebutton:
+            idle "english_idle.png"
+            action Language(None)
+            textbutton "ไทย" action Language("thai")
+            hover "english_hover.png"
+        text "Language footer"
+"#,
+        )
+        .unwrap();
+
+        add_language_option(root, "thai", "\u{e44}\u{e17}\u{e22}").unwrap();
+        let content = std::fs::read_to_string(root.join("screens.rpy")).unwrap();
+        let hover = content
+            .find("            hover \"english_hover.png\"")
+            .unwrap();
+        let thai = content
+            .find("        textbutton \"\u{e44}\u{e17}\u{e22}\" action Language(\"thai\")")
+            .unwrap();
+        let footer = content.find("        text \"Language footer\"").unwrap();
+
+        assert!(hover < thai && thai < footer);
+        assert_eq!(content.matches("Language(\"thai\")").count(), 1);
+        assert!(!content.contains(
+            "            textbutton \"\u{e44}\u{e17}\u{e22}\" action Language(\"thai\")"
+        ));
     }
 
     #[test]
