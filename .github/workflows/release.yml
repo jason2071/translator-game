@@ -53,8 +53,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tagName: ${{ inputs.tag || github.ref_name }}
-          releaseName: "RPGMaker Translator ${{ inputs.tag || github.ref_name }}"
-          releaseBody: "Download an installer (or the portable .exe) below. Users already on v0.2.0+ update automatically."
+          releaseName: "Game Translator ${{ inputs.tag || github.ref_name }}"
+          releaseBody: "Download an installer or the portable app below. Existing installations update automatically."
           releaseDraft: false
           prerelease: false
 
@@ -64,6 +64,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $dest = "RPGMaker-Translator-portable-${{ inputs.tag || github.ref_name }}.exe"
-          Copy-Item "src-tauri/target/release/rpgmaker-translator.exe" $dest
+          $dest = "Game-Translator-portable-${{ inputs.tag || github.ref_name }}.exe"
+          Copy-Item "src-tauri/target/release/game-translator.exe" $dest
           gh release upload ${{ inputs.tag || github.ref_name }} $dest --clobber --repo ${{ github.repository }}
