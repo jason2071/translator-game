@@ -31,7 +31,8 @@ pub fn mask(input: &str) -> Masked {
 
 /// RPGMaker **MV/MZ** masking: the default [`mask`] grammar (`\Word[n]` escapes and
 /// `%N` params) **plus** VisuMZ/Yanfly angle-bracket text codes (`<Show Switch: 24>`,
-/// `<center>`, `<Choice Width: 320>`, font tags `<Cinzel-VariableFont_wght>`, …).
+/// `<center>`, `<Choice Width: 320>`, font tags `<Cinzel-VariableFont_wght>`, …) and
+/// bare braces used by DKTools Localization tags (`{dialogue key}`).
 /// The stock `mask` leaves `<…>` as prose, so a model would translate the words
 /// inside a tag; masking them keeps plugin markup byte-identical across the round-trip.
 pub fn mask_mvmz(input: &str) -> Masked {
@@ -92,6 +93,17 @@ fn mask_inner(input: &str, mask_angle: bool) -> Masked {
         if mask_angle && input[i..].starts_with("{%}") {
             push_token(&mut text, &mut tokens, "{%}");
             i += 3;
+            continue;
+        }
+        // DKTools Localization resolves every `{key}` span at runtime. Its regex
+        // requires both delimiters, but translation models commonly retain the
+        // opening `{` and drop the closing `}`. Mask each bare delimiter so the
+        // prose inside remains translatable while restore/codes_match guarantee
+        // that every brace survives. Escaped RPGMaker `\{` / `\}` codes were
+        // already consumed by code_len above and never reach this branch.
+        if mask_angle && (bytes[i] == b'{' || bytes[i] == b'}') {
+            push_token(&mut text, &mut tokens, &input[i..i + 1]);
+            i += 1;
             continue;
         }
         // RPGMaker message parameters `%1`, `%2`, … — printf-style substitutions
@@ -1524,6 +1536,8 @@ mod tests {
             "Font tag <Cinzel-VariableFont_wght>styled</Cinzel-VariableFont_wght> here",
             "Line one<br>line two",
             "Plain \\C[2]hero\\C[0] with %1 gold",
+            "{DKTools dialogue key}",
+            "{First key}{Second key}",
             "No codes here at all.",
             // Prose-shaped `<…>` that must survive verbatim whether masked or not.
             "An emoticon <3 and math 3 < 5 stay literal.",
@@ -1609,6 +1623,21 @@ mod tests {
         assert_eq!(restore(&m.text, &m.tokens).unwrap(), src);
         assert!(codes_match("rpgmaker-mvmz", src, "ได้โปรดใจดีกับฉันด้วย {%}."));
         assert!(!codes_match("rpgmaker-mvmz", src, "ได้โปรดใจดีกับฉันด้วย {%"));
+    }
+
+    #[test]
+    fn mvmz_masks_dktools_localization_braces() {
+        let src = "{呵呵，真的吗？}";
+        let m = mask_for("rpgmaker-mvmz", src);
+        assert_eq!(m.tokens, vec!["{", "}"]);
+        assert_eq!(m.text, "⟦0⟧呵呵，真的吗？⟦1⟧");
+        assert_eq!(
+            restore("⟦0⟧หึหึ จริงเหรอ⟦1⟧", &m.tokens).unwrap(),
+            "{หึหึ จริงเหรอ}"
+        );
+        assert!(codes_match("rpgmaker-mvmz", src, "{หึหึ จริงเหรอ}"));
+        assert!(!codes_match("rpgmaker-mvmz", src, "{หึหึ จริงเหรอ"));
+        assert!(!codes_match("rpgmaker-mvmz", src, "{หึหึ จริงเหรอ}}"));
     }
 
     #[test]
