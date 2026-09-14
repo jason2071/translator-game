@@ -1,6 +1,6 @@
 [package]
 name = "game-translator"
-version = "0.19.2"
+version = "0.19.3"
 description = "Translate RPG and visual-novel games by hand or via AI"
 authors = ["you"]
 edition = "2021"
