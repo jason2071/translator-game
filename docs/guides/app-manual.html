@@ -125,8 +125,26 @@ Flow: เปิดเกม → provider+key → context+glossary → Run → �
   <tr><td>Claude</td><td><code>claude-sonnet-5</code></td></tr>
   <tr><td>Gemini</td><td><code>gemini-2.5-flash</code></td></tr>
 </table>
+<p><b>Translation style</b> กำหนดแนวภาษาที่ส่งให้ AI ทุกครั้งที่กด <code>Run</code>.</p>
+<table>
+  <tr><th>รูปแบบ</th><th>ลักษณะคำแปล</th><th>เหมาะกับ</th></tr>
+  <tr><td><code>Natural</code></td><td>เป็นธรรมชาติ อ่านลื่น</td><td>เกมทั่วไปและบทสนทนา</td></tr>
+  <tr><td><code>Faithful</code></td><td>ยึดความหมายและรูปประโยคต้นฉบับมากขึ้น</td><td>เนื้อหาที่ไม่ต้องการให้ AI ดัดแปลง</td></tr>
+  <tr><td><code>Casual</code></td><td>สบาย ๆ เป็นกันเอง</td><td>บทสนทนาทั่วไปหรือวัยรุ่น</td></tr>
+  <tr><td><code>Formal</code></td><td>สุภาพและเป็นทางการ</td><td>พิธีการ ราชการ หรือชนชั้นสูง</td></tr>
+  <tr><td><code>Literary</code></td><td>สละสลวย เน้นบรรยากาศ</td><td>คำบรรยายและเกมเนื้อเรื่อง</td></tr>
+  <tr><td><code>Concise</code></td><td>สั้น กระชับ ลดคำที่ไม่จำเป็น</td><td>ปุ่ม เมนู สถานะ และ UI พื้นที่จำกัด</td></tr>
+</table>
+<p><b>ตัวอย่าง: ทำให้ UI สั้น แต่บทสนทนายังเป็นธรรมชาติ</b></p>
+<ol>
+  <li>เปิด <code>Settings</code> แล้วตั้ง <code>Translation style</code> เป็น <code>Natural</code>.</li>
+  <li>เปิด <code>Advanced</code> → <code>Extra prompt</code>.</li>
+  <li>เติมท้าย prompt ว่า: <code>ข้อความ UI เมนู ปุ่ม และคำสั่ง ให้แปลสั้นที่สุดโดยยังคงความหมาย Prefer 1–4 คำ ไม่ใช้ประโยคเต็มถ้าใช้คำสั้นแทนได้ ส่วนบทสนทนาให้แปลเป็นธรรมชาติตามปกติ</code></li>
+  <li>กด <code>Run</code>. ข้อความที่แปลไว้แล้วจะไม่เปลี่ยนอัตโนมัติ — เปิด <code>Overwrite existing</code> หรือใช้ <code>Re-translate</code> เมื่อต้องการแปลใหม่.</li>
+</ol>
+<p class="note"><b>ต้องการให้สั้นทั้งเกม:</b> เลือก <code>Concise</code> ได้เลย แต่รูปแบบนี้มีผลกับทุกข้อความ รวมถึงบทสนทนา ไม่ได้จำกัดเฉพาะ UI.</p>
 <ul>
-  <li>Shared: <code>Target tone</code>(def casual), <code>Batch size</code>(1–200, def 40), <code>Rate limit (req/min, 0=off)</code>(def 0), <code>Message width guard (chars, 0=off)</code>(0–120, def 46), <code>Thinking / reasoning</code>(def off), <code>Extra prompt (all projects)</code>.</li>
+  <li>Shared: <code>Translation style</code> (def Natural), <code>Batch size</code> (1–200, def 40), <code>Parallel requests</code>, <code>Rate limit</code> (req/min, 0=off), <code>Width guard</code> (0–120, def 46), <code>Reasoning</code> (def off), <code>Extra prompt</code> (ทุกโปรเจกต์).</li>
   <li><code>Test connection</code> → <code>✓</code>/<code>✗</code>. (<code>maxTokens</code> มีใน data model แต่ไม่มีใน UI.)</li>
 </ul>
 
