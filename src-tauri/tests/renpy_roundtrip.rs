@@ -400,6 +400,66 @@ fn richer_tl_tree_still_wins_over_a_thin_base_script() {
 }
 
 #[test]
+fn auto_tl_tree_keeps_only_base_ui_fallback_terms() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let game = root.join("game");
+    std::fs::create_dir_all(game.join("tl/english")).unwrap();
+    std::fs::write(game.join("script_version.txt"), b"8.4.0").unwrap();
+    std::fs::write(
+        game.join("story.rpy"),
+        r#"label start:
+    m "Historia en español."
+
+screen stats():
+    text "HABILIDADES"
+    use stat_bar("FUERZA", fuerza, 15)
+
+screen stat_bar(nombre, valor, maximo):
+    text "[nombre]"
+    bar value valor range maximo
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        game.join("tl/english/story.rpy"),
+        "translate english a1:\n    m \"English one.\"\n\n\
+         translate english a2:\n    m \"English two.\"\n\n\
+         translate english a3:\n    m \"English three.\"\n\n\
+         translate english a4:\n    m \"English four.\"\n",
+    )
+    .unwrap();
+
+    let eng = engine::detect(root).unwrap();
+    let auto = eng.extract(root, &ExtractOpts::default()).unwrap();
+    let sources: Vec<&str> = auto.iter().map(|u| u.source.as_str()).collect();
+    assert!(sources.contains(&"English one."), "{sources:?}");
+    assert!(sources.contains(&"HABILIDADES"), "{sources:?}");
+    let fuerza = auto
+        .iter()
+        .find(|u| u.source == "FUERZA")
+        .expect("dynamic base UI survives Auto tl selection");
+    assert!(fuerza.pointer.starts_with("screenarg#"), "{fuerza:?}");
+    assert!(
+        !sources.contains(&"Historia en español."),
+        "base dialogue must not be mixed into the English story: {sources:?}"
+    );
+
+    let explicit = eng
+        .extract(
+            root,
+            &ExtractOpts {
+                source_lang: Some("English".to_string()),
+                ..ExtractOpts::default()
+            },
+        )
+        .unwrap();
+    assert!(explicit.iter().all(|u| u.file.starts_with("tl/english/")));
+    assert!(!explicit.iter().any(|u| u.source == "HABILIDADES"));
+    assert!(!explicit.iter().any(|u| u.source == "FUERZA"));
+}
+
+#[test]
 fn explicit_english_uses_base_scripts_before_japanese_fallback() {
     // A game can ship English base scripts plus a full Japanese localization. When
     // the user asks for English, extracting the Japanese tree is wrong even if it

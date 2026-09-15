@@ -127,6 +127,13 @@ impl GameEngine for RenpyEngine {
             extract_rpy(&rel, &content, &mut units, &mut py_seen);
             files.push((rel, content));
         }
+        // A screen can render a parameter rather than a literal:
+        // `screen stat(name): text "[name]"`, called as `use stat("FUERZA")`.
+        // Ren'Py's scanner sees only the template, while our regular screen harvest
+        // sees no literal on the `text` line. Trace that narrow, static flow so the
+        // displayed call argument becomes a runtime-matched Term without treating
+        // unrelated screen arguments (styles, image ids, actions) as player text.
+        harvest_screen_call_arguments(&files, &mut units);
         // Character names — a cross-file pass, since `define c = Character(name_var)`
         // and `name_var = "…"` can live in different files. Use the same definitions
         // to turn terse say-statement variables (`jas`) into useful speaker labels
@@ -152,6 +159,15 @@ impl GameEngine for RenpyEngine {
         if !tl_units.is_empty()
             && (requested_tl_matches || (auto_source && tl_units.len() >= units.len()))
         {
+            if auto_source {
+                // A shipped `tl/english` tree may cover the story yet leave UI in
+                // the base language. Keep English dialogue as the primary source,
+                // but merge base-script Terms so bare/dynamic screen labels are not
+                // hidden. Names and base dialogue/choices stay out: mixing those
+                // would duplicate the story in two languages. Explicit source
+                // selections remain strict and do not receive this mixed fallback.
+                tl_units.extend(units.into_iter().filter(|u| u.kind == UnitKind::Term));
+            }
             return Ok(tl_units);
         }
         Ok(units)
@@ -160,18 +176,14 @@ impl GameEngine for RenpyEngine {
     fn inject(&self, root: &Path, units: &[TransUnit], out_dir: &Path) -> Result<()> {
         let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
 
-        // Group applied units by file. Character-name units (pointer `name#<char>`)
-        // and python display strings (`str#…`) aren't spliceable spans — names are
-        // applied via the `tl/` zzz Character re-define, python strings via the
-        // strings-table (splicing the constructor arg would desync `find_quest`-style
-        // lookups keyed by the English text) — so skip them here.
+        // Group applied units by file. Synthetic pointers (`name#`, `str#`,
+        // `pylist#`, `screenarg#`) are display-matched at runtime rather than
+        // spliceable spans, so only parsed byte-span pointers belong here.
         let mut by_file: BTreeMap<&str, Vec<&TransUnit>> = BTreeMap::new();
         for u in units {
             if u.status.is_applied()
                 && u.translation.is_some()
-                && !u.pointer.starts_with("name#")
-                && !u.pointer.starts_with("str#")
-                && !u.pointer.starts_with("pylist#")
+                && parse_pointer(&u.pointer).is_some()
             {
                 by_file.entry(u.file.as_str()).or_default().push(u);
             }
@@ -1159,6 +1171,290 @@ fn harvest_screen_literal(
             UnitKind::Term,
             s,
         ));
+    }
+}
+
+#[derive(Debug)]
+struct ScreenDisplaySpec {
+    params: Vec<String>,
+    displayed: HashSet<String>,
+}
+
+/// Split a comma-separated argument/parameter list without splitting inside a
+/// quoted string or nested `()[]{}`. Returns byte spans into `s`.
+fn top_level_arg_spans(s: &str) -> Vec<(usize, usize)> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let (mut start, mut depth, mut quote, mut escaped) = (0usize, 0i32, None, false);
+    for (i, &c) in b.iter().enumerate() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            b'\'' | b'"' => quote = Some(c),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = (depth - 1).max(0),
+            b',' if depth == 0 => {
+                out.push((start, i));
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < s.len() || !s.trim().is_empty() {
+        out.push((start, s.len()));
+    }
+    out
+}
+
+fn matching_paren(s: &str, open: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let (mut depth, mut quote, mut escaped) = (0i32, None, false);
+    for (i, &c) in b.iter().enumerate().skip(open) {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            b'\'' | b'"' => quote = Some(c),
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn screen_header(trimmed: &str) -> Option<(String, Vec<String>)> {
+    let rest = trimmed.strip_prefix("screen ")?;
+    let open = rest.find('(')?;
+    let name = rest[..open].trim();
+    if !is_ident(name) {
+        return None;
+    }
+    let close = matching_paren(rest, open)?;
+    if !rest[close + 1..].trim_start().starts_with(':') {
+        return None;
+    }
+    let args = &rest[open + 1..close];
+    let mut params = Vec::new();
+    for (a, z) in top_level_arg_spans(args) {
+        let raw = args[a..z].trim();
+        let raw = raw.trim_start_matches('*').trim();
+        let ident = raw.split('=').next().unwrap_or(raw).trim();
+        if is_ident(ident) {
+            params.push(ident.to_string());
+        }
+    }
+    (!params.is_empty()).then(|| (name.to_string(), params))
+}
+
+fn record_displayed_params(trimmed: &str, spec: &mut ScreenDisplaySpec) {
+    let Some(rest) = trimmed.strip_prefix("text ") else {
+        return;
+    };
+    let rest = rest.trim_start();
+    if rest.starts_with('"') || rest.starts_with('\'') {
+        if let Some((rel, len, _)) = first_string(rest) {
+            let text = &rest[rel..rel + len];
+            for param in &spec.params {
+                if text.contains(&format!("[{param}]")) {
+                    spec.displayed.insert(param.clone());
+                }
+            }
+        }
+        return;
+    }
+    let param = first_token(rest).trim_end_matches(':');
+    if spec.params.iter().any(|p| p == param) {
+        spec.displayed.insert(param.to_string());
+    }
+}
+
+fn screen_display_specs(files: &[(String, String)]) -> HashMap<String, ScreenDisplaySpec> {
+    let mut specs = HashMap::new();
+    for (_, content) in files {
+        let mut current: Option<(usize, String, ScreenDisplaySpec)> = None;
+        for line in content.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let indent = line.len() - trimmed.len();
+            if current.as_ref().is_some_and(|(base, _, _)| indent <= *base) {
+                if let Some((_, name, spec)) = current.take() {
+                    specs.insert(name, spec);
+                }
+            }
+            if let Some((_, _, spec)) = current.as_mut() {
+                record_displayed_params(trimmed, spec);
+                continue;
+            }
+            if let Some((name, params)) = screen_header(trimmed) {
+                current = Some((
+                    indent,
+                    name,
+                    ScreenDisplaySpec {
+                        params,
+                        displayed: HashSet::new(),
+                    },
+                ));
+            }
+        }
+        if let Some((_, name, spec)) = current {
+            specs.insert(name, spec);
+        }
+    }
+    specs.retain(|_, spec| !spec.displayed.is_empty());
+    specs
+}
+
+/// A one-line `use foo(...)`, `call screen foo(...)`, or `show screen foo(...)`
+/// invocation: `(screen name, opening-paren byte offset)` within `trimmed`.
+fn screen_invocation(trimmed: &str) -> Option<(&str, usize)> {
+    let rest = trimmed
+        .strip_prefix("use ")
+        .or_else(|| trimmed.strip_prefix("call screen "))
+        .or_else(|| trimmed.strip_prefix("show screen "))?;
+    let name_len = rest
+        .bytes()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == b'_')
+        .count();
+    let name = &rest[..name_len];
+    if !is_ident(name) {
+        return None;
+    }
+    let after_name = &rest[name_len..];
+    let spaces = after_name.len() - after_name.trim_start().len();
+    if after_name.as_bytes().get(spaces) != Some(&b'(') {
+        return None;
+    }
+    let rest_offset = trimmed.len() - rest.len();
+    Some((name, rest_offset + name_len + spaces))
+}
+
+fn top_level_assign(arg: &str) -> Option<usize> {
+    let b = arg.as_bytes();
+    let (mut depth, mut quote, mut escaped) = (0i32, None, false);
+    for (i, &c) in b.iter().enumerate() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            b'\'' | b'"' => quote = Some(c),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = (depth - 1).max(0),
+            b'=' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Harvest only literal arguments that flow into a parameter rendered by a
+/// screen's `text` widget. The synthetic pointer deliberately cannot be spliced;
+/// export translates the value after interpolation through `config.replace_text`.
+fn harvest_screen_call_arguments(files: &[(String, String)], out: &mut Vec<TransUnit>) {
+    let specs = screen_display_specs(files);
+    if specs.is_empty() {
+        return;
+    }
+    let mut seen: HashSet<String> = out
+        .iter()
+        .filter(|u| u.kind == UnitKind::Term)
+        .map(|u| u.source.clone())
+        .collect();
+    for (file, content) in files {
+        let mut offset = 0usize;
+        for line in content.split_inclusive('\n') {
+            let line_start = offset;
+            offset += line.len();
+            let raw = line.strip_suffix('\n').unwrap_or(line);
+            let raw = raw.strip_suffix('\r').unwrap_or(raw);
+            let trimmed = raw.trim_start();
+            let indent = raw.len() - trimmed.len();
+            let Some((name, open)) = screen_invocation(trimmed) else {
+                continue;
+            };
+            let Some(spec) = specs.get(name) else {
+                continue;
+            };
+            let Some(close) = matching_paren(trimmed, open) else {
+                continue;
+            };
+            let args = &trimmed[open + 1..close];
+            let mut positional = 0usize;
+            for (a, z) in top_level_arg_spans(args) {
+                let original = &args[a..z];
+                let leading = original.len() - original.trim_start().len();
+                let arg = original.trim();
+                if arg.is_empty() {
+                    continue;
+                }
+                let (param, value, value_offset) = if let Some(eq) = top_level_assign(arg) {
+                    let key = arg[..eq].trim();
+                    let tail = &arg[eq + 1..];
+                    let ws = tail.len() - tail.trim_start().len();
+                    (key, tail.trim_start(), eq + 1 + ws)
+                } else {
+                    let Some(param) = spec.params.get(positional) else {
+                        break;
+                    };
+                    positional += 1;
+                    (param.as_str(), arg, 0)
+                };
+                if !spec.displayed.contains(param)
+                    || !(value.starts_with('"') || value.starts_with('\''))
+                {
+                    continue;
+                }
+                let Some((rel, len, after)) = first_string(value) else {
+                    continue;
+                };
+                if !value[after..].trim().is_empty() || len == 0 {
+                    continue;
+                }
+                let source = &value[rel..rel + len];
+                if !display_text_ok(source) || !seen.insert(source.to_string()) {
+                    continue;
+                }
+                let abs = line_start + indent + open + 1 + a + leading + value_offset + rel;
+                out.push(
+                    TransUnit::new(
+                        file,
+                        format!("screenarg#{abs}:{len}"),
+                        UnitKind::Term,
+                        source,
+                    )
+                    .with_context(Some(format!("screen {name}"))),
+                );
+            }
+        }
     }
 }
 
@@ -2448,14 +2744,32 @@ fn export_tl_from_source_with_font_scale(
         files += 1;
     }
 
+    // Base-script UI Terms are supplemental to the source-language tl tree. They
+    // cannot be spliced into it, and a regular strings block could duplicate the
+    // tree's preserved `old` key. Put them in the post-interpolation hook only.
+    let mut runtime_seen = HashSet::new();
+    let runtime_strings: Vec<(String, String)> = units
+        .iter()
+        .filter(|u| {
+            u.kind == UnitKind::Term
+                && !u.file.starts_with(&src_prefix)
+                && u.status.is_applied()
+                && u.translation.is_some()
+        })
+        .filter_map(|u| {
+            let tr = u.translation.as_ref()?;
+            (!tr.trim().is_empty() && tr != &u.source && runtime_seen.insert(u.source.clone()))
+                .then(|| (u.source.clone(), tr.clone()))
+        })
+        .collect();
+
     // Make the target selectable + readable (menu entry, default language, Thai font).
-    // No Character re-defines: any `_()`-wrapped name translates via the strings blocks.
-    // No extra strings either: tl-source units are all spliced into the retagged tree.
-    setup_language_with_font_scale(
+    setup_language_with_runtime_strings(
         data_dir,
         &lang,
         &language_label(target_lang, &lang),
         &[],
+        &runtime_strings,
         &BTreeMap::new(),
         thai_font_scale,
     )?;
@@ -2766,6 +3080,18 @@ fn setup_language_with_font_scale(
     lists: &BTreeMap<String, Vec<(String, String)>>,
     thai_font_scale: u8,
 ) -> Result<()> {
+    setup_language_with_runtime_strings(data_dir, lang, label, strings, &[], lists, thai_font_scale)
+}
+
+fn setup_language_with_runtime_strings(
+    data_dir: &Path,
+    lang: &str,
+    label: &str,
+    strings: &[(String, String)],
+    runtime_strings: &[(String, String)],
+    lists: &BTreeMap<String, Vec<(String, String)>>,
+    thai_font_scale: u8,
+) -> Result<()> {
     let thai_font_scale = validate_thai_font_scale(thai_font_scale)?;
     // Add the language to the game's own Settings language menu, if it has one.
     add_language_option(data_dir, lang, label)?;
@@ -2818,8 +3144,12 @@ fn setup_language_with_font_scale(
                 renpy_tl::quote_unicode(&renpy_tl::escape_percent_like(&old, &new))
             ));
         }
+    }
 
-        // The same table again, as a `config.replace_text` hook. The strings block
+    if !strings.is_empty() || !runtime_strings.is_empty() {
+        // The same table, plus hook-only entries that would duplicate an `old` in
+        // a retagged source translation tree, as a `config.replace_text` hook. The
+        // strings block
         // above only fires on the string a statement *names*, and `translate_string`
         // runs **before** `[…]` interpolation — so a line like
         // `m "[renpy.random.choice(hesitation)]"`, whose text is picked at runtime
@@ -2837,7 +3167,7 @@ fn setup_language_with_font_scale(
         // (`"d"` → `"ดี"`). Keep it out of the runtime table entirely rather than
         // rely on a rescan to clear the unit.
         let usable = |k: &str| k.chars().count() > 1 || !k.is_ascii();
-        for (old, new) in strings {
+        for (old, new) in strings.iter().chain(runtime_strings) {
             let old_u = unescape_rpy(old);
             let new_u = renpy_tl::decode_escapes(new);
             if !usable(&old_u) {
@@ -3012,6 +3342,9 @@ fn setup_language_with_font_scale(
         // runs once, so the function object is stable across save-roundtrips.
         s.push_str("init python:\n");
         s.push_str(&format!("    _tl_font = \"{font_rel}\"\n"));
+        if has_heart_icon_font {
+            s.push_str("    _tl_icon_font = \"fonts/tl_icons.ttf\"\n");
+        }
         s.push_str("    _tl_groups = {}\n");
         s.push_str("    def _tl_font_group(_f):\n");
         s.push_str("        if not isinstance(_f, str):\n"); // ImageFont/FontGroup: leave alone
@@ -3019,9 +3352,19 @@ fn setup_language_with_font_scale(
         s.push_str("        _g = _tl_groups.get(_f)\n");
         s.push_str("        if _g is None:\n");
         s.push_str("            try:\n");
-        s.push_str(
-            "                _g = FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_f, None, None)\n",
-        );
+        if has_heart_icon_font {
+            // Whole-face replacement is still required for custom displayables,
+            // but the Thai face has no dingbats such as the common close glyph
+            // `✕` (U+2715). Route arrows, geometric shapes and dingbats through
+            // Ren'Py's bundled DejaVu face before falling back to the game font.
+            s.push_str(
+                "                _g = FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_tl_icon_font, 0x2190, 0x21ff).add(_tl_icon_font, 0x25a0, 0x27bf).add(_f, None, None)\n",
+            );
+        } else {
+            s.push_str(
+                "                _g = FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_f, None, None)\n",
+            );
+        }
         s.push_str("            except Exception:\n");
         s.push_str("                _g = _f\n");
         s.push_str("            _tl_groups[_f] = _g\n");
@@ -3258,6 +3601,7 @@ mod tests {
         let mut out = Vec::new();
         let mut py_seen = HashSet::new();
         extract_rpy("script.rpy", src, &mut out, &mut py_seen);
+        harvest_screen_call_arguments(&[("script.rpy".to_string(), src.to_string())], &mut out);
         out
     }
 
@@ -3387,6 +3731,45 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(ten.join("script.rpy")).unwrap(),
             src
+        );
+    }
+
+    #[test]
+    fn tl_source_export_puts_base_ui_in_runtime_hook_without_duplicate_old() {
+        use crate::model::Status;
+        let tmp = tempfile::tempdir().unwrap();
+        let game = tmp.path().join("game");
+        let ten = game.join("tl").join("english");
+        std::fs::create_dir_all(&ten).unwrap();
+        let src = "translate english strings:\n    old \"FUERZA\"\n    new \"STRENGTH\"\n";
+        std::fs::write(ten.join("script.rpy"), src).unwrap();
+
+        let mut units = Vec::new();
+        extract_from_tl("tl/english/script.rpy", "english", src, &mut units);
+        units[0].translation = Some("พละกำลัง".to_string());
+        units[0].status = Status::Translated;
+        for (pointer, source, translation) in [
+            ("10:11", "HABILIDADES", "ทักษะ"),
+            ("screenarg#30:6", "FUERZA", "พละกำลัง"),
+        ] {
+            let mut unit = TransUnit::new("script.rpy", pointer, UnitKind::Term, source);
+            unit.translation = Some(translation.to_string());
+            unit.status = Status::Translated;
+            units.push(unit);
+        }
+
+        export_tl_from_source(&game, "english", &units, "Thai").unwrap();
+
+        let thai = std::fs::read_to_string(game.join("tl/thai/script.rpy")).unwrap();
+        assert_eq!(thai.matches("old \"FUERZA\"").count(), 1, "{thai}");
+        assert!(thai.contains("new \"พละกำลัง\""), "{thai}");
+
+        let hook = std::fs::read_to_string(game.join(GENERATED_RPY)).unwrap();
+        assert!(hook.contains("\"HABILIDADES\": \"ทักษะ\""), "{hook}");
+        assert!(hook.contains("\"FUERZA\": \"พละกำลัง\""), "{hook}");
+        assert!(
+            !hook.contains("old \"FUERZA\""),
+            "hook-only mapping must not declare a duplicate Ren'Py string: {hook}"
         );
     }
 
@@ -4487,6 +4870,14 @@ define twi = Character(_(\"Both\"))
             zzz.contains("store.heart_icon = \"{font=rpgtl_icons}♡{/font}\""),
             "{zzz}"
         );
+        assert!(
+            zzz.contains("_tl_icon_font = \"fonts/tl_icons.ttf\""),
+            "{zzz}"
+        );
+        assert!(
+            zzz.contains("add(_tl_icon_font, 0x25a0, 0x27bf)"),
+            "dingbats such as the close glyph ✕ must use the icon font: {zzz}"
+        );
     }
 
     #[test]
@@ -4641,5 +5032,35 @@ screen quest_log():
             let (s, l) = parse_pointer(&u.pointer).unwrap();
             assert_eq!(&src[s..s + l], u.source);
         }
+    }
+
+    #[test]
+    fn harvests_only_literal_arguments_rendered_by_a_screen() {
+        let src = r#"
+screen stats():
+    use stat_bar("FUERZA", fuerza, 15)
+    use stat_bar(nombre="AGILIDAD", valor=agilidad, maximo=15)
+    use stat_bar("images/skills.png", fuerza, 15)
+    use icon("inventory", "bag.png")
+
+screen stat_bar(nombre, valor, maximo):
+    text "[nombre]"
+    bar value valor range maximo
+
+screen icon(identifier, path):
+    add path
+"#;
+        let units = extract(src);
+        let fuerza = units
+            .iter()
+            .find(|u| u.source == "FUERZA")
+            .expect("positional displayed argument");
+        assert_eq!(fuerza.kind, UnitKind::Term);
+        assert!(fuerza.pointer.starts_with("screenarg#"));
+        assert_eq!(fuerza.context.as_deref(), Some("screen stat_bar"));
+        assert!(units.iter().any(|u| u.source == "AGILIDAD"));
+        assert!(!units.iter().any(|u| u.source == "images/skills.png"));
+        assert!(!units.iter().any(|u| u.source == "inventory"));
+        assert!(!units.iter().any(|u| u.source == "bag.png"));
     }
 }
