@@ -573,3 +573,49 @@ fn compiled_only_game_without_bundled_python_reports_actionable_error() {
         "rpyc staged from archive"
     );
 }
+
+#[test]
+fn decompile_post_pass_repairs_empty_screens_and_tracks_them() {
+    // Regression (docs/cases/2026-09-18-renpy-empty-screen-decompile, City Lights
+    // & Love Bites): unrpyc renders a game's empty stub screen as a bare
+    // `screen name()` header — invalid Ren'Py the game refuses to boot on — while
+    // exiting 0. The post-pass must repair it and record every decompiled file in
+    // the sidecar so restore can undo the decompile.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let game = root.join("game");
+    std::fs::create_dir_all(game.join("season1")).unwrap();
+    // The sidecar exists before extract in the real flow (open_or_create makes it).
+    std::fs::create_dir_all(root.join(".rpgtl")).unwrap();
+    std::fs::write(
+        game.join("season1/stub.rpy"),
+        "screen ci_replay_transport_controls()\n\
+         # Decompiled by unrpyc: https://github.com/CensoredUsername/unrpyc\n",
+    )
+    .unwrap();
+    std::fs::write(
+        game.join("script.rpy"),
+        "label start:\n    \"Hello.\"\n\
+         # Decompiled by unrpyc: https://github.com/CensoredUsername/unrpyc\n",
+    )
+    .unwrap();
+    // Game-shipped source: no marker → never touched, never tracked.
+    std::fs::write(game.join("shipped.rpy"), "screen real():\n    pass\n").unwrap();
+
+    let (repaired, tracked) = app_lib::engine::renpy::repair_and_track_decompiled(&game, root);
+    assert_eq!(repaired, 1, "only the empty screen needs repair");
+    assert_eq!(tracked, 2, "both decompiled files newly tracked");
+    let fixed = std::fs::read_to_string(game.join("season1/stub.rpy")).unwrap();
+    assert!(
+        fixed.contains("screen ci_replay_transport_controls():\n    pass"),
+        "repaired to a valid empty screen, got:\n{fixed}"
+    );
+    let list = std::fs::read_to_string(root.join(".rpgtl/decompiled.txt")).unwrap();
+    assert!(list.contains("game/season1/stub.rpy"), "list:\n{list}");
+    assert!(list.contains("game/script.rpy"), "list:\n{list}");
+    assert!(!list.contains("shipped.rpy"), "unmarked source is not tracked");
+
+    // Idempotent: a second pass repairs nothing and appends nothing.
+    let again = app_lib::engine::renpy::repair_and_track_decompiled(&game, root);
+    assert_eq!(again, (0, 0));
+}

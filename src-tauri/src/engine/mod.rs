@@ -43,6 +43,29 @@ pub use codes::ExtractOpts;
 /// [`GameEngine::embed_font`] and Ren'Py's `tl/<lang>/` font remap.
 pub const TARGET_FONT: &[u8] = include_bytes!("../../resources/Sarabun-Regular.ttf");
 
+/// Replace a live game file via write-temp-then-rename (game-safety rule 10), so
+/// a crash or full disk mid-write can never leave a half-written file behind.
+/// Mirrors the tyrano packed-asar rebuild's `app.asar.rpgtl.tmp` → rename
+/// pattern. `std::fs::rename` replaces an existing destination on Windows
+/// (MOVEFILE_REPLACE_EXISTING) — unless another process holds it, which callers
+/// should pre-flight with a write-open probe when that risk is real.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .ok_or_else(|| std::io::Error::other("writing a path without a file name"))?;
+    name.push(".rpgtl.tmp");
+    let tmp = path.with_file_name(name);
+    std::fs::write(&tmp, bytes)?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
 /// Records what an **in-place** [`GameEngine::embed_font`] changed so
 /// [`crate::project::restore_original`] can undo it. Font/plugin files live
 /// *outside* the data dir (e.g. RPGMaker's `fonts/`, `js/` sit beside `data/`),

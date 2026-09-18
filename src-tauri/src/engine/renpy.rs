@@ -22,7 +22,7 @@ use super::codes::ExtractOpts;
 use super::renpy_tl::{self, Say};
 use super::rpa;
 use super::unrpyc::{self, PyMajor};
-use super::{DetectResult, GameEngine};
+use super::{write_atomic, DetectResult, GameEngine};
 use crate::model::{TransUnit, UnitKind};
 use anyhow::{anyhow, Context, Result};
 use std::cmp::Reverse;
@@ -395,18 +395,26 @@ fn ensure_decompiled(dir: &Path, root: &Path) -> Result<Option<String>> {
     let unrpyc_py = unrpyc::materialize(major)?;
 
     // 3. Run unrpyc over the game dir (it recurses and writes `.rpy` beside each
-    //    `.rpyc`). Mirrors export_tl's three-tier subprocess handling: a spawn
-    //    failure or a non-zero exit degrades to the actionable error rather than
-    //    aborting the import. Retry once with --try-harder against obfuscation.
-    match run_unrpyc(&python, &unrpyc_py, dir, false) {
-        Ok(true) => Ok(None),
+    // `.rpyc`). Mirrors export_tl's three-tier subprocess handling: a spawn
+    // failure or a non-zero exit degrades to the actionable error rather than
+    // aborting the import. Retry once with --try-harder against obfuscation.
+    let decompiled = match run_unrpyc(&python, &unrpyc_py, dir, false) {
+        Ok(true) => true,
         Ok(false) => match run_unrpyc(&python, &unrpyc_py, dir, true) {
-            Ok(true) => Ok(None),
-            Ok(false) => Ok(Some("unrpyc could not decompile the scripts".to_string())),
-            Err(e) => Ok(Some(format!("could not run the bundled Python: {e}"))),
+            Ok(ok) => ok,
+            Err(e) => return Ok(Some(format!("could not run the bundled Python: {e}"))),
         },
-        Err(e) => Ok(Some(format!("could not run the bundled Python: {e}"))),
+        Err(e) => return Ok(Some(format!("could not run the bundled Python: {e}"))),
+    };
+    if !decompiled {
+        return Ok(Some("unrpyc could not decompile the scripts".to_string()));
     }
+    // unrpyc exits 0 even on output Ren'Py cannot parse (an empty screen becomes
+    // a bare `screen name()` header), so validate + repair what it wrote before
+    // that `.rpy` can shadow the game's `.rpyc` — and record the files so
+    // `restore_original` can undo the decompile later.
+    repair_and_track_decompiled(dir, root);
+    Ok(None)
 }
 
 /// Run `<python> <unrpyc_py> -c [--try-harder] <dir>`. `Ok(true)` on exit 0,
@@ -440,6 +448,152 @@ fn run_unrpyc(python: &Path, unrpyc_py: &Path, dir: &Path, try_harder: bool) -> 
         .output()
         .with_context(|| format!("spawning {}", python.display()))?;
     Ok(output.status.success())
+}
+
+/// The trailing marker the vendored unrpyc writes into every `.rpy` it
+/// decompiles — and only those: the string lives in our vendored tree, so a
+/// game's own source never carries it. It is what tells this module's post-pass
+/// (and later `project::restore_original`) that a file is our decompile
+/// artifact rather than game-shipped source.
+pub(crate) const DECOMPILED_MARKER: &str = "# Decompiled by unrpyc";
+
+/// Post-pass over the `.rpy` unrpyc just wrote into `dir` (the game dir):
+///
+/// 1. **Repair** the one artifact we've seen break a game (game-safety rules 3
+///    and 5): a screen whose compiled body is empty decompiles to a bare
+///    `screen name()` header — no block — which Ren'Py rejects at boot while
+///    unrpyc still exits 0 claiming success.
+/// 2. **Track** every decompiled file (root-relative path) in
+///    `<root>/.rpgtl/decompiled.txt` so `restore_original` can undo the
+///    decompile and return a compiled-only game to its shipped state.
+///
+/// Files without [`DECOMPILED_MARKER`] — the game's own source — are never
+/// touched. Returns `(files repaired, files newly tracked)`.
+pub fn repair_and_track_decompiled(dir: &Path, root: &Path) -> (usize, usize) {
+    let mut repaired = 0usize;
+    let mut tracked: Vec<String> = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                // `tl/` holds translations, not source — same skip as has_rpyc.
+                if !is_tl_dir(&p) {
+                    stack.push(p);
+                }
+                continue;
+            }
+            if p.extension().and_then(|x| x.to_str()) != Some("rpy") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            if !content.contains(DECOMPILED_MARKER) {
+                continue;
+            }
+            if let Some(fixed) = repair_decompiled_rpy(&content) {
+                if write_atomic(&p, fixed.as_bytes()).is_ok() {
+                    repaired += 1;
+                }
+            }
+            if let Some(rel) = p
+                .strip_prefix(root)
+                .ok()
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+            {
+                tracked.push(rel);
+            }
+        }
+    }
+    let newly = append_unique(&root.join(".rpgtl").join("decompiled.txt"), &tracked);
+    (repaired, newly)
+}
+
+/// Fix unrpyc's rendering of an empty screen: it writes the header without the
+/// trailing `:` and with no block, which Ren'Py rejects ("screen statement
+/// expects a non-empty block"). Give such a header its `:` and a `pass` body,
+/// preserving indentation. Returns `None` when nothing needed repair.
+fn repair_decompiled_rpy(content: &str) -> Option<String> {
+    let mut out = String::with_capacity(content.len() + 16);
+    let mut repaired = false;
+    for line in content.split_inclusive('\n') {
+        let raw = line.strip_suffix('\n').unwrap_or(line);
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        let trimmed = raw.trim_start();
+        if is_empty_screen_header(trimmed) {
+            let indent = &raw[..raw.len() - trimmed.len()];
+            out.push_str(indent);
+            out.push_str(trimmed);
+            out.push_str(":\n");
+            out.push_str(indent);
+            out.push_str("    pass\n");
+            repaired = true;
+            continue;
+        }
+        out.push_str(line);
+    }
+    repaired.then_some(out)
+}
+
+/// A single-line, colon-less screen header — exactly how unrpyc renders a
+/// screen whose compiled body is empty. Requires the `screen` statement at the
+/// start of the trimmed line and a `)`-terminated tail, so `style x is y`,
+/// `screen name():` (a screen with a body always ends its header with `:`), and
+/// python like `screen_xy = f()` never match.
+fn is_empty_screen_header(trimmed: &str) -> bool {
+    let Some(rest) = trimmed.strip_prefix("screen ") else {
+        return false;
+    };
+    let rest = rest.trim_end();
+    if rest.ends_with(':') || !rest.ends_with(')') {
+        return false;
+    }
+    let Some(open) = rest.find('(') else {
+        return false;
+    };
+    let (name, tail) = (&rest[..open], &rest[open..]);
+    !name.is_empty()
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && tail.matches('(').count() == tail.matches(')').count()
+}
+
+/// Append `paths` to the sidecar list file, skipping entries already recorded.
+/// Returns how many new lines were added. A missing parent dir (no `.rpgtl/`
+/// sidecar — extract run outside a project) means there is nothing to record;
+/// the failed write maps to 0 rather than an error, matching the best-effort
+/// spirit of the callers.
+fn append_unique(list: &Path, paths: &[String]) -> usize {
+    if paths.is_empty() {
+        return 0;
+    }
+    let existing = std::fs::read_to_string(list).unwrap_or_default();
+    let have: HashSet<&str> = existing
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let fresh: Vec<&str> = paths
+        .iter()
+        .map(String::as_str)
+        .filter(|p| !have.contains(p))
+        .collect();
+    if fresh.is_empty() {
+        return 0;
+    }
+    let added = fresh.len();
+    let mut out = existing;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    for p in &fresh {
+        out.push_str(p);
+        out.push('\n');
+    }
+    std::fs::write(list, out).is_ok().then_some(added).unwrap_or(0)
 }
 
 /// Whether `dir` (recursively, skipping `tl/`) holds any compiled `.rpyc`.
@@ -2611,6 +2765,7 @@ pub fn export_tl_with_font_scale(
         thai_font_scale,
     )?;
 
+    track_export_overlay(data_dir, &dir, root);
     Ok(Some(TlExport { files, dir }))
 }
 
@@ -2773,10 +2928,91 @@ fn export_tl_from_source_with_font_scale(
         &BTreeMap::new(),
         thai_font_scale,
     )?;
+    let root = data_dir.parent().unwrap_or(data_dir);
+    track_export_overlay(data_dir, &data_dir.join("tl").join(&lang), root);
     Ok(TlExport {
         files,
         dir: data_dir.join("tl").join(&lang),
     })
+}
+
+/// Record the additive-export overlay — every file our Ren'Py export created —
+/// as root-relative paths in `<root>/.rpgtl/overlay.txt`, so
+/// `project::restore_original` can remove the whole translation in one click:
+/// the filled `tl/<lang>/` tree (the `.rpy` we fill *and* the `.rpyc` the game
+/// compiles from them — an orphan `.rpyc` would keep the translation active),
+/// `zzz_translator.rpy(.rpyc)`, and the bundled `fonts/tl_font.ttf` /
+/// `fonts/tl_icons.ttf`. Idempotent: repeated exports append nothing new.
+fn track_export_overlay(data_dir: &Path, tl_dir: &Path, root: &Path) {
+    let mut overlay: Vec<String> = Vec::new();
+    let push_rel = |p: &Path, overlay: &mut Vec<String>| {
+        if let Some(rel) = p
+            .strip_prefix(root)
+            .ok()
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+        {
+            overlay.push(rel);
+        }
+    };
+    let mut stack = vec![tl_dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                push_rel(&p, &mut overlay);
+            }
+        }
+    }
+    for name in [
+        GENERATED_RPY.to_string(),
+        format!("{GENERATED_RPY}c"),
+        "fonts/tl_font.ttf".to_string(),
+        "fonts/tl_icons.ttf".to_string(),
+    ] {
+        let p = data_dir.join(&name);
+        if p.is_file() {
+            push_rel(&p, &mut overlay);
+        }
+    }
+    append_unique(&root.join(".rpgtl").join("overlay.txt"), &overlay);
+}
+
+/// Game-safety rule 11 for the Ren'Py export: refuse *before* the first write
+/// when the running game already holds one of the overlay files we are about to
+/// replace — `fonts/tl_font.ttf` has hit a Windows sharing violation here in
+/// the wild. Probing with a write-open (`write(true)` alone never truncates) is
+/// exactly what fails in that state, on the platform where it happens.
+pub fn ensure_overlay_writable(data_dir: &Path) -> Result<()> {
+    let mut held: Vec<String> = Vec::new();
+    for name in [
+        GENERATED_RPY.to_string(),
+        format!("{GENERATED_RPY}c"),
+        "fonts/tl_font.ttf".to_string(),
+        "fonts/tl_icons.ttf".to_string(),
+    ] {
+        let p = data_dir.join(&name);
+        if !p.is_file() {
+            continue;
+        }
+        match std::fs::OpenOptions::new().write(true).open(&p) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => held.push(name),
+        }
+    }
+    if held.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "close the game first — it is holding {} ({})",
+        held.len(),
+        held.join(", ")
+    ))
 }
 
 /// The button label for the language menu: the native name for known languages,
@@ -3098,7 +3334,10 @@ fn setup_language_with_runtime_strings(
 
     let mut s = String::new();
     s.push_str("# Added by Game Translator — makes the translation selectable + readable.\n");
-    s.push_str("# Delete this file (and fonts/tl_font.ttf) to remove it.\n\n");
+    s.push_str(&format!(
+        "# Game Translator v{} — delete this file (and fonts/tl_font.ttf) to remove it.\n\n",
+        env!("CARGO_PKG_VERSION")
+    ));
     // Select the translation, unconditionally. This used to fire only when
     // `config.language` was still None — but a game that ships its own localization
     // *defines* one (`define config.language = "japanese"`), and that is exactly the
@@ -4311,6 +4550,43 @@ label start:
             vec!["scripts/ch1.rpyc".to_string()]
         );
         assert!(eng.stale_companions("notes.txt").is_empty());
+    }
+
+    // Regression (City Lights & Love Bites, 2026-09-18 — docs/cases): unrpyc
+    // renders a screen whose compiled body is empty as a bare `screen name()`
+    // header, exits 0 anyway, and the game then refuses to boot.
+    #[test]
+    fn repair_decompiled_rpy_gives_an_empty_screen_its_pass_body() {
+        let broken = "screen ci_replay_transport_controls()\n\
+                      # Decompiled by unrpyc: https://github.com/CensoredUsername/unrpyc\n";
+        let fixed = repair_decompiled_rpy(broken).expect("should repair");
+        assert_eq!(
+            fixed,
+            "screen ci_replay_transport_controls():\n    pass\n\
+             # Decompiled by unrpyc: https://github.com/CensoredUsername/unrpyc\n"
+        );
+    }
+
+    #[test]
+    fn repair_decompiled_rpy_fixes_mid_file_and_keeps_neighbors() {
+        let broken = "label start:\n    \"Hello.\"\n\nscreen stub()\n# Decompiled by unrpyc\n";
+        let fixed = repair_decompiled_rpy(broken).expect("should repair");
+        assert!(fixed.contains("screen stub():\n    pass\n"));
+        assert!(fixed.starts_with("label start:\n    \"Hello.\"\n\n"));
+    }
+
+    #[test]
+    fn repair_decompiled_rpy_leaves_valid_script_alone() {
+        // A screen with a body ends its header with `:` — nothing to repair.
+        let healthy = "screen back_button():\n    zorder 150\n    text _(\"Back\")\n";
+        assert_eq!(repair_decompiled_rpy(healthy), None);
+        // unrpyc's valid one-liner style statements must never be touched.
+        let styles = "style phone_call_history_date_text is phone_contacts_date_text\n\
+                      style.phone_typing_text.emoji_font = None\n";
+        assert_eq!(repair_decompiled_rpy(styles), None);
+        // Python assignments that merely start with `screen` don't match either.
+        let pythonish = "screen_xy = compute_layout(x)\n";
+        assert_eq!(repair_decompiled_rpy(pythonish), None);
     }
 
     #[test]

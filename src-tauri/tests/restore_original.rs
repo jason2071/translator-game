@@ -197,3 +197,60 @@ fn restore_on_never_exported_project_is_a_no_op() {
         SCRIPT.as_bytes()
     );
 }
+
+#[test]
+fn restore_undoes_renpy_decompile_and_overlay_lists() {
+    // The two Ren'Py sidecar lists: `decompiled.txt` (the import decompiler's
+    // `.rpy`, kept marker-guarded) and `overlay.txt` (the export's additive
+    // `tl/<lang>/` tree, language hook, and fonts). Together they make restore a
+    // one-click "uninstall translation" for a Ren'Py game — while the shipped
+    // `.rpyc` beside each deleted decompile survives untouched.
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path();
+    write(root, "game/script.rpy", SCRIPT); // any Ren'Py project shell
+
+    let (project, _) = project::open_or_create(root, "en", "Thai").unwrap();
+
+    let marker = "# Decompiled by unrpyc: https://github.com/CensoredUsername/unrpyc\n";
+    write(root, "game/story.rpy", &format!("\"hi\"\n{marker}"));
+    write(root, "game/story.rpyc", "compiled-bytes"); // shipped — must survive
+    write(root, "game/user.rpy", "\"my own edits\"\n"); // listed but unmarked → kept
+    write(root, "game/tl/thai/script.rpy", "translate thai start:\n");
+    write(root, "game/tl/thai/script.rpyc", "boot-compiled"); // game-made companion
+    write(root, "game/zzz_translator.rpy", "# Added by Game Translator\n");
+    write(root, "game/fonts/tl_font.ttf", "font");
+    write(
+        root,
+        ".rpgtl/decompiled.txt",
+        "game/story.rpy\ngame/user.rpy\ngame/gone.rpy\n",
+    );
+    write(
+        root,
+        ".rpgtl/overlay.txt",
+        "game/tl/thai/script.rpy\ngame/zzz_translator.rpy\ngame/fonts/tl_font.ttf\n",
+    );
+
+    let res = project::restore_original(&project).unwrap();
+    // story.rpy + tl script.rpy + its .rpyc companion + zzz + font = 5.
+    assert_eq!(res.files_restored, 5, "note: {}", res.note);
+    assert!(!root.join("game/story.rpy").exists(), "decompile removed");
+    assert!(
+        root.join("game/story.rpyc").exists(),
+        "shipped bytecode untouched"
+    );
+    assert!(
+        root.join("game/user.rpy").exists(),
+        "unmarked file is never deleted"
+    );
+    assert!(
+        !root.join("game/tl/thai/script.rpy").exists()
+            && !root.join("game/tl/thai/script.rpyc").exists(),
+        "overlay and its boot-compiled companion removed"
+    );
+    assert!(!root.join("game/zzz_translator.rpy").exists());
+    assert!(!root.join("game/fonts/tl_font.ttf").exists());
+
+    // Idempotent: everything is already gone.
+    let again = project::restore_original(&project).unwrap();
+    assert_eq!(again.files_restored, 0, "second run is a no-op");
+}

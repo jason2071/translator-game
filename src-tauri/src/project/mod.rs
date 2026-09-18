@@ -300,6 +300,9 @@ pub fn export_with_renpy_font_scale(
             .into_iter()
             .map(|g| (g.term, g.translation))
             .collect();
+        // Game-safety rule 11: the overlay files (fonts, the language hook) are
+        // exactly what a running game holds open — refuse before any write.
+        engine::renpy::ensure_overlay_writable(&project.data_dir)?;
         if let Some(tl) = engine::renpy::export_tl_with_font_scale(
             &project.root,
             &project.data_dir,
@@ -373,6 +376,16 @@ pub fn export_with_renpy_font_scale(
     touched.sort();
     touched.dedup();
 
+    // Game-safety rule 11: refuse before the first write when the running game
+    // holds one of the files we are about to overwrite — writing anyway is how
+    // a sharing-violation failure (or worse, a half-written file) happens.
+    ensure_writable(
+        &touched
+            .iter()
+            .map(|f| project_file_path(project, f))
+            .collect::<Vec<_>>(),
+    )?;
+
     // Derived files (e.g. Ren'Py `.rpyc`) that go stale once their source is
     // patched; back them up and delete them so the engine regenerates them.
     let companions: Vec<String> = touched
@@ -443,8 +456,13 @@ pub fn export_with_renpy_font_scale(
             }
         }
         if snap.exists() {
-            // Reset the live file to its original before injecting.
-            std::fs::copy(&snap, &live).with_context(|| format!("restoring original {file}"))?;
+            // Reset the live file to its original before injecting. Write-temp-
+            // then-rename (game-safety rule 10) so a crash mid-export can never
+            // leave a half-copied file inside the game.
+            let bytes =
+                std::fs::read(&snap).with_context(|| format!("reading snapshot for {file}"))?;
+            engine::write_atomic(&live, &bytes)
+                .with_context(|| format!("restoring original {file}"))?;
         }
     }
 
@@ -544,9 +562,10 @@ pub struct RestoreResult {
 /// This is the standalone version of the `copy(snapshot → live)` reset that
 /// [`export`] does momentarily before re-injecting. It covers every engine that
 /// snapshots to `.rpgtl/source/` (RPGMaker MV/MZ, Godot, Tyrano, KiriKiri,
-/// Forger, ac-loctext, Hendrix). Purely-additive exports (Ren'Py's `tl/<lang>/`)
-/// write no snapshot, so restore is a no-op for them — their output is a separate
-/// overlay the user simply doesn't select in-game.
+/// Forger, ac-loctext, Hendrix), plus the two Ren'Py file lists: the decompiled
+/// `.rpy` our import wrote (`decompiled.txt`) and the additive `tl/<lang>/`
+/// overlay our export wrote (`overlay.txt`) — so restore is also a one-click
+/// "uninstall translation" for a Ren'Py game.
 pub fn restore_original(project: &Project) -> Result<RestoreResult> {
     let mut files_restored = 0usize;
 
@@ -604,17 +623,108 @@ pub fn restore_original(project: &Project) -> Result<RestoreResult> {
         }
     }
 
+    // 3) Undo the Ren'Py auto-decompile: every `.rpy` the import decompiler
+    // wrote is listed in `.rpgtl/decompiled.txt`. Delete it only while it still
+    // carries the decompiler's marker, so a file the user has replaced with
+    // their own source is never removed. The shipped `.rpyc` beside it stays —
+    // that is the exact state the game shipped in.
+    files_restored += remove_listed(
+        &rpgtl_dir(&project.root).join("decompiled.txt"),
+        &project.root,
+        true,
+    );
+
+    // 4) Undo a Ren'Py additive export: the filled `tl/<lang>/` tree, the
+    // generated language hook, and the bundled fonts are listed in
+    // `.rpgtl/overlay.txt`. All listed paths are our artifacts, so no marker
+    // check — but a path escaping the game root is never followed.
+    files_restored += remove_listed(
+        &rpgtl_dir(&project.root).join("overlay.txt"),
+        &project.root,
+        false,
+    );
+
     let note = if files_restored == 0 {
         "Nothing to restore — this game hasn't been exported yet.".to_string()
     } else {
         format!(
-            "Restored {files_restored} original file(s). Your translations are kept — export again anytime."
+            "Restored {files_restored} file(s) — originals recovered, our translation artifacts removed. Your translations are kept — export again anytime."
         )
     };
     Ok(RestoreResult {
         files_restored,
         note,
     })
+}
+
+/// Delete every file listed in `list` (one root-relative path per line),
+/// returning how many were removed. Already-deleted entries are tolerated, so a
+/// re-run is idempotent. With `marker_guard`, a file that no longer contains
+/// [`engine::renpy::DECOMPILED_MARKER`] is kept — for the decompile list that
+/// means "not our artifact anymore" (user-replaced source). Without it (the
+/// Ren'Py export overlay), a listed `tl/<lang>/x.rpy` also removes its `x.rpyc`
+/// companion: the game compiles that at first boot — after our export listed
+/// the `.rpy` — and an orphaned `.rpyc` would keep the translation active. A
+/// path that escapes `root` is never followed.
+fn remove_listed(list: &Path, root: &Path, marker_guard: bool) -> usize {
+    let Ok(entries) = std::fs::read_to_string(list) else {
+        return 0;
+    };
+    let mut removed = 0usize;
+    for rel in entries.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if rel.split(|c| c == '/' || c == '\\').any(|seg| seg == "..") {
+            continue;
+        }
+        let live = root.join(rel);
+        if !live.is_file() {
+            continue;
+        }
+        if marker_guard {
+            let Ok(content) = std::fs::read_to_string(&live) else {
+                continue;
+            };
+            if !content.contains(engine::renpy::DECOMPILED_MARKER) {
+                continue;
+            }
+        }
+        if std::fs::remove_file(&live).is_ok() {
+            removed += 1;
+            if !marker_guard && live.extension().and_then(|e| e.to_str()) == Some("rpy") {
+                let comp = live.with_extension("rpyc");
+                if comp.is_file() && std::fs::remove_file(&comp).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    removed
+}
+
+/// Game-safety rule 11 pre-flight: open every existing target for writing
+/// (`write(true)` alone never truncates). On Windows this fails exactly when
+/// another process holds the file — i.e. the game is running — which is the
+/// moment we'd otherwise abort mid-export or corrupt it. Unix advisory locks
+/// aren't caught, but the probe is harmless there.
+fn ensure_writable(targets: &[PathBuf]) -> Result<()> {
+    let mut held: Vec<String> = Vec::new();
+    for p in targets {
+        if !p.is_file() {
+            continue;
+        }
+        match std::fs::OpenOptions::new().write(true).open(p) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => held.push(p.to_string_lossy().to_string()),
+        }
+    }
+    if held.is_empty() {
+        return Ok(());
+    }
+    let shown = held.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    Err(anyhow!(
+        "the game seems to be running and holds {} of the files this export writes (e.g. {shown}) — close it first, then export again",
+        held.len()
+    ))
 }
 
 /// Build a temporary game root for re-extraction from the original snapshots.
