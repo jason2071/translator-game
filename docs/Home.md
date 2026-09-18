@@ -21,6 +21,15 @@ and an Obsidian vault; start here.
 - [[ROADMAP]] — next engines, ranked alternatives, backlog, and the reusable
   **engine-adding pattern**.
 - [[QA-TEST-PLAN]] — manual + automated QA test plan.
+- [[GAME-SAFETY]] — game preservation policy: language/font scope only,
+  additive by default, never shadow originals. The policy every [[cases|case]]
+  is measured against.
+
+## Cases — read before engine/export changes
+
+- [[cases]] — incident log of games our extract / decompile / export pipeline
+  broke. Every user-reported game error log becomes a case file here; consult
+  it before touching `engine/`, export, or inject code.
 
 ## Guides
 

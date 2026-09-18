@@ -17,6 +17,16 @@ view over Tauri `invoke` commands + events. Nine engines ship: **RPGMaker MV/MZ*
 no openable format). Unity and Wolf RPG were built as native engines and then
 removed — see `docs/ENGINES.md` before proposing either again.
 
+## Error-log cases — read these first
+
+A pasted game error log (`[code] … [/code]`) almost always means our extract /
+decompile / export wrote something that broke the game. Before changing
+`engine/`, export, or inject code — and whenever a game won't start after
+export — read `docs/cases/` (index: `docs/cases.md`): one md per real
+incident, each with the verbatim error, root cause, game repair, and a rule.
+Every new error log the user reports must be diagnosed, the game repaired and
+verified to boot, and a case file recorded before moving on.
+
 ## Setup & commands
 
 ```bash
@@ -99,6 +109,10 @@ src/         React UI; ipc.ts mirrors the command surface; Zustand stores split 
 - **Tests copy the fixture; never dirty it.** Integration tests copy
   `tests/fixtures/mz-sample` to a temp dir before writing. Each engine has its own
   `tests/<engine>_roundtrip.rs`.
+- **Game safety (`docs/GAME-SAFETY.md`).** Touch the game for language and font
+  concerns only; additive by default; never shadow or delete originals;
+  everything added is marked and removable; validate what we wrote before
+  calling export done.
 
 ## Conventions
 
