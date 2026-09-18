@@ -27,9 +27,9 @@ export default function GridView() {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(savedPageSize);
-  const [inspectorOpen, setInspectorOpen] = useState(
-    () => localStorage.getItem("rpgtl:inspector-open") !== "false"
-  );
+  // The inspector starts closed every session — the user opens it by clicking a
+  // row and closes it themselves; the choice is never persisted.
+  const [inspectorOpen, setInspectorOpen] = useState(false);
 
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const activePage = Math.min(page, pageCount - 1);
@@ -39,12 +39,10 @@ export default function GridView() {
   function openInspector(index: number) {
     setSelectedIndex(index);
     setInspectorOpen(true);
-    localStorage.setItem("rpgtl:inspector-open", "true");
   }
 
   function closeInspector() {
     setInspectorOpen(false);
-    localStorage.setItem("rpgtl:inspector-open", "false");
   }
 
   const virtualizer = useVirtualizer({
