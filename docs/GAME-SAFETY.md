@@ -89,9 +89,12 @@ incidents; this file is the standing policy they are measured against.
 
 - **Ren'Py decompile-on-import** (rule 3): compiled-only games get `.rpy`
   written beside their `.rpyc` because extraction needs source. Mitigated:
-  `repair_and_track_decompiled` post-validates/repairs the output and records
-  it in `.rpgtl/decompiled.txt` for restore — see
-  [[2026-09-18-renpy-empty-screen-decompile]].
+  only the missing sources are decompiled (never a whole-dir clobber), the
+  output is post-validated — repaired, or deleted when the render is broken so
+  the game falls back to its own `.rpyc` — and recorded in
+  `.rpgtl/decompiled.txt` for restore. See
+  [[2026-09-18-renpy-empty-screen-decompile]] and
+  [[2026-09-18-renpy-redecompile-clobber]].
 - **Ren'Py in-place fallback inject** (rule 2): when no bundled launcher is
   found, translation is injected in place. Mitigation: snapshot + restore,
   same as other in-place engines.

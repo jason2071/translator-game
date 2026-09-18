@@ -84,12 +84,13 @@ impl GameEngine for RenpyEngine {
         // used by compiled-only games whose translation tree is all we can read.
         let mut tl_units = Vec::new();
         let mut tl_source_lang = None;
+        let mut tree_olds: HashSet<String> = HashSet::new();
         if let Some((src_lang, src_dir)) = preferred_tl_source(&dir, opts.source_lang.as_deref()) {
             for path in rpy_files_under(&src_dir) {
                 let rel = rel_path(&dir, &path);
                 let content =
                     std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
-                extract_from_tl(&rel, &src_lang, &content, &mut tl_units);
+                extract_from_tl(&rel, &src_lang, &content, &mut tl_units, &mut tree_olds);
             }
             tl_source_lang = Some(src_lang);
         }
@@ -160,13 +161,7 @@ impl GameEngine for RenpyEngine {
             && (requested_tl_matches || (auto_source && tl_units.len() >= units.len()))
         {
             if auto_source {
-                // A shipped `tl/english` tree may cover the story yet leave UI in
-                // the base language. Keep English dialogue as the primary source,
-                // but merge base-script Terms so bare/dynamic screen labels are not
-                // hidden. Names and base dialogue/choices stay out: mixing those
-                // would duplicate the story in two languages. Explicit source
-                // selections remain strict and do not receive this mixed fallback.
-                tl_units.extend(units.into_iter().filter(|u| u.kind == UnitKind::Term));
+                tl_units = merge_auto_tl_source(tl_units, units, &tree_olds);
             }
             return Ok(tl_units);
         }
@@ -362,7 +357,8 @@ fn needs_decompile(dir: &Path) -> bool {
 /// (`<root>/lib/<platform>/python`) and Ren'Py runtime — all the bundled
 /// [`unrpyc`](super::unrpyc) decompiler needs. We stage any `.rpyc` locked inside
 /// `.rpa` onto disk (like [`ensure_unpacked`] does for `.rpy`), then run
-/// `<python> unrpyc.py -c <dir>`, which writes a `.rpy` next to every `.rpyc`.
+/// `<python> unrpyc.py <missing .rpyc…>` (no clobber), which writes a `.rpy`
+/// next to exactly the compiled scripts that lack one.
 ///
 /// Returns `Ok(None)` on success (or nothing to do); `Ok(Some(reason))` when it
 /// could not decompile, so the caller folds `reason` into the actionable error and
@@ -394,13 +390,23 @@ fn ensure_decompiled(dir: &Path, root: &Path) -> Result<Option<String>> {
     };
     let unrpyc_py = unrpyc::materialize(major)?;
 
-    // 3. Run unrpyc over the game dir (it recurses and writes `.rpy` beside each
-    // `.rpyc`). Mirrors export_tl's three-tier subprocess handling: a spawn
-    // failure or a non-zero exit degrades to the actionable error rather than
-    // aborting the import. Retry once with --try-harder against obfuscation.
-    let decompiled = match run_unrpyc(&python, &unrpyc_py, dir, false) {
+    // 3. Decompile ONLY the `.rpyc` that have no `.rpy` sibling, passing those
+    // file paths to unrpyc — never the whole dir, and never `-c`/clobber.
+    // unrpyc skips existing outputs on its own; re-decompiling files that
+    // already have source would rewrite hundreds of `.rpy` from bytecode the
+    // game may itself have recompiled since our last pass, and that
+    // second-generation bytecode decompiles to broken script
+    // (docs/cases/2026-09-18-renpy-redecompile-clobber). Mirrors export_tl's
+    // three-tier subprocess handling: a spawn failure or a non-zero exit
+    // degrades to the actionable error rather than aborting the import. Retry
+    // once with --try-harder against obfuscation.
+    let missing = missing_sources(dir);
+    if missing.is_empty() {
+        return Ok(None); // every compiled script already has its source sibling
+    }
+    let decompiled = match run_unrpyc(&python, &unrpyc_py, &missing, false) {
         Ok(true) => true,
-        Ok(false) => match run_unrpyc(&python, &unrpyc_py, dir, true) {
+        Ok(false) => match run_unrpyc(&python, &unrpyc_py, &missing, true) {
             Ok(ok) => ok,
             Err(e) => return Ok(Some(format!("could not run the bundled Python: {e}"))),
         },
@@ -410,15 +416,56 @@ fn ensure_decompiled(dir: &Path, root: &Path) -> Result<Option<String>> {
         return Ok(Some("unrpyc could not decompile the scripts".to_string()));
     }
     // unrpyc exits 0 even on output Ren'Py cannot parse (an empty screen becomes
-    // a bare `screen name()` header), so validate + repair what it wrote before
-    // that `.rpy` can shadow the game's `.rpyc` — and record the files so
-    // `restore_original` can undo the decompile later.
+    // a bare `screen name()` header; game-recompiled bytecode renders
+    // multi-line python as an empty `$` + mangled indent), so validate + repair
+    // — or delete — what it wrote before any `.rpy` can shadow the game's
+    // `.rpyc`. Deleted files are simply re-attempted (and re-deleted) on a
+    // later import — bounded to the missing set, never a whole-tree clobber.
+    // Their strings never extract; that beats a game that won't boot.
     repair_and_track_decompiled(dir, root);
     Ok(None)
 }
 
-/// Run `<python> <unrpyc_py> -c [--try-harder] <dir>`. `Ok(true)` on exit 0,
-/// `Ok(false)` on a non-zero exit, `Err` only when the process could not be spawned.
+/// The compiled scripts under `dir` (recursively, skipping `tl/`) that have no
+/// source sibling: `.rpyc` without `.rpy`, `.rpymc` without `.rpym`.
+/// [`ensure_decompiled`] passes exactly these paths to unrpyc — never the whole
+/// dir with clobber — so an already-decompiled game is never rewritten.
+fn missing_sources(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if !is_tl_dir(&p) {
+                    stack.push(p);
+                }
+                continue;
+            }
+            let sourceless = match p.extension().and_then(|x| x.to_str()) {
+                Some("rpyc") => !p.with_extension("rpy").exists(),
+                Some("rpymc") => !p.with_extension("rpym").exists(),
+                _ => false,
+            };
+            if sourceless {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// Run `<python> <unrpyc.py> [--try-harder] <file…>` over the exact `.rpyc`
+/// paths that need decompiling. `Ok(true)` when every chunk exited 0,
+/// `Ok(false)` on any non-zero exit, `Err` only when a process could not be
+/// spawned. Deliberately no `-c`/clobber: unrpyc skips existing outputs itself,
+/// and an existing `.rpy` must never be rewritten (game-safety rule 3) — the
+/// rewrite would decompile bytecode the game may have recompiled since, which
+/// renders as broken script. Paths run in chunks so a game with hundreds of
+/// scripts stays clear of the Windows command-line length limit.
 ///
 /// `unrpyc.py` does `import decompiler` / `import deobfuscate` — sibling modules in
 /// its own dir. A game's bundled Ren'Py `python` does NOT auto-add the script's
@@ -426,28 +473,32 @@ fn ensure_decompiled(dir: &Path, root: &Path) -> Result<Option<String>> {
 /// itself), so those imports fail with `No module named decompiler` when we launch
 /// it directly. Point `PYTHONPATH` at the unrpyc dir so the package resolves
 /// regardless of the interpreter's script-path handling.
-fn run_unrpyc(python: &Path, unrpyc_py: &Path, dir: &Path, try_harder: bool) -> Result<bool> {
+fn run_unrpyc(python: &Path, unrpyc_py: &Path, files: &[PathBuf], try_harder: bool) -> Result<bool> {
     let pkg_dir = unrpyc_py.parent().unwrap_or(unrpyc_py);
-    let mut cmd = Command::new(python);
-    // Run unrpyc.py by its *bare name* from its own dir. A game's bundled Ren'Py
-    // `python` sets `sys.path` itself and doesn't honor PYTHONPATH or add an absolute
-    // script's dir, so `import decompiler` (a sibling module) fails. With cwd = the
-    // unrpyc dir and a relative script name, `sys.path[0]` becomes "" (the cwd), so
-    // the sibling package resolves.
-    //
-    // Deliberately no `-p`: Ren'Py's bundled interpreter (py2 *and* py3) ships
-    // without the `_multiprocessing` C module, so unrpyc's `-p`/--processes choice
-    // set is empty and any `-p N` is rejected outright; with it absent unrpyc already
-    // falls back to single-threaded decompilation, which is what we want anyway.
-    cmd.current_dir(pkg_dir).arg("unrpyc.py").arg("-c");
-    if try_harder {
-        cmd.arg("--try-harder");
+    let mut all_ok = true;
+    for chunk in files.chunks(64) {
+        let mut cmd = Command::new(python);
+        // Run unrpyc.py by its *bare name* from its own dir. A game's bundled Ren'Py
+        // `python` sets `sys.path` itself and doesn't honor PYTHONPATH or add an absolute
+        // script's dir, so `import decompiler` (a sibling module) fails. With cwd = the
+        // unrpyc dir and a relative script name, `sys.path[0]` becomes "" (the cwd), so
+        // the sibling package resolves.
+        //
+        // Deliberately no `-p`: Ren'Py's bundled interpreter (py2 *and* py3) ships
+        // without the `_multiprocessing` C module, so unrpyc's `-p`/--processes choice
+        // set is empty and any `-p N` is rejected outright; with it absent unrpyc already
+        // falls back to single-threaded decompilation, which is what we want anyway.
+        cmd.current_dir(pkg_dir).arg("unrpyc.py");
+        if try_harder {
+            cmd.arg("--try-harder");
+        }
+        cmd.args(chunk);
+        let output = cmd
+            .output()
+            .with_context(|| format!("spawning {}", python.display()))?;
+        all_ok &= output.status.success();
     }
-    cmd.arg(dir);
-    let output = cmd
-        .output()
-        .with_context(|| format!("spawning {}", python.display()))?;
-    Ok(output.status.success())
+    Ok(all_ok)
 }
 
 /// The trailing marker the vendored unrpyc writes into every `.rpy` it
@@ -459,18 +510,23 @@ pub(crate) const DECOMPILED_MARKER: &str = "# Decompiled by unrpyc";
 
 /// Post-pass over the `.rpy` unrpyc just wrote into `dir` (the game dir):
 ///
-/// 1. **Repair** the one artifact we've seen break a game (game-safety rules 3
-///    and 5): a screen whose compiled body is empty decompiles to a bare
-///    `screen name()` header — no block — which Ren'Py rejects at boot while
-///    unrpyc still exits 0 claiming success.
-/// 2. **Track** every decompiled file (root-relative path) in
+/// 1. **Delete** renders that are beyond repair (game-safety rule 3): a bare
+///    `$` line is unrpyc's broken render of multi-line python from
+///    game-recompiled bytecode — invalid script, or code silently lost. The
+///    game falls back to its own `.rpyc`.
+/// 2. **Repair** the empty-screen artifact: a screen whose compiled body is
+///    empty decompiles to a bare `screen name()` header — no block — which
+///    Ren'Py rejects at boot while unrpyc still exits 0 claiming success.
+/// 3. **Track** every decompiled file (root-relative path) in
 ///    `<root>/.rpgtl/decompiled.txt` so `restore_original` can undo the
 ///    decompile and return a compiled-only game to its shipped state.
 ///
 /// Files without [`DECOMPILED_MARKER`] — the game's own source — are never
-/// touched. Returns `(files repaired, files newly tracked)`.
-pub fn repair_and_track_decompiled(dir: &Path, root: &Path) -> (usize, usize) {
+/// touched. Returns `(files repaired, files newly tracked, broken renders
+/// deleted)`.
+pub fn repair_and_track_decompiled(dir: &Path, root: &Path) -> (usize, usize, usize) {
     let mut repaired = 0usize;
+    let mut broken = 0usize;
     let mut tracked: Vec<String> = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -495,6 +551,19 @@ pub fn repair_and_track_decompiled(dir: &Path, root: &Path) -> (usize, usize) {
             if !content.contains(DECOMPILED_MARKER) {
                 continue;
             }
+            // A bare `$` (empty one-line python) means unrpyc rendered
+            // multi-line python from game-recompiled bytecode as an empty `$`
+            // plus mangled indentation (docs/cases/
+            // 2026-09-18-renpy-redecompile-clobber): the game refuses to boot —
+            // or, worse, silently loses the code where the next line happens to
+            // parse. Not repairable; delete our shadow so the game loads its
+            // own `.rpyc`, and don't track what no longer exists.
+            if content.lines().any(|l| l.trim() == "$") {
+                if std::fs::remove_file(&p).is_ok() {
+                    broken += 1;
+                }
+                continue;
+            }
             if let Some(fixed) = repair_decompiled_rpy(&content) {
                 if write_atomic(&p, fixed.as_bytes()).is_ok() {
                     repaired += 1;
@@ -510,7 +579,7 @@ pub fn repair_and_track_decompiled(dir: &Path, root: &Path) -> (usize, usize) {
         }
     }
     let newly = append_unique(&root.join(".rpgtl").join("decompiled.txt"), &tracked);
-    (repaired, newly)
+    (repaired, newly, broken)
 }
 
 /// Fix unrpyc's rendering of an empty screen: it writes the header without the
@@ -1691,8 +1760,39 @@ enum TlBlock {
 /// file: the say line inside each `translate <src> <id>:` block, and each `new "…"`
 /// inside a `translate <src> strings:` block. Byte-span pointers into this file, so
 /// export splices the translation back in and retags the block to the target locale.
-/// The commented original (`# c "…"`) and the `old "…"` key are left untouched.
-fn extract_from_tl(file: &str, src_lang: &str, content: &str, out: &mut Vec<TransUnit>) {
+/// The commented original (`# c "…"`) is left untouched, while each `old "…"` key is
+/// collected into `old_seen` — those are the base-script strings the tree *covers*,
+/// which the auto tl-source merge uses to keep uncovered base menu captions out of
+/// duplicate territory (see [`merge_auto_tl_source`]).
+/// Auto tl-source merge: the tree stays the story's primary source, plus
+/// base-script Terms (bare/dynamic screen labels) and menu captions the tree
+/// doesn't cover — City Lights ships its replay menus as base-script Chinese
+/// literals while the dialogue is English, so without the caption the choice
+/// can never be translated (and it renders as tofu once fonts are remapped).
+/// `tree_olds` (the strings-block `old` keys) marks captions the tree already
+/// covers, so those don't arrive as a second, wrong-language duplicate. Base
+/// dialogue/names stay out: mixing those would duplicate the story in two
+/// languages. Explicit source selections remain strict and skip this merge.
+fn merge_auto_tl_source(
+    mut tl_units: Vec<TransUnit>,
+    units: Vec<TransUnit>,
+    tree_olds: &HashSet<String>,
+) -> Vec<TransUnit> {
+    tl_units.extend(units.into_iter().filter(|u| match u.kind {
+        UnitKind::Term => true,
+        UnitKind::Choice => !tree_olds.contains(&u.source),
+        _ => false,
+    }));
+    tl_units
+}
+
+fn extract_from_tl(
+    file: &str,
+    src_lang: &str,
+    content: &str,
+    out: &mut Vec<TransUnit>,
+    old_seen: &mut HashSet<String>,
+) {
     let header = format!("translate {src_lang} ");
     let mut block = TlBlock::Other;
     let mut offset = 0usize;
@@ -1731,6 +1831,13 @@ fn extract_from_tl(file: &str, src_lang: &str, content: &str, out: &mut Vec<Tran
                             UnitKind::Term,
                             &raw[rel..rel + len],
                         ));
+                    }
+                }
+            }
+            TlBlock::Strings if trimmed.starts_with("old ") => {
+                if let Some((rel, len, _)) = first_string(raw) {
+                    if len > 0 {
+                        old_seen.insert(raw[rel..rel + len].to_string());
                     }
                 }
             }
@@ -1966,6 +2073,13 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>, py_seen: &mu
         };
 
         let kind = if is_choice {
+            // A caption that is *only* interpolation tags ("[first_text]") is a
+            // template several different runtime strings flow through —
+            // translating it would retag every option identically. Only captions
+            // carrying literal text can be translated safely.
+            if strip_interp_tags(source).trim().is_empty() {
+                continue;
+            }
             UnitKind::Choice
         } else {
             UnitKind::Dialogue
@@ -1974,6 +2088,30 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>, py_seen: &mu
             TransUnit::new(file, format!("{abs}:{inner_len}"), kind, source).with_context(speaker),
         );
     }
+}
+
+/// Remove `[tag]` interpolations from `s` so a caption that is nothing but
+/// tags can be detected. `[[` is a literal bracket, not a tag.
+fn strip_interp_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '[' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            out.push('[');
+            continue;
+        }
+        for c2 in chars.by_ref() {
+            if c2 == ']' {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// A Python identifier: non-empty, `[A-Za-z_][A-Za-z0-9_]*`.
@@ -2899,6 +3037,46 @@ fn export_tl_from_source_with_font_scale(
         files += 1;
     }
 
+    // Base-script menu captions (the auto tl-source merge keeps them when the
+    // tree doesn't cover them) ride a strings block: Ren'Py matches menu
+    // choices in substitute() *before* interpolation, so a caption carrying
+    // tags ("[Yua] - …") only translates through old/new — the
+    // post-interpolation hook in setup_language never sees the tag form.
+    // The tree's own strings blocks are spliced above; these units' pointers
+    // target base scripts, so nothing else consumes them.
+    let mut menus: Vec<(&str, &str)> = units
+        .iter()
+        .filter(|u| {
+            u.kind == UnitKind::Choice
+                && !u.file.starts_with(src_prefix.as_str())
+                && u.status.is_applied()
+                && u.translation.as_deref().is_some_and(|t| !t.trim().is_empty())
+        })
+        .filter_map(|u| Some((u.source.as_str(), u.translation.as_deref()?)))
+        .collect();
+    if !menus.is_empty() {
+        menus.sort();
+        menus.dedup_by(|a, b| a.0 == b.0);
+        let mut s = String::new();
+        s.push_str("# Added by Game Translator — menu captions that exist only in the base script.\n");
+        s.push_str("# Game Translator v");
+        s.push_str(env!("CARGO_PKG_VERSION"));
+        s.push_str(" — delete this file to remove it.\n\n");
+        s.push_str(&format!("translate {lang} strings:\n"));
+        for (old, new) in &menus {
+            s.push_str("\n    old \"");
+            s.push_str(&renpy_tl::quote_unicode(old));
+            s.push_str("\"\n    new \"");
+            s.push_str(&renpy_tl::quote_unicode(&renpy_tl::decode_escapes(new)));
+            s.push_str("\"\n");
+        }
+        s.push('\n');
+        let out_path = data_dir.join("tl").join(&lang).join("rpgtl_menus.rpy");
+        std::fs::write(&out_path, s)
+            .with_context(|| format!("writing {}", out_path.display()))?;
+        files += 1;
+    }
+
     // Base-script UI Terms are supplemental to the source-language tl tree. They
     // cannot be spliced into it, and a regular strings block could duplicate the
     // tree's preserved `old` key. Put them in the post-interpolation hook only.
@@ -3586,7 +3764,16 @@ fn setup_language_with_runtime_strings(
         }
         s.push_str("    _tl_groups = {}\n");
         s.push_str("    def _tl_font_group(_f):\n");
-        s.push_str("        if not isinstance(_f, str):\n"); // ImageFont/FontGroup: leave alone
+        // The transform receives each segment's font as a string *or* as a
+        // FontGroup object: games such as City Lights set
+        // `define gui.text_font = <group>` (a CJK face for the Han ranges with
+        // a Latin face as the None-default), and Thai has no slot in that
+        // group, so it falls through to the Latin face and renders as tofu —
+        // while `config.font_replacement_map` can't help either, because its
+        // keys are font *names*. So wrap groups too: FontGroup.add flattens a
+        // nested group's ranges into ours (first add wins, keeping Thai on the
+        // bundled face). Other font objects still pass through untouched.
+        s.push_str("        if not isinstance(_f, (str, FontGroup)):\n");
         s.push_str("            return _f\n");
         s.push_str("        _g = _tl_groups.get(_f)\n");
         s.push_str("        if _g is None:\n");
@@ -3604,6 +3791,12 @@ fn setup_language_with_runtime_strings(
                 "                _g = FontGroup().add(_tl_font, 0x0e00, 0x0e7f).add(_f, None, None)\n",
             );
         }
+        // FontGroup.add copies a nested group's `map` only, so merge its
+        // per-codepoint remaps by hand or `.remap()` calls would silently drop.
+        s.push_str("                if hasattr(_f, \"char_map\"):\n");
+        s.push_str("                    for _k, _v in _f.char_map.items():\n");
+        s.push_str("                        if _k not in _g.char_map:\n");
+        s.push_str("                            _g.char_map[_k] = _v\n");
         s.push_str("            except Exception:\n");
         s.push_str("                _g = _f\n");
         s.push_str("            _tl_groups[_f] = _g\n");
@@ -3643,13 +3836,20 @@ fn setup_language_with_runtime_strings(
         // typing indicator, ♡) render instead of turning into tofu boxes.
         s.push_str("    if hasattr(config, \"font_transforms\"):\n");
         s.push_str("        preferences.font_transform = \"rpgtl_thai\"\n");
-        // Some games bypass font transforms entirely, so map their text fonts too.
-        // Icon tags need an un-mapped alias (installed above) to preserve symbols.
-        s.push_str("    for _f in _tl_fonts:\n");
-        s.push_str("        for _b in (False, True):\n");
-        s.push_str("            for _i in (False, True):\n");
+        // The whole-face map is the *destructive* fallback: it swaps a game
+        // face for the Thai face, so any glyph that face lacks turns into
+        // tofu — on City Lights the untranslated CJK choices kept rendering
+        // through the FontGroup's SourceHanSans member, which the map
+        // silently swapped to Sarabun (no CJK) → boxes. Only use it where the
+        // non-destructive transform above cannot exist (Ren'Py < 8.1 has no
+        // `config.font_transforms`). Icon tags keep their un-mapped alias
+        // (installed above) either way.
+        s.push_str("    else:\n");
+        s.push_str("        for _f in _tl_fonts:\n");
+        s.push_str("            for _b in (False, True):\n");
+        s.push_str("                for _i in (False, True):\n");
         s.push_str(
-            "                config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n",
+            "                    config.font_replacement_map[_f, _b, _i] = (_tl_font, _b, _i)\n",
         );
         if has_heart_icon_font {
             s.push_str("    if hasattr(store, \"heart_icon\"):\n");
@@ -3947,7 +4147,7 @@ mod tests {
         std::fs::write(ten.join("script.rpy"), src).unwrap();
 
         let mut units = Vec::new();
-        extract_from_tl("tl/english/script.rpy", "english", src, &mut units);
+        extract_from_tl("tl/english/script.rpy", "english", src, &mut units, &mut HashSet::new());
         for u in &mut units {
             u.translation = Some(format!("T:{}", u.source));
             u.status = Status::Translated;
@@ -3973,6 +4173,123 @@ mod tests {
         );
     }
 
+    /// A menu caption that is nothing but interpolation tags is a template, not
+    /// text — translating "[first_text]" would retag every option identically.
+    #[test]
+    fn extract_rpy_skips_pure_interpolation_menu_captions() {
+        let src = "label pick:\n\
+                   menu:\n\
+                   \"[first_text]\":\n\
+                   jump a\n\
+                   \"第一次进课堂\":\n\
+                   jump b\n\
+                   \"季雅和[Yua] - 双人小手\":\n\
+                   jump c\n\
+                   \"Go left\" if flag:\n\
+                   jump d\n";
+        let mut units = Vec::new();
+        extract_rpy("script.rpy", src, &mut units, &mut HashSet::new());
+        let sources: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+        assert!(!sources.contains(&"[first_text]"), "{sources:?}");
+        assert!(sources.contains(&"第一次进课堂"), "{sources:?}");
+        assert!(sources.contains(&"季雅和[Yua] - 双人小手"), "{sources:?}");
+        assert!(sources.contains(&"Go left"), "{sources:?}");
+        assert!(
+            units.iter().all(|u| u.kind == UnitKind::Choice),
+            "{units:?}"
+        );
+    }
+
+    /// City Lights ships its replay menus as base-script Chinese literals the
+    /// tl tree never covers; the auto merge must surface them as units, while a
+    /// caption the tree's strings block does cover must not be duplicated.
+    #[test]
+    fn merge_auto_tl_source_keeps_uncovered_base_menu_captions() {
+        let tl = vec![TransUnit::new(
+            "tl/chinese/script.rpy",
+            "27:6",
+            UnitKind::Dialogue,
+            "季雅说了一句话",
+        )];
+        let base = vec![
+            TransUnit::new("script.rpy", "5:8", UnitKind::Term, "STRENGTH"),
+            TransUnit::new("script.rpy", "7:18", UnitKind::Choice, "第一次进课堂"),
+            TransUnit::new("script.rpy", "9:6", UnitKind::Choice, "已覆盖"),
+            TransUnit::new("script.rpy", "11:16", UnitKind::Dialogue, "English line"),
+        ];
+        let mut tree_olds = HashSet::new();
+        tree_olds.insert("已覆盖".to_string());
+
+        let got = merge_auto_tl_source(tl, base, &tree_olds);
+        let sources: Vec<&str> = got.iter().map(|u| u.source.as_str()).collect();
+        assert!(sources.contains(&"季雅说了一句话"), "tree stays primary: {sources:?}");
+        assert!(sources.contains(&"STRENGTH"), "terms still merge: {sources:?}");
+        assert!(
+            sources.contains(&"第一次进课堂"),
+            "uncovered base caption surfaces: {sources:?}"
+        );
+        assert!(!sources.contains(&"已覆盖"), "covered caption not duplicated");
+        assert!(!sources.contains(&"English line"), "base dialogue stays out");
+    }
+
+    /// Base-script menu captions export through a strings block — Ren'Py
+    /// matches menu choices before interpolation, so "[Yua]" must stay a tag
+    /// in the `old` key or the caption never translates.
+    #[test]
+    fn export_tl_from_source_writes_base_menu_strings_block() {
+        use crate::model::Status;
+        let tmp = tempfile::tempdir().unwrap();
+        let game = tmp.path().join("game");
+        let src_dir = game.join("tl").join("english");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src = "translate english a1:\n    e \"Hello\"\n";
+        std::fs::write(src_dir.join("script.rpy"), src).unwrap();
+
+        let mut units = Vec::new();
+        extract_from_tl(
+            "tl/english/script.rpy",
+            "english",
+            src,
+            &mut units,
+            &mut HashSet::new(),
+        );
+        for u in &mut units {
+            u.translation = Some("สวัสดี".to_string());
+            u.status = Status::Translated;
+        }
+        for (source, translation, applied) in [
+            ("第一次进课堂", "เข้าห้องเรียนครั้งแรก", true),
+            ("季雅和[Yua] - 双人小手", "จียาและ[Yua] - มือคู่", true),
+            ("ยังไม่แปล", "", false),
+        ] {
+            let mut u = TransUnit::new("script.rpy", "7:18", UnitKind::Choice, source);
+            u.translation = applied.then(|| translation.to_string());
+            u.status = if applied { Status::Translated } else { Status::Untranslated };
+            units.push(u);
+        }
+
+        export_tl_from_source(&game, "english", &units, "Thai").unwrap();
+
+        let menus =
+            std::fs::read_to_string(game.join("tl").join("thai").join("rpgtl_menus.rpy"))
+                .unwrap();
+        assert!(menus.contains("translate thai strings:"), "{menus}");
+        assert!(
+            menus.contains("old \"第一次进课堂\"\n    new \"เข้าห้องเรียนครั้งแรก\""),
+            "{menus}"
+        );
+        assert!(
+            menus.contains("old \"季雅和[Yua] - 双人小手\"\n    new \"จียาและ[Yua] - มือคู่\""),
+            "tags survive as tags: {menus}"
+        );
+        assert!(!menus.contains("ยังไม่แปล"), "untranslated stay out: {menus}");
+        // The retagged tree file is untouched by the menu captions.
+        let thai = std::fs::read_to_string(game.join("tl").join("thai").join("script.rpy"))
+            .unwrap();
+        assert!(thai.contains("\"สวัสดี\""), "{thai}");
+        assert!(!thai.contains("第一次进课堂"), "{thai}");
+    }
+
     #[test]
     fn tl_source_export_puts_base_ui_in_runtime_hook_without_duplicate_old() {
         use crate::model::Status;
@@ -3984,7 +4301,7 @@ mod tests {
         std::fs::write(ten.join("script.rpy"), src).unwrap();
 
         let mut units = Vec::new();
-        extract_from_tl("tl/english/script.rpy", "english", src, &mut units);
+        extract_from_tl("tl/english/script.rpy", "english", src, &mut units, &mut HashSet::new());
         units[0].translation = Some("พละกำลัง".to_string());
         units[0].status = Status::Translated;
         for (pointer, source, translation) in [
@@ -4028,7 +4345,7 @@ mod tests {
         // Plus a shipped tl/japanese/common.rpy — a handful of UI strings.
         let common =
             "translate japanese strings:\n    old \"Quit?\"\n    new \"\u{7d42}\u{4e86}?\"\n";
-        extract_from_tl("tl/japanese/common.rpy", "japanese", common, &mut units);
+        extract_from_tl("tl/japanese/common.rpy", "japanese", common, &mut units, &mut HashSet::new());
         assert!(
             units.iter().any(|u| u.file.starts_with("tl/")),
             "the stray tl/ unit is in the list"
@@ -4064,7 +4381,7 @@ mod tests {
         std::fs::write(ten.join("script.rpy"), src).unwrap();
 
         let mut units = Vec::new();
-        extract_from_tl("tl/english/script.rpy", "english", src, &mut units);
+        extract_from_tl("tl/english/script.rpy", "english", src, &mut units, &mut HashSet::new());
         for u in &mut units {
             u.translation = Some("ลด 50% วันนี้".to_string());
             u.status = Status::Translated;
@@ -4100,7 +4417,7 @@ translate english python:
     e = Character("x")
 "#;
         let mut out = Vec::new();
-        extract_from_tl("tl/english/script.rpy", "english", src, &mut out);
+        extract_from_tl("tl/english/script.rpy", "english", src, &mut out, &mut HashSet::new());
 
         let sources: Vec<&str> = out.iter().map(|u| u.source.as_str()).collect();
         assert_eq!(sources, vec!["Hello there", "Narration line.", "Victoria"]);
@@ -4633,6 +4950,28 @@ label start:
     }
 
     #[test]
+    fn missing_sources_targets_only_compiled_without_source() {
+        // Game-safety rule 3 (docs/cases/2026-09-18-renpy-redecompile-clobber):
+        // decompile must target exactly the `.rpyc`/`.rpymc` lacking a source
+        // sibling — never re-decompile (clobber) files that already have one.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("done.rpyc"), b"x").unwrap();
+        std::fs::write(dir.join("done.rpy"), "\"hi\"").unwrap();
+        std::fs::write(dir.join("todo.rpyc"), b"x").unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/mod.rpymc"), b"x").unwrap();
+        std::fs::create_dir_all(dir.join("tl")).unwrap();
+        std::fs::write(dir.join("tl/translation.rpyc"), b"x").unwrap(); // never source
+
+        let mut missing = missing_sources(dir);
+        missing.sort();
+        let mut expect = vec![dir.join("todo.rpyc"), dir.join("sub/mod.rpymc")];
+        expect.sort();
+        assert_eq!(missing, expect);
+    }
+
+    #[test]
     fn needs_decompile_flags_loose_rpyc_without_source() {
         // Regression (Summertime Saga): a game ships a loose `splash.rpy` yet keeps
         // the bulk of its story as `.rpyc`, so gating decompile on "no .rpy at all"
@@ -4884,6 +5223,65 @@ define twi = Character(_(\"Both\"))
         );
     }
 
+    /// City Lights ships `define gui.text_font = <FontGroup>` — a CJK face for
+    /// the Han ranges plus a Latin default — so every style font reaches our
+    /// transform as a FontGroup *object*, not a name. The hook must wrap groups
+    /// (Thai → bundled face) instead of passing them through, or Thai text
+    /// falls to the group's Latin face and renders as tofu squares.
+    #[test]
+    fn setup_language_hook_wraps_fontgroup_fonts() {
+        let d = tempfile::tempdir().unwrap();
+        setup_language(
+            d.path(),
+            "thai",
+            "\u{e44}\u{e17}\u{e22}",
+            &[],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
+
+        assert!(
+            out.contains("isinstance(_f, (str, FontGroup))"),
+            "hook must accept FontGroup fonts: {out}"
+        );
+        assert!(
+            !out.contains("isinstance(_f, str)"),
+            "a string-only guard passes game FontGroups straight through: {out}"
+        );
+        assert!(
+            out.contains("_g.char_map[_k] = _v"),
+            "char_map merge missing — a group's remaps drop when wrapped: {out}"
+        );
+    }
+
+    /// The whole-face `font_replacement_map` swap is destructive: on City Lights
+    /// it turned untranslated CJK choices into tofu by swapping the FontGroup's
+    /// SourceHanSans member to the Thai face. It must only be emitted where the
+    /// non-destructive font transform cannot run (no `config.font_transforms`).
+    #[test]
+    fn setup_language_maps_whole_faces_only_without_font_transforms() {
+        let d = tempfile::tempdir().unwrap();
+        setup_language(
+            d.path(),
+            "thai",
+            "\u{e44}\u{e17}\u{e22}",
+            &[],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(d.path().join("zzz_translator.rpy")).unwrap();
+
+        assert!(
+            out.contains("    else:\n        for _f in _tl_fonts:"),
+            "replacement map must sit under the no-font_transforms else: {out}"
+        );
+        assert!(
+            out.contains("preferences.font_transform = \"rpgtl_thai\""),
+            "transform stays the preferred path: {out}"
+        );
+    }
+
     /// A name the game renders through a variable (`menu: "[Mom_name]"`) is reached
     /// by neither the skeleton — which sees the literal `[Mom_name]` — nor a
     /// byte-span splice, since there is no literal to splice. The runtime hook is
@@ -5090,15 +5488,17 @@ define twi = Character(_(\"Both\"))
             zzz.contains("preferences.font_transform = \"rpgtl_thai\""),
             "{zzz}"
         );
-        // The whole-face map covers custom displayables; detected heart icons use a
-        // separate, un-mapped DejaVu alias.
+        // The whole-face map is only emitted for pre-8.1 Ren'Py (no
+        // font_transforms); on 8.1+ it would swap CJK/symbol faces for the
+        // Thai face and turn untranslated leftovers into tofu. Detected heart
+        // icons use a separate, un-mapped DejaVu alias either way.
         assert!(
             zzz.contains("config.font_replacement_map[_f, _b, _i]"),
             "{zzz}"
         );
         assert!(
-            !zzz.contains("else:\n        for _f in _tl_fonts:"),
-            "the text fallback must apply to custom displayables: {zzz}"
+            zzz.contains("else:\n        for _f in _tl_fonts:"),
+            "the destructive whole-face map must stay behind the no-font_transforms else: {zzz}"
         );
         // Named UI text styles commonly inherit from `text`, rather than `default`.
         // Both roots must allow Thai to break between characters in narrow widgets.

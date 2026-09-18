@@ -602,9 +602,10 @@ fn decompile_post_pass_repairs_empty_screens_and_tracks_them() {
     // Game-shipped source: no marker → never touched, never tracked.
     std::fs::write(game.join("shipped.rpy"), "screen real():\n    pass\n").unwrap();
 
-    let (repaired, tracked) = app_lib::engine::renpy::repair_and_track_decompiled(&game, root);
+    let (repaired, tracked, broken) = app_lib::engine::renpy::repair_and_track_decompiled(&game, root);
     assert_eq!(repaired, 1, "only the empty screen needs repair");
     assert_eq!(tracked, 2, "both decompiled files newly tracked");
+    assert_eq!(broken, 0);
     let fixed = std::fs::read_to_string(game.join("season1/stub.rpy")).unwrap();
     assert!(
         fixed.contains("screen ci_replay_transport_controls():\n    pass"),
@@ -617,5 +618,41 @@ fn decompile_post_pass_repairs_empty_screens_and_tracks_them() {
 
     // Idempotent: a second pass repairs nothing and appends nothing.
     let again = app_lib::engine::renpy::repair_and_track_decompiled(&game, root);
-    assert_eq!(again, (0, 0));
+    assert_eq!(again, (0, 0, 0));
+}
+
+#[test]
+fn decompile_post_pass_deletes_broken_empty_dollar_renders() {
+    // Regression (docs/cases/2026-09-18-renpy-redecompile-clobber, City Lights
+    // & Love Bites): after the game recompiles our decompiled source, decompiling
+    // that second-generation bytecode renders multi-line screen python as a bare
+    // `$` plus mangled indentation — invalid script unrpyc still calls success
+    // (exit 0). The post-pass must DELETE the file so the game falls back to its
+    // own `.rpyc` instead of booting into a parse error.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let game = root.join("game");
+    std::fs::create_dir_all(&game).unwrap();
+    std::fs::create_dir_all(root.join(".rpgtl")).unwrap();
+    // Verbatim shape from the real game (phone/apps/applications.rpy:168).
+    std::fs::write(
+        game.join("applications.rpy"),
+        "screen phone():\n    default current_page = 0\n    $         \n        max_page = min(\n    phone.config.applications_pages - 1\n)\n    current_page = min(current_page, max_page)\n# Decompiled by unrpyc: https://github.com/CensoredUsername/unrpyc\n",
+    )
+    .unwrap();
+    std::fs::write(game.join("applications.rpyc"), b"bytecode").unwrap(); // the game's fallback
+
+    let (repaired, tracked, broken) =
+        app_lib::engine::renpy::repair_and_track_decompiled(&game, root);
+    assert_eq!((repaired, tracked, broken), (0, 0, 1));
+    assert!(!game.join("applications.rpy").exists(), "broken render deleted");
+    assert!(
+        game.join("applications.rpyc").exists(),
+        "the game's bytecode kept as fallback"
+    );
+    let list = std::fs::read_to_string(root.join(".rpgtl/decompiled.txt")).unwrap_or_default();
+    assert!(
+        !list.contains("applications"),
+        "a deleted file is not tracked: {list}"
+    );
 }

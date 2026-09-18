@@ -15,6 +15,19 @@ broken game. `AGENTS.md` points here first for a reason.
 
 ## Index (newest first)
 
+- [[2026-09-19-renpy-duplicate-strings-block]] — after the menu-caption
+  pipeline shipped, a hand-written interim strings file collided with the
+  app's own `rpgtl_menus.rpy`: the same `old` key declared twice is a
+  boot-fatal duplicate in Ren'Py. Delete interim tl files before the first
+  export that replaces them.
+- [[2026-09-18-renpy-fontgroup-tofu]] — after export, every Thai string
+  rendered as tofu squares: the game's text styles use FontGroup *objects*
+  (CJK face + Latin default) and our font transform skipped non-string fonts,
+  so Thai fell to a face with no Thai glyphs. Silent — no error log.
+- [[2026-09-18-renpy-redecompile-clobber]] — re-opening a project re-ran the
+  decompiler with clobber over the whole game dir; decompiling the game's own
+  *recompiled* bytecode produced broken multi-line python (empty `$`) in 4
+  files and the game wouldn't boot again.
 - [[2026-09-18-renpy-empty-screen-decompile]] — unrpyc writes an invalid `.rpy`
   (screen header, no body) for a game's empty stub screen, exits 0 anyway;
   game won't boot because the broken `.rpy` shadows its `.rpyc`.
