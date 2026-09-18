@@ -54,3 +54,6 @@ yarn-error.log*
 
 # Playwright MCP artifacts
 .playwright-mcp/
+
+# ZCode agent session state (local tooling, not shared)
+.zcode/
