@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "game-translator"
-version = "0.19.4"
+version = "0.19.5"
 dependencies = [
  "anyhow",
  "async-trait",
