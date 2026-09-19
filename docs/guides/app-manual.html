@@ -70,9 +70,9 @@ Flow: เปิดเกม → provider+key → context+glossary → Run → �
   <li>เลือก Run provider (dropdown TranslateBar; ต้องมี key ยกเว้น Local)</li>
   <li><code>Glossary</code> → panel บน: <code>Era</code>, glossary provider, <code>AI draft</code>, แก้ context</li>
   <li>glossary: <code>Auto-suggest</code>/<code>AI suggest</code> → <code>Translate empty</code> → <code>Add selected</code></li>
-  <li>scope (Sidebar: <code>All files</code>/ไฟล์) → <code>Overwrite existing</code>? → <code>Run</code> (<code>Apply TM</code> ก่อน = ฟรี)</li>
+  <li>scope (Sidebar: <code>All files</code>/ไฟล์) → <code>Overwrite</code> (Options)? → <code>Run</code> (<code>Apply TM</code> ก่อน = ฟรี)</li>
   <li>Grid: filter, แก้คำ (<kbd>Ctrl/Cmd+Enter</kbd>=save+ถัดไป), ตั้ง status</li>
-  <li><code>Errors</code> → <code>Retry failed</code></li>
+  <li>มี fail → chip <code>⚠ N failed</code> บน toolbar → <code>Retry failed</code> / ดูสาเหตุ</li>
   <li><code>Lint</code> → แก้คำไม่ตรง glossary</li>
   <li><code>Export → game</code> (backup อัตโนมัติ; <code>Embed Thai font</code> = RPGMaker MV/MZ)</li>
 </ol>
@@ -87,8 +87,8 @@ Flow: เปิดเกม → provider+key → context+glossary → Run → �
 
 <h2>2. TranslateBar</h2>
 <ul>
-  <li>ซ้าย: สลับภาษา; Run provider = Local(Ollama/LM Studio), OpenAI, Claude, Gemini, OpenRouter.</li>
-  <li>ขวา: <code>Target: {file}</code> (scope, เปลี่ยนที่ Sidebar); <code>Overwrite existing</code>; <code>Run</code>↔<code>Cancel</code>; <code>Re-translate matches (N)</code> (มี search); <code>Retry failed (N)</code>; <code>Errors (N)</code>.</li>
+  <li>ซ้าย: <code>Target: {file}</code> (scope, เปลี่ยนที่ Sidebar); <code>Options ▾</code> = สลับภาษา + Run provider (Local/Ollama/LM Studio, OpenAI, Claude, Gemini, OpenRouter) + <code>Overwrite</code> (Translate completed lines again).</li>
+  <li>ขวา: chip <code>⚠ N failed</code> (โผล่เฉพาะมี fail; คลิก → Errors) + <code>Retry failed</code> (แปลใหม่เฉพาะ failed); <code>Run</code>↔<code>Cancel</code>.</li>
   <li>ล่าง: progress Run+Glossary; สรุป <code>Done — N translated, N reused, M failed</code>; error ระดับคำสั่งแดง.</li>
   <li>Run กับ Glossary แชร์ engine → ทำทีละงาน, อันที่สอง queue.</li>
 </ul>
@@ -103,7 +103,7 @@ Flow: เปิดเกม → provider+key → context+glossary → Run → �
 
 <h2>4. Grid</h2>
 <ul>
-  <li>search <code>Search source / translation… (Enter)</code>; <code>Untranslated only</code>; <code>N shown</code>; ว่าง → <code>Reset filters</code>.</li>
+  <li>search <code>Search source / translation… (Enter)</code>; <code>Untranslated only</code>; <code>N shown</code> + <code>Re-translate</code> (มี search/character; ทับพร้อมยืนยัน); ว่าง → <code>Reset filters</code>.</li>
   <li>คอลัมน์: Source·context | Translation | Status.</li>
   <li>Source: text + file + speaker + kind (Dialogue/Choice/Message…).</li>
   <li>Translation: textarea, blur=save. <kbd>Ctrl/Cmd+Enter</kbd>=save+ถัดไป, <kbd>Enter</kbd>=บรรทัดใหม่. แก้ครั้งแรก Untranslated/Failed → Draft.</li>
@@ -140,7 +140,7 @@ Flow: เปิดเกม → provider+key → context+glossary → Run → �
   <li>เปิด <code>Settings</code> แล้วตั้ง <code>Translation style</code> เป็น <code>Natural</code>.</li>
   <li>เปิด <code>Advanced</code> → <code>Extra prompt</code>.</li>
   <li>เติมท้าย prompt ว่า: <code>ข้อความ UI เมนู ปุ่ม และคำสั่ง ให้แปลสั้นที่สุดโดยยังคงความหมาย Prefer 1–4 คำ ไม่ใช้ประโยคเต็มถ้าใช้คำสั้นแทนได้ ส่วนบทสนทนาให้แปลเป็นธรรมชาติตามปกติ</code></li>
-  <li>กด <code>Run</code>. ข้อความที่แปลไว้แล้วจะไม่เปลี่ยนอัตโนมัติ — เปิด <code>Overwrite existing</code> หรือใช้ <code>Re-translate</code> เมื่อต้องการแปลใหม่.</li>
+  <li>กด <code>Run</code>. ข้อความที่แปลไว้แล้วจะไม่เปลี่ยนอัตโนมัติ — เปิด <code>Overwrite</code> (Options) หรือใช้ <code>Re-translate</code> ข้าง <code>N shown</code> (ต้องมี search) เมื่อต้องการแปลใหม่.</li>
 </ol>
 <p class="note"><b>ต้องการให้สั้นทั้งเกม:</b> เลือก <code>Concise</code> ได้เลย แต่รูปแบบนี้มีผลกับทุกข้อความ รวมถึงบทสนทนา ไม่ได้จำกัดเฉพาะ UI.</p>
 <ul>
@@ -172,8 +172,8 @@ Flow: เปิดเกม → provider+key → context+glossary → Run → �
 
 <h2>9. Errors (Translation errors)</h2>
 <ul>
-  <li>เปิดจาก <code>Errors (N)</code>. ไม่มี → <code>✓ No translation errors.</code></li>
-  <li>มี → list: source + file + เหตุผล. คลิก → filter failed ของไฟล์นั้น. retry ที่ <code>Retry failed (N)</code>.</li>
+  <li>เปิดจาก chip <code>⚠ N failed</code> บน toolbar. ไม่มี → <code>✓ No translation errors.</code></li>
+  <li>มี → list: source + file + เหตุผล. คลิก → filter failed ของไฟล์นั้น. retry ที่ <code>Retry failed</code> (toolbar, ข้าง chip).</li>
 </ul>
 
 <h2>10. Export → game</h2>

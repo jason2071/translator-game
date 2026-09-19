@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { type TransUnit } from "../ipc";
 import { useStore } from "../store";
+import { useTranslation } from "../translation";
+import { useRun } from "../run";
 import { UnitRow } from "../components/UnitRow";
 import { UnitInspector } from "../components/UnitInspector";
 import { Icon } from "../components/Icon";
@@ -222,6 +225,8 @@ function FilterBar() {
   const setFilter = useStore((s) => s.setFilter);
   const total = useStore((s) => s.total);
   const loading = useStore((s) => s.loading);
+  const running = useTranslation((s) => s.units.phase !== "idle");
+  const run = useRun((s) => s.run);
 
   const [text, setText] = useState(filter.search ?? "");
   const timer = useRef<ReturnType<typeof setTimeout>>();
@@ -267,6 +272,30 @@ function FilterBar() {
       [key]: checked,
     });
   };
+
+  // Re-translate every unit matching the current view (overwrites them). The
+  // button sits next to the "N shown" count it acts on, and only exists while
+  // a search or character filter narrows the grid.
+  async function retranslateMatches() {
+    const ok = await ask(
+      filter.context
+        ? `Re-translate all ${total} line(s) of "${filter.context}"? ` +
+            `This overwrites their current translations.`
+        : `Re-translate all ${total} unit(s) matching this search? ` +
+            `This overwrites their current translations.`,
+      {
+        title: filter.context ? "Re-translate this character?" : "Re-translate search matches?",
+        kind: "warning",
+      }
+    );
+    if (!ok) return;
+    // The store's filter holds only search/file/status/untranslatedOnly (never
+    // limit/offset — the grid sets those per fetch), so it's the scope as-is; the
+    // backend pages it and overrides limit/offset itself.
+    void run({ filter, overwrite: true });
+  }
+  const canRetranslate = (filter.search || filter.context) && total > 0 && !running;
+
   return (
     <div className="searchbar">
       <div className="search-input-wrap">
@@ -309,6 +338,16 @@ function FilterBar() {
         {loading && <Icon name="retry" size={13} className="spin" />}
         {total.toLocaleString()} shown
       </span>
+
+      {canRetranslate && (
+        <button
+          className="ghost retranslate-shown"
+          onClick={() => void retranslateMatches()}
+          title={`Overwrite the translations of the ${total.toLocaleString()} unit(s) matching this search`}
+        >
+          <Icon name="globe" size={14} />Re-translate
+        </button>
+      )}
     </div>
   );
 }

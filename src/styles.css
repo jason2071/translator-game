@@ -1086,11 +1086,6 @@ code {
   color: var(--muted);
   font-size: var(--fs-xs);
 }
-.tb-options-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-}
 /* Thin vertical divider separating the Run options (scope/overwrite) from the
    action buttons. */
 .tb-sep {
@@ -1111,8 +1106,8 @@ code {
   min-width: 6rem;
   justify-content: center;
 }
-/* Secondary toolbar actions: always-visible compact buttons after Run —
-   icon-aligned, quieter than the primary, they light up on hover. */
+/* Secondary toolbar actions: compact buttons around Run (failure state before
+   it) — icon-aligned, quieter than the primary, they light up on hover. */
 .tb-act {
   display: inline-flex;
   align-items: center;
@@ -1332,6 +1327,18 @@ code {
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+/* Scoped action anchored to the "N shown" count: re-translate exactly what the
+   current filter displays (with a confirm; it overwrites). */
+.retranslate-shown {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.55rem;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 /* The sidebar character filter — a compact select (cast can be hundreds). */
 .sb-select {

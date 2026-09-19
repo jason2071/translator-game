@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { ask } from "@tauri-apps/plugin-dialog";
-import { api, type TranslateScope, type TranslateSummary } from "../ipc";
 import { useStore } from "../store";
 import { useSettings, PROVIDER_LABELS_SHORT, PROVIDER_KINDS } from "../settings";
 import { SOURCE_LANGS, TARGET_LANGS } from "../langs";
 import { useTranslation } from "../translation";
+import { useRun } from "../run";
 import TransProgress from "../components/TransProgress";
 import { Icon } from "../components/Icon";
 import type { AppNotice } from "../notice";
@@ -12,96 +11,46 @@ import type { AppNotice } from "../notice";
 export default function TranslateBar({
   onOpenErrors,
   notice,
-  clearNotice,
 }: {
   onOpenErrors: () => void;
   notice: AppNotice | null;
-  clearNotice: () => void;
 }) {
   const filter = useStore((s) => s.filter);
   const setFilter = useStore((s) => s.setFilter);
   const stats = useStore((s) => s.stats);
-  // Count of units matching the current filter (== the "N shown" search matches).
-  const total = useStore((s) => s.total);
-  const refreshTotal = useStore((s) => s.refreshTotal);
-  const refreshMeta = useStore((s) => s.refreshMeta);
   const project = useStore((s) => s.project);
   const setLanguages = useStore((s) => s.setLanguages);
   const active = useSettings((s) => s.active);
   const setActive = useSettings((s) => s.setActive);
-  const activeConfig = useSettings((s) => s.activeConfig);
 
   // Only this Run's own status gates the controls; a glossary job runs in the
   // shared queue and does not lock the Run button (it just queues).
-  const unitsPhase = useTranslation((s) => s.units.phase);
   const glossaryBusy = useTranslation((s) => s.glossary.phase !== "idle");
-  const enqueue = useTranslation((s) => s.enqueue);
   const cancel = useTranslation((s) => s.cancel);
-  const running = unitsPhase !== "idle"; // queued or running
+  const running = useTranslation((s) => s.units.phase !== "idle"); // queued or running
+
+  // Runs are started from several places (Run / Retry failed / the filter
+  // bar's Re-translate); the shared outcome lands here and renders below.
+  const run = useRun((s) => s.run);
+  const summary = useRun((s) => s.summary);
+  const err = useRun((s) => s.err);
 
   const [overwrite, setOverwrite] = useState(false);
-  const [summary, setSummary] = useState<TranslateSummary | null>(null);
-  // Only command-level failures (no API key / no project) surface here; per-unit
-  // AI failures live in the Errors modal, so a Run no longer paints a red banner.
-  const [err, setErr] = useState<string | null>(null);
-
-  async function translate(scope: TranslateScope) {
-    clearNotice();
-    setErr(null);
-    setSummary(null);
-    try {
-      const res = await enqueue("units", () => api.translateUnits(scope, activeConfig()));
-      setSummary(res);
-      // The visible rows were live-patched during the Run; just refresh the
-      // sidebar counts and the total (no full reload → no scroll jump).
-      await refreshMeta();
-      await refreshTotal();
-    } catch (e) {
-      setErr(String(e));
-    }
-  }
 
   // Translate the file selected in the sidebar (its untranslated + Failed units),
   // or the whole project when "All files" is selected (filter.file === undefined).
-  function run() {
-    translate({ filter: { file: filter.file }, overwrite });
+  function runUnits() {
+    void run({ filter: { file: filter.file }, overwrite });
   }
 
   // Re-translate only the units that failed a previous run, no manual filtering.
   function retryFailed() {
-    translate({ filter: { status: "Failed" } });
-  }
-
-  // Re-translate every unit matching the current view (overwrites them). Unlike
-  // Run (which scopes to the selected file), this sends the whole active filter —
-  // search, status, character (context), untranslatedOnly — so it covers exactly
-  // the "N shown" matches. A selected character re-translates just that actor.
-  async function retranslateMatches() {
-    const ok = await ask(
-      filter.context
-        ? `Re-translate all ${total} line(s) of "${filter.context}"? ` +
-            `This overwrites their current translations.`
-        : `Re-translate all ${total} unit(s) matching this search? ` +
-            `This overwrites their current translations.`,
-      {
-        title: filter.context ? "Re-translate this character?" : "Re-translate search matches?",
-        kind: "warning",
-      }
-    );
-    if (!ok) return;
-    // The store's filter holds only search/file/status/untranslatedOnly (never
-    // limit/offset — the grid sets those per fetch), so it's the scope as-is; the
-    // backend pages it and overrides limit/offset itself.
-    translate({ filter, overwrite: true });
+    void run({ filter: { status: "Failed" } });
   }
 
   const failed = stats?.failed ?? 0;
   const scopeLabel = filter.file?.split(/[\\/]/).pop() ?? "All files";
 
-  // Secondary/contextual actions, shown as visible buttons next to Run (no
-  // overflow menu — everything findable at a glance). Contextual ones still only
-  // appear when they apply.
-  const showRetranslate = (filter.search || filter.context) && total > 0 && !running;
   return (
     <>
       <div className="toolbar">
@@ -157,18 +106,33 @@ export default function TranslateBar({
                 <small>Translate completed lines again</small>
               </span>
             </label>
-            {(showRetranslate || failed > 0) && (
-              <div className="tb-options-actions">
-                {showRetranslate && <button className="ghost tb-act" onClick={retranslateMatches}><Icon name="retry" size={14} />Retry</button>}
-                {failed > 0 && !running && <button className="ghost tb-act" onClick={retryFailed}><Icon name="retry" size={14} />Retry</button>}
-                {failed > 0 && <button className="ghost tb-act tb-act-warn" onClick={onOpenErrors}><Icon name="warn" size={14} />Errors</button>}
-              </div>
-            )}
           </div>
         </details>
         <div className="tb-actions">
+          {/* Failure state lives on the toolbar, not in Options: it must be
+              visible whenever anything failed. The chip opens the error list;
+              the button next to it re-runs just those units. */}
+          {failed > 0 && (
+            <button
+              className="ghost tb-act tb-act-warn"
+              onClick={onOpenErrors}
+              title="Open the failed units with the reason each one failed"
+            >
+              <Icon name="warn" size={14} />
+              {failed.toLocaleString()} failed
+            </button>
+          )}
+          {failed > 0 && !running && (
+            <button
+              className="ghost tb-act"
+              onClick={retryFailed}
+              title={`Re-run translation for the ${failed.toLocaleString()} unit(s) that failed`}
+            >
+              <Icon name="retry" size={14} />Retry failed
+            </button>
+          )}
           {!running ? (
-            <button className="primary tb-run" onClick={run}>
+            <button className="primary tb-run" onClick={runUnits}>
               Translate
             </button>
           ) : (

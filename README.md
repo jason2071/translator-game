@@ -104,10 +104,13 @@ Tests run against a synthetic MZ fixture in `src-tauri/tests/fixtures/mz-sample`
 2. Optionally set tone, an extra prompt, batch size, and a rate limit.
 3. Add **Glossary** terms (proper nouns, stats) for consistency.
 4. In the **AI translate** bar pick the provider + scope and **Run** (cancellable;
-   the grid fills row-by-row as batches land). Toggle **Overwrite existing** to
-   re-translate rows that already have a translation; **Retry failed** re-runs only
-   the failures, and the **Errors (N)** button opens a panel listing each failed
-   unit's file, source, and reason. **Apply TM** fills duplicates for free.
+   the grid fills row-by-row as batches land). Toggle **Overwrite** (in Options)
+   to re-translate rows that already have a translation. Failures surface as a
+   **⚠ N failed** chip on the toolbar — it opens the errors panel listing each
+   failed unit's file, source, and reason, and **Retry failed** beside it re-runs
+   just those units. With a search or character filter active, **Re-translate**
+   (next to the "N shown" count) re-translates exactly the matched rows.
+   **Apply TM** fills duplicates for free.
 5. **Export → game** when done (auto-backup to `.rpgtl/backups/<timestamp>/`).
 
 ### Providers

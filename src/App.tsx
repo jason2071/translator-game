@@ -35,6 +35,13 @@ export default function App() {
     setNotice(null);
   }, [project?.root]);
 
+  // Any units run (Run / Retry failed / Re-translate — wherever it was started
+  // from) replaces the sidebar's notice with the run's own status line.
+  const unitsPhase = useTranslation((s) => s.units.phase);
+  useEffect(() => {
+    if (unitsPhase !== "idle") setNotice(null);
+  }, [unitsPhase]);
+
   // Fill grid rows live as a Run persists each batch (like the glossary panel),
   // instead of only refreshing when the whole Run finishes.
   useEffect(() => {
@@ -111,7 +118,6 @@ export default function App() {
         <TranslateBar
           onOpenErrors={() => setPanel("errors")}
           notice={notice}
-          clearNotice={() => setNotice(null)}
         />
         <GridView />
       </div>
