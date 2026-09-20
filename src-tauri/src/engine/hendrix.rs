@@ -33,13 +33,18 @@ use super::codes::ExtractOpts;
 use super::{DetectResult, GameEngine};
 use crate::model::{TransUnit, UnitKind};
 use anyhow::{anyhow, Context, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// The sheet the plugin reads, at the game root. (The plugin's filename is fixed.)
 const SHEET: &str = "game_messages.csv";
 /// The plugin id we require in `js/plugins.js` for this engine to claim a game.
 const PLUGIN: &str = "Hendrix_Localization";
+/// Do not reject a deliberately small sheet. Once a game exposes this many live
+/// dialogue groups, though, a sheet matching fewer than one in ten is almost
+/// certainly from another game build and cannot translate the running game.
+const MIN_RUNTIME_TEXTS_FOR_STALE_CHECK: usize = 20;
+const MIN_RUNTIME_MATCH_PERCENT: usize = 10;
 
 pub struct HendrixEngine;
 
@@ -170,6 +175,8 @@ pub fn export_sheet(
     make_backup: bool,
     embed_font: bool,
 ) -> Result<SheetExport> {
+    validate_sheet_matches_game(root, base)?;
+
     // The two files we modify (relative to `base`).
     let touched = [SHEET, "js/plugins.js"];
 
@@ -220,7 +227,7 @@ pub fn export_sheet(
     HendrixEngine.inject(root, units, base)?;
 
     // 4. Register the target language in the plugin so it appears in the menu.
-    let registered = register_language(base, TARGET_SYMBOL, TARGET_NAME)?;
+    let registration = register_language(base, TARGET_SYMBOL, TARGET_NAME)?;
 
     // 5. Embed the Thai font (and thin the text outline) via the shared RPGMaker
     //    path — the new column uses the game's default font, so repointing that at
@@ -245,7 +252,7 @@ pub fn export_sheet(
             }
         }
     }
-    if !registered {
+    if !registration.language_added {
         note.push_str(" (the language was already registered)");
     }
 
@@ -256,13 +263,77 @@ pub fn export_sheet(
     })
 }
 
+/// Confirm that the sheet's `Original` keys still describe the RPG Maker data
+/// the Hendrix runtime will render. Hendrix translates by exact lookup at
+/// runtime; appending a Thai column to a stale sheet succeeds on disk but has no
+/// visible effect in-game.
+fn validate_sheet_matches_game(root: &Path, base: &Path) -> Result<()> {
+    let content =
+        std::fs::read_to_string(base.join(SHEET)).with_context(|| format!("reading {SHEET}"))?;
+    let sheet = Sheet::parse(&content);
+    let cols = sheet
+        .columns()
+        .ok_or_else(|| anyhow!("{SHEET} has no header row"))?;
+    let originals: BTreeSet<String> = sheet
+        .records
+        .iter()
+        .skip(1)
+        .map(|rec| cols.field(rec, cols.original))
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+
+    // MvMz groups consecutive 401 commands into a single dialogue unit. That
+    // matches Hendrix's CSV convention (one multiline Original cell per message).
+    let live_units = super::mvmz::MvMzEngine.extract(root, &ExtractOpts::default())?;
+    let mut grouped: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut live: BTreeSet<String> = BTreeSet::new();
+    for unit in &live_units {
+        match unit.kind {
+            UnitKind::Dialogue | UnitKind::ScrollText => {
+                if let Some(group) = unit.group.as_deref() {
+                    grouped.entry(group).or_default().push(&unit.source);
+                } else {
+                    live.insert(unit.source.clone());
+                }
+            }
+            UnitKind::Choice => {
+                live.insert(unit.source.clone());
+            }
+            _ => {}
+        }
+    }
+    for lines in grouped.into_values() {
+        live.insert(lines.join("\n"));
+    }
+
+    let total = live.len();
+    if total < MIN_RUNTIME_TEXTS_FOR_STALE_CHECK {
+        return Ok(());
+    }
+    let matched = live.iter().filter(|text| originals.contains(*text)).count();
+    if matched * 100 < total * MIN_RUNTIME_MATCH_PERCENT {
+        return Err(anyhow!(
+            "{SHEET} does not match this game's current dialogue: only {matched} of {total} live message(s) appear in its Original column. Export stopped because Hendrix would show the source language. Regenerate/update {SHEET} from the running Hendrix game, then re-import and translate the new rows."
+        ));
+    }
+    Ok(())
+}
+
 /// Add a `{Name, Symbol, Font, FontSize}` entry for our target language to the
 /// Hendrix plugin's `Languages` parameter in `js/plugins.js`, so it shows up in the
 /// in-game language menu. `Font` is left empty so the language uses the game's main
-/// font (which [`export_sheet`] repoints at Sarabun). Idempotent: returns `false`
-/// without writing if a language with `symbol` is already registered. `Languages`
-/// is a JSON string whose elements are themselves JSON strings of the entry object.
-fn register_language(base: &Path, symbol: &str, name: &str) -> Result<bool> {
+/// font (which [`export_sheet`] repoints at Sarabun). It also enables Hendrix's
+/// title-screen language command: games often ship with one language and disable
+/// that command, which would otherwise leave a newly exported Thai column hidden.
+/// `Languages` is a JSON string whose elements are themselves JSON strings of the
+/// entry object.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct LanguageRegistration {
+    language_added: bool,
+}
+
+fn register_language(base: &Path, symbol: &str, name: &str) -> Result<LanguageRegistration> {
     let path = base.join("js").join("plugins.js");
     let text = std::fs::read_to_string(&path).context("reading js/plugins.js")?;
     let start = text.find('[').context("js/plugins.js: no $plugins array")?;
@@ -276,6 +347,7 @@ fn register_language(base: &Path, symbol: &str, name: &str) -> Result<bool> {
         serde_json::from_str(&text[start..=end]).context("parsing the $plugins array")?;
 
     let mut changed = false;
+    let mut registration = LanguageRegistration::default();
     for p in &mut arr {
         if p.get("name").and_then(|v| v.as_str()) != Some(PLUGIN) {
             continue;
@@ -306,6 +378,18 @@ fn register_language(base: &Path, symbol: &str, name: &str) -> Result<bool> {
                 serde_json::Value::String(serde_json::to_string(&langs)?),
             );
             changed = true;
+            registration.language_added = true;
+        }
+        if params
+            .get("Add Language Command to Title")
+            .and_then(|v| v.as_str())
+            != Some("true")
+        {
+            params.insert(
+                "Add Language Command to Title".into(),
+                serde_json::Value::String("true".into()),
+            );
+            changed = true;
         }
         break;
     }
@@ -319,7 +403,7 @@ fn register_language(base: &Path, symbol: &str, name: &str) -> Result<bool> {
         );
         std::fs::write(&path, rebuilt).context("writing js/plugins.js")?;
     }
-    Ok(changed)
+    Ok(registration)
 }
 
 /// Resolve the game root for a Hendrix game: the folder that holds both the
@@ -672,6 +756,26 @@ mod tests {
         write_plugins(base, true);
     }
 
+    fn write_live_messages(base: &Path, prefix: &str) {
+        let mut list = Vec::new();
+        for i in 0..MIN_RUNTIME_TEXTS_FOR_STALE_CHECK {
+            list.push(serde_json::json!({ "code": 101, "parameters": ["", 0, 0, 2, ""] }));
+            list.push(serde_json::json!({
+                "code": 401,
+                "parameters": [format!("{prefix} {i}")]
+            }));
+        }
+        let map = serde_json::json!({
+            "displayName": "",
+            "events": [null, { "pages": [{ "list": list }] }]
+        });
+        std::fs::write(
+            base.join("data/Map001.json"),
+            serde_json::to_string(&map).unwrap(),
+        )
+        .unwrap();
+    }
+
     /// Write a `js/plugins.js` whose active Hendrix plugin already lists the given
     /// language `symbols` in its `Languages` param (each a stringified entry).
     fn write_hendrix_plugins(base: &Path, symbols: &[&str]) {
@@ -688,7 +792,10 @@ mod tests {
             "name": PLUGIN,
             "status": true,
             "description": "",
-            "parameters": { "Languages": serde_json::to_string(&langs).unwrap() }
+            "parameters": {
+                "Languages": serde_json::to_string(&langs).unwrap(),
+                "Add Language Command to Title": "false"
+            }
         }]);
         let js = base.join("js");
         std::fs::create_dir_all(&js).unwrap();
@@ -724,13 +831,63 @@ mod tests {
             .collect()
     }
 
+    fn language_command_is_on_title(base: &Path) -> bool {
+        let text = std::fs::read_to_string(base.join("js/plugins.js")).unwrap();
+        let (s, e) = (text.find('[').unwrap(), text.rfind(']').unwrap());
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&text[s..=e]).unwrap();
+        arr.iter()
+            .find(|p| p.get("name").and_then(|v| v.as_str()) == Some(PLUGIN))
+            .and_then(|p| p.get("parameters"))
+            .and_then(|p| p.get("Add Language Command to Title"))
+            .and_then(|v| v.as_str())
+            == Some("true")
+    }
+
+    #[test]
+    fn stale_sheet_is_rejected_before_export() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_fingerprint(tmp.path());
+        write_live_messages(tmp.path(), "Live dialogue");
+        std::fs::write(
+            tmp.path().join(SHEET),
+            format!("{HEADER}\nNEW,,,Old dialogue\n"),
+        )
+        .unwrap();
+
+        let err = validate_sheet_matches_game(tmp.path(), tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("only 0 of 20 live message(s)"));
+    }
+
+    #[test]
+    fn matching_sheet_is_allowed_to_export() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_fingerprint(tmp.path());
+        write_live_messages(tmp.path(), "Live dialogue");
+        let mut sheet = format!("{HEADER}\n");
+        for i in 0..MIN_RUNTIME_TEXTS_FOR_STALE_CHECK {
+            sheet.push_str(&format!("NEW,,,Live dialogue {i}\n"));
+        }
+        std::fs::write(tmp.path().join(SHEET), sheet).unwrap();
+
+        validate_sheet_matches_game(tmp.path(), tmp.path()).unwrap();
+    }
+
     #[test]
     fn register_language_is_idempotent_and_keeps_existing() {
         let tmp = tempfile::tempdir().unwrap();
         write_hendrix_plugins(tmp.path(), &["jp", "en"]);
-        assert!(register_language(tmp.path(), "th", "ไทย").unwrap()); // added
-        assert!(!register_language(tmp.path(), "th", "ไทย").unwrap()); // already present
+        assert!(
+            register_language(tmp.path(), "th", "ไทย")
+                .unwrap()
+                .language_added
+        );
+        assert!(
+            !register_language(tmp.path(), "th", "ไทย")
+                .unwrap()
+                .language_added
+        );
         assert_eq!(registered_symbols(tmp.path()), vec!["jp", "en", "th"]);
+        assert!(language_command_is_on_title(tmp.path()));
     }
 
     #[test]
@@ -763,11 +920,13 @@ mod tests {
         assert_eq!(l[1], "NEW,,アリス,こんにちは,こんにちは,Hi,สวัสดี");
         assert_eq!(l[2], "NEW,,,はい,はい,Yes,はい"); // untranslated → source fallback
         assert_eq!(registered_symbols(base), vec!["jp", "en", "th"]);
+        assert!(language_command_is_on_title(base));
 
         // Re-export must reproduce the same sheet and not double the column/language
         // (the snapshot of the original is restored first).
         export_sheet(base, base, &units, false, false).unwrap();
         assert_eq!(std::fs::read_to_string(base.join(SHEET)).unwrap(), sheet);
         assert_eq!(registered_symbols(base), vec!["jp", "en", "th"]);
+        assert!(language_command_is_on_title(base));
     }
 }

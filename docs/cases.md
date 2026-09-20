@@ -15,6 +15,9 @@ broken game. `AGENTS.md` points here first for a reason.
 
 ## Index (newest first)
 
+- [[2026-09-20-hendrix-stale-sheet-no-translation]] — a Hendrix CSV from an
+  older game build accepted a Thai column, but none of its `Original` keys
+  matched the live map dialogue, so selecting Thai visibly changed nothing.
 - [[2026-09-19-renpy-duplicate-strings-block]] — after the menu-caption
   pipeline shipped, a hand-written interim strings file collided with the
   app's own `rpgtl_menus.rpy`: the same `old` key declared twice is a
