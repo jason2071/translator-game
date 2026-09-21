@@ -298,6 +298,60 @@ code {
   padding-block: 0.65rem;
   font-size: var(--fs-base);
 }
+.import-steam-button {
+  width: 100%;
+  margin-top: var(--sp-2);
+}
+.steam-browser {
+  padding: var(--sp-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+  text-align: left;
+}
+.steam-browser-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.steam-controls {
+  display: flex;
+  gap: var(--sp-2);
+  margin: var(--sp-5) 0 var(--sp-3);
+}
+.steam-controls input { flex: 1; min-width: 0; }
+.steam-game-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); max-height: 420px; overflow: auto; }
+.steam-game { width: 100%; display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel2); color: var(--fg); text-align: left; cursor: pointer; }
+.steam-game:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.steam-game:disabled { opacity: .6; cursor: default; }
+.steam-badge { flex: 0 0 auto; color: var(--status-translated); font-size: var(--fs-xs); font-weight: 600; }
+.steam-empty { margin: var(--sp-5) 0; color: var(--muted); text-align: center; }
+.steam-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  min-height: 180px;
+  color: var(--muted);
+  text-align: left;
+}
+.steam-loading strong { display: block; color: var(--fg); }
+.steam-loading p { margin: var(--sp-1) 0 0; font-size: var(--fs-sm); }
+.steam-spinner {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 3px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: steam-spin .8s linear infinite;
+}
+@keyframes steam-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .steam-spinner { animation: none; } }
+.steam-folder-link { display: block; margin-top: var(--sp-4); }
+@media (max-width: 520px) { .steam-controls { flex-direction: column; } }
 .import-view .path {
   color: var(--muted);
   font-size: var(--fs-sm);

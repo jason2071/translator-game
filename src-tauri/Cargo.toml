@@ -47,6 +47,10 @@ walkdir = "2"
 # Dev-only: `.env` loading for local API keys (guarded by debug_assertions).
 dotenvy = "0.15"
 
+[target.'cfg(windows)'.dependencies]
+# Read Steam's install location without spawning a shell command.
+winreg = "0.55"
+
 [dev-dependencies]
 tempfile = "3"
 serde_json = { version = "1", features = ["preserve_order"] }

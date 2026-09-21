@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
-import { api, type DetectResult } from "../ipc";
+import { api, type DetectResult, type SteamGame } from "../ipc";
 import { useStore } from "../store";
 import { useRecents, timeAgo, basename, doneCount } from "../recents";
 import { useTheme } from "../theme";
@@ -28,6 +28,10 @@ export default function ImportView() {
   const [pendingRoot, setPendingRoot] = useState<string | null>(null);
   const [failedRoot, setFailedRoot] = useState<string | null>(null);
   const [version, setVersion] = useState("");
+  const [steamGames, setSteamGames] = useState<SteamGame[] | null>(null);
+  const [steamLoading, setSteamLoading] = useState(false);
+  const [steamProgress, setSteamProgress] = useState<{ done: number; total: number } | null>(null);
+  const [steamQuery, setSteamQuery] = useState("");
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
@@ -48,6 +52,45 @@ export default function ImportView() {
         setError("No supported game engine detected in this folder.");
       } else {
         setDetected(res);
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function browseSteam() {
+    setError(null);
+    setSteamLoading(true);
+    setSteamProgress(null);
+    setSteamGames([]);
+    try {
+      const unlisten = await api.onSteamScanProgress(setSteamProgress);
+      try {
+        setSteamGames(await api.listSteamGames());
+      } finally {
+        unlisten();
+      }
+    } catch (e) {
+      setSteamGames(null);
+      setError(String(e));
+    } finally {
+      setSteamLoading(false);
+    }
+  }
+
+  async function chooseSteamGame(game: SteamGame) {
+    setError(null);
+    setPath(game.root);
+    setChecking(true);
+    try {
+      const res = await api.detectGame(game.root);
+      if (!res) {
+        setError("This Steam game is installed, but its format is not supported yet.");
+      } else {
+        setDetected(res);
+        setSteamGames(null);
       }
     } catch (e) {
       setError(String(e));
@@ -116,8 +159,59 @@ export default function ImportView() {
           <SettingsView />
         </Modal>
       )}
-      <main className={`import-content${detected ? " detect-mode" : recents.length === 0 ? " solo" : ""}`}>
+      <main className={`import-content${detected || steamGames !== null ? " detect-mode" : recents.length === 0 ? " solo" : ""}`}>
         {!detected ? (
+          steamGames !== null ? (
+            <section className="steam-browser">
+              <div className="steam-browser-head">
+                <div>
+                  <p className="import-kicker">Steam</p>
+                  <h1>Installed games</h1>
+                  <p className="subtitle">Showing installed games supported by this app. Nothing is sent to Steam.</p>
+                </div>
+                <button className="iconbtn" onClick={() => setSteamGames(null)} aria-label="Close Steam library" title="Close">
+                  <Icon name="close" size={14} />
+                </button>
+              </div>
+              {steamLoading ? (
+                <div className="steam-loading" role="status" aria-live="polite">
+                  <span className="steam-spinner" aria-hidden="true" />
+                  <div>
+                    <strong>Scanning Steam library</strong>
+                    <p>{steamProgress ? `Checking ${steamProgress.done} / ${steamProgress.total} games for supported formats…` : "Reading installed Steam games…"}</p>
+                  </div>
+                </div>
+              ) : steamGames.length === 0 ? (
+                <div className="steam-empty">
+                  <p>No supported Steam games were found.</p>
+                  <button className="linklike" onClick={() => { setSteamGames(null); void pickFolder(); }}>Open a folder instead</button>
+                </div>
+              ) : (
+                <>
+                  <div className="steam-controls">
+                    <input value={steamQuery} onChange={(e) => setSteamQuery(e.target.value)} placeholder="Search installed games" aria-label="Search Steam games" autoFocus />
+                  </div>
+                  <ul className="steam-game-list">
+                    {steamGames.filter((game) =>
+                      game.name.toLocaleLowerCase().includes(steamQuery.toLocaleLowerCase())
+                    ).map((game) => (
+                      <li key={game.appId}>
+                        <button className="steam-game" onClick={() => void chooseSteamGame(game)} disabled={checking}>
+                          <span className="recent-copy">
+                            <span className="recent-name">{game.name}</span>
+                            <span className="recent-meta">{game.engineName}</span>
+                          </span>
+                          <span className="steam-badge">Supported</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {error && <p className="import-error-card"><Icon name="warn" size={15} className="import-error-icon" /><span>{error}</span></p>}
+              <button className="linklike steam-folder-link" onClick={() => { setSteamGames(null); void pickFolder(); }}>Open folder instead</button>
+            </section>
+          ) : (
           <>
             <section className="import-open-card">
               <span className="import-open-icon"><Icon name="folder" size={24} /></span>
@@ -126,6 +220,9 @@ export default function ImportView() {
               <p className="subtitle">Open a supported game folder to begin.</p>
               <button className="primary" onClick={pickFolder} disabled={checking || loading}>
                 {checking ? "Checking" : "Open folder"}
+              </button>
+              <button className="ghost import-steam-button" onClick={() => void browseSteam()} disabled={checking || loading}>
+                Browse Steam library
               </button>
               {(error || storeError) && (
                 <p className="import-error-card">
@@ -199,6 +296,7 @@ export default function ImportView() {
               </section>
             )}
           </>
+          )
         ) : (
           <section className="import-detect-flow">
             <div className="import-detect-intro">

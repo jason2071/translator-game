@@ -1242,6 +1242,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "walkdir",
+ "winreg",
 ]
 
 [[package]]

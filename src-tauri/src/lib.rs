@@ -9,6 +9,7 @@ pub mod engine;
 pub mod keys;
 pub mod model;
 pub mod project;
+pub mod steam;
 
 use ai::{BatchItem, BatchReq, GlossPair, ProviderConfig};
 use engine::protect;
@@ -79,6 +80,21 @@ fn detect_game(path: String) -> Result<Option<DetectResult>, String> {
         Some(eng) => eng.describe(&root).map(Some).map_err(|e| e.to_string()),
         None => Ok(None),
     }
+}
+
+/// Discover locally installed Steam games. This never calls Steam or reads account data.
+#[tauri::command]
+async fn list_steam_games(app: tauri::AppHandle) -> Result<Vec<steam::SteamGame>, String> {
+    // Reading manifests can still stall on a sleeping external drive. Keep that
+    // filesystem work off Tauri's UI runtime; engine detection happens later only
+    // for the game the user actually chooses.
+    tauri::async_runtime::spawn_blocking(move || {
+        steam::list_supported(|progress| {
+            let _ = app.emit("steam://scan-progress", progress);
+        })
+    })
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Open (or create + extract) the project at `path` and make it the active one.
@@ -1890,6 +1906,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ping,
             detect_game,
+            list_steam_games,
             open_project,
             close_project,
             rescan_project,

@@ -43,6 +43,14 @@ export interface DetectResult {
   warnings?: string[];
 }
 
+export interface SteamGame {
+  appId: string;
+  name: string;
+  root: string;
+  engineName: string;
+}
+export interface SteamScanProgress { done: number; total: number; }
+
 export interface Stats {
   total: number;
   untranslated: number;
@@ -226,6 +234,11 @@ export const api = {
 
   detectGame: (path: string) =>
     invoke<DetectResult | null>("detect_game", { path }),
+
+  listSteamGames: () => invoke<SteamGame[]>("list_steam_games"),
+
+  onSteamScanProgress: (cb: (progress: SteamScanProgress) => void): Promise<UnlistenFn> =>
+    listen<SteamScanProgress>("steam://scan-progress", (e) => cb(e.payload)),
 
   openProject: (path: string, sourceLang?: string, targetLang?: string) =>
     invoke<ProjectInfo>("open_project", { path, sourceLang, targetLang }),
