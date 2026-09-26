@@ -69,3 +69,48 @@ fn rescan_uses_the_pristine_lucky_live_snapshot_after_export() {
         "rescan must retain the pristine UI bundle too"
     );
 }
+
+#[test]
+fn rescan_reuses_ui_translation_when_the_active_bundle_changes() {
+    let dir = game();
+    let root = dir.path();
+    let data = root.join("resources/gioco");
+    let (mut project, _) = project::open_or_create(root, "English", "Thai").unwrap();
+    let old = project::db::list_units(&project.conn, &UnitFilter::default())
+        .unwrap()
+        .into_iter()
+        .find(|unit| unit.source == "Booting LuckyOS")
+        .unwrap();
+    project::db::update_unit(
+        &project.conn,
+        old.id,
+        Some("กำลังเปิด LuckyOS"),
+        Status::Translated.as_str(),
+    )
+    .unwrap();
+    project::export(&mut project, true, false).unwrap();
+    let old_bundle = data.join("assets/index-ui.js");
+    let old_bytes = std::fs::read(&old_bundle).unwrap();
+
+    std::fs::write(
+        data.join("index.html"),
+        r#"<script type="module" src="./assets/index-current.js"></script>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        data.join("assets/index-current.js"),
+        "B={onb:{boot:{status:`Booting LuckyOS`}}};",
+    )
+    .unwrap();
+    let (added, _, _) = project::rescan(&mut project).unwrap();
+    assert_eq!(added, 1);
+    assert_eq!(project::db::apply_tm(&mut project.conn).unwrap(), 1);
+    project::export(&mut project, true, false).unwrap();
+
+    assert!(
+        std::fs::read_to_string(data.join("assets/index-current.js"))
+            .unwrap()
+            .contains("กำลังเปิด LuckyOS")
+    );
+    assert_eq!(std::fs::read(&old_bundle).unwrap(), old_bytes);
+}

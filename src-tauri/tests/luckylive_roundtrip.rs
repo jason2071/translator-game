@@ -79,6 +79,43 @@ fn detects_and_extracts_player_facing_lucky_live_content() {
 }
 
 #[test]
+fn uses_only_the_bundle_loaded_by_index_html() {
+    let dir = game();
+    let root = dir.path();
+    let data = root.join("resources/gioco");
+    std::fs::write(
+        data.join("index.html"),
+        r#"<script type="module" src="./assets/index-current.js"></script>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        data.join("assets/index-current.js"),
+        "const ignored=`Outside`;B={onb:{boot:{status:`Current UI`}}};",
+    )
+    .unwrap();
+
+    let eng = engine::detect(root).unwrap();
+    assert_eq!(eng.describe(root).unwrap().file_count, 2);
+    let units = eng.extract(root, &ExtractOpts::default()).unwrap();
+    assert!(units.iter().any(|unit| unit.source == "Current UI"));
+    assert!(!units.iter().any(|unit| unit.source == "Booting LuckyOS"));
+    let mut current = units
+        .into_iter()
+        .find(|unit| unit.source == "Current UI")
+        .unwrap();
+    current.translation = Some("หน้าปัจจุบัน".into());
+    current.status = Status::Translated;
+    let output = tempfile::tempdir().unwrap();
+    eng.inject(root, &[current], output.path()).unwrap();
+    assert!(
+        std::fs::read_to_string(output.path().join("assets/index-current.js"))
+            .unwrap()
+            .contains("หน้าปัจจุบัน")
+    );
+    assert!(!output.path().join("assets/index-ui.js").exists());
+}
+
+#[test]
 fn roundtrip_identity_and_injection_preserve_the_json_bytes() {
     let dir = game();
     let root = dir.path();

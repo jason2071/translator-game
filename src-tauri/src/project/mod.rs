@@ -350,7 +350,12 @@ pub fn export_with_renpy_font_scale(
 
     // Every other engine injects straight from this list (including Ren'Py's
     // in-place fallback above), so apply the name toggle here.
-    let units = drop_names_when_off(&project.conn, all_units)?;
+    let mut units = drop_names_when_off(&project.conn, all_units)?;
+    if eng.id() == "luckylive" {
+        units.retain(|unit| {
+            engine::luckylive::is_luckylive_content_file(&project.root, &unit.file)
+        });
+    }
     let applied: Vec<_> = units.iter().filter(|u| u.status.is_applied()).collect();
 
     // Hendrix Localization: like Ren'Py, export is additive and not a plain
@@ -914,10 +919,8 @@ fn luckylive_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> 
             }
         }
     }
-    // Lucky Live's UI is a deliberately scoped localization dictionary in the
-    // minified assets bundle. Include the live path on a first export (when no
-    // snapshot exists yet); `pristine_read_root` then prefers its original snapshot
-    // on every later rescan.
+    // Stage the JS assets so the extractor can follow the bundle referenced by
+    // index.html. Old bundles may remain in assets/ after a game update.
     let assets_dir = project.data_dir.join("assets");
     if assets_dir.is_dir() {
         for entry in walkdir::WalkDir::new(&assets_dir)
@@ -926,7 +929,6 @@ fn luckylive_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> 
         {
             if entry.file_type().is_file()
                 && entry.path().extension().is_some_and(|ext| ext == "js")
-                && std::fs::read_to_string(entry.path()).is_ok_and(|text| text.contains("var H={"))
             {
                 if let Ok(rel) = entry.path().strip_prefix(&project.data_dir) {
                     files.insert(rel.to_string_lossy().replace('\\', "/"));

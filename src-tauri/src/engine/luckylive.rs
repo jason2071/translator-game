@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 const DATA_DIR: &str = "resources/gioco";
 const GIRLS_DIR: &str = "content/girls";
 const ASSETS_DIR: &str = "assets";
-const UI_DICTIONARY_MARKER: &str = "var H={";
+const UI_DICTIONARY_MARKER: &str = "={onb:{boot:";
 
 pub struct LuckyLiveEngine;
 
@@ -162,23 +162,22 @@ fn girl_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Lucky Live's intentional UI copy lives in one minified React bundle.  Scope the
-/// engine to the bundle containing the `var H={...}` localization dictionary rather
-/// than treating arbitrary JavaScript strings as translatable prose.
+/// Follow the bundle loaded by index.html, since each game update can rename it.
+/// Older bundles left in assets/ must not become translation targets.
 fn ui_bundle_files(root: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = walkdir::WalkDir::new(assets_dir(root))
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry.file_type().is_file()
-                && entry.path().extension().is_some_and(|ext| ext == "js")
-                && std::fs::read_to_string(entry.path())
-                    .is_ok_and(|text| text.contains(UI_DICTIONARY_MARKER))
+    let Ok(html) = std::fs::read_to_string(data_dir(root).join("index.html")) else {
+        return Vec::new();
+    };
+    html.match_indices("./assets/")
+        .filter_map(|(at, marker)| {
+            let tail = &html[at + marker.len()..];
+            let name = tail.split(['\'', '"']).next()?;
+            (name.ends_with(".js") && !name.contains('/')).then(|| assets_dir(root).join(name))
         })
-        .map(|entry| entry.into_path())
-        .collect();
-    files.sort();
-    files
+        .filter(|path| {
+            std::fs::read_to_string(path).is_ok_and(|text| text.contains(UI_DICTIONARY_MARKER))
+        })
+        .collect()
 }
 
 fn is_luckylive(root: &Path) -> bool {
@@ -215,7 +214,7 @@ fn is_girl_file(file: &str) -> bool {
     file.starts_with("content/girls/") && file.ends_with("/girl.json")
 }
 
-fn is_luckylive_content_file(root: &Path, file: &str) -> bool {
+pub(crate) fn is_luckylive_content_file(root: &Path, file: &str) -> bool {
     if is_girl_file(file) {
         return true;
     }
@@ -509,7 +508,7 @@ impl JsLiteral {
     }
 }
 
-/// Read only literal values inside Lucky Live's `H` localization dictionary.  The
+/// Read only literal values inside Lucky Live's localization dictionary.  The
 /// bundle is not JSON (it contains functions and template literals), so this small
 /// lexical scanner deliberately avoids parsing or rewriting the surrounding code.
 fn ui_dictionary_strings(content: &str) -> Result<Vec<JsLiteral>> {
@@ -543,7 +542,7 @@ fn ui_dictionary_bounds(content: &str) -> Result<(usize, usize)> {
     let marker = content
         .find(UI_DICTIONARY_MARKER)
         .ok_or_else(|| anyhow!("Lucky Live UI dictionary marker not found"))?;
-    let open = marker + UI_DICTIONARY_MARKER.len() - 1;
+    let open = marker + 1;
     let bytes = content.as_bytes();
     let mut depth = 0usize;
     let mut at = open;
