@@ -54,12 +54,18 @@ fn detects_and_extracts_player_facing_lucky_live_content() {
     assert!(source.contains(&"$${paid} / $${total}"));
     assert!(source.contains(&"${e===1?`girl is`:`girls are`} unlocked"));
     assert!(source.contains(&"Visible label"));
+    assert!(source.contains(&"Plan B Pills"));
+    assert!(source.contains(&"30% chance a Bust turns into a Fold"));
+    assert!(source.contains(&"Rose"));
+    assert!(source.contains(&"+1 heart for her, right now"));
     assert!(!source.contains(&"luna"));
     assert!(!source.contains(&"moon-song"));
     assert!(!source.contains(&"NightOwl"));
     assert!(!source.contains(&"Outside the localization dictionary"));
     assert!(!source.contains(&"Do not extract this"));
     assert!(!source.contains(&"https://example.test/luckylive"));
+    assert!(!source.contains(&"./charms/pillole.png"));
+    assert!(!source.contains(&"pillole"));
 
     let girl_line = units
         .iter()
@@ -193,4 +199,19 @@ fn roundtrip_identity_and_injection_preserve_the_json_bytes() {
         nested_ui.contains("`ปลดล็อกแล้ว ${e===1?`girl is`:`girls are`}`"),
         "nested template code must stay executable, not gain escaped backticks"
     );
+
+    let mut item = eng
+        .extract(root, &ExtractOpts::default())
+        .unwrap()
+        .into_iter()
+        .find(|unit| unit.source == "30% chance a Bust turns into a Fold")
+        .unwrap();
+    item.translation = Some("โอกาส 30% ที่ Bust จะเปลี่ยนเป็น Fold".to_string());
+    item.status = Status::Translated;
+    let translated_item = tempfile::tempdir().unwrap();
+    eng.inject(root, std::slice::from_ref(&item), translated_item.path())
+        .unwrap();
+    let item_ui = std::fs::read_to_string(translated_item.path().join(&item.file)).unwrap();
+    assert!(item_ui.contains("desc:`โอกาส 30% ที่ Bust จะเปลี่ยนเป็น Fold`"));
+    assert!(item_ui.contains("id:`pillole`"));
 }

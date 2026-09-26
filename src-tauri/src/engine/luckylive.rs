@@ -17,6 +17,8 @@ const DATA_DIR: &str = "resources/gioco";
 const GIRLS_DIR: &str = "content/girls";
 const ASSETS_DIR: &str = "assets";
 const UI_DICTIONARY_MARKER: &str = "={onb:{boot:";
+const CHARM_CATALOG_MARKER: &str = "={pillole:{id:";
+const CONSUMABLE_CATALOG_MARKER: &str = "={rosa:{id:";
 
 pub struct LuckyLiveEngine;
 
@@ -98,6 +100,14 @@ impl GameEngine for LuckyLiveEngine {
                         literal.value,
                     )
                     .with_context(Some("Lucky Live UI".to_string())),
+                );
+            }
+            for (literal, kind, context) in catalog_strings(&content)
+                .with_context(|| format!("parsing Lucky Live item catalogs in {file}"))?
+            {
+                units.push(
+                    TransUnit::new(file.clone(), literal.pointer(), kind, literal.value)
+                        .with_context(Some(context.to_string())),
                 );
             }
         }
@@ -455,8 +465,14 @@ fn inject_ui_units(
     file_units: &mut Vec<&TransUnit>,
     file: &str,
 ) -> Result<()> {
-    let literals = ui_dictionary_strings(content)
+    let mut literals = ui_dictionary_strings(content)
         .with_context(|| format!("parsing Lucky Live UI dictionary in {file}"))?;
+    literals.extend(
+        catalog_strings(content)
+            .with_context(|| format!("parsing Lucky Live item catalogs in {file}"))?
+            .into_iter()
+            .map(|(literal, _, _)| literal),
+    );
     let by_pointer: HashMap<String, &JsLiteral> = literals
         .iter()
         .map(|literal| (literal.pointer(), literal))
@@ -543,6 +559,63 @@ fn ui_dictionary_bounds(content: &str) -> Result<(usize, usize)> {
         .find(UI_DICTIONARY_MARKER)
         .ok_or_else(|| anyhow!("Lucky Live UI dictionary marker not found"))?;
     let open = marker + 1;
+    Ok((open, js_object_end(content, open)?))
+}
+
+/// The item catalogs sit outside the UI dictionary. Only their displayed name
+/// and description literals belong to the translation grid.
+fn catalog_strings(content: &str) -> Result<Vec<(JsLiteral, UnitKind, &'static str)>> {
+    let mut literals = Vec::new();
+    for (marker, context) in [
+        (CHARM_CATALOG_MARKER, "Lucky Live charm"),
+        (CONSUMABLE_CATALOG_MARKER, "Lucky Live consumable"),
+    ] {
+        let Some(marker_at) = content.find(marker) else {
+            continue;
+        };
+        let open = marker_at + 1;
+        let end = js_object_end(content, open)?;
+        let bytes = content.as_bytes();
+        let mut at = open + 1;
+        while at < end {
+            match bytes[at] {
+                b'\'' | b'"' | b'`' => at = parse_js_literal(content, at)?.after,
+                b'/' if bytes.get(at + 1) == Some(&b'/') => at = skip_line_comment(bytes, at + 2),
+                b'/' if bytes.get(at + 1) == Some(&b'*') => at = skip_block_comment(bytes, at + 2)?,
+                _ => {
+                    let field = if content[at..].starts_with("name:") {
+                        Some((5, UnitKind::Term))
+                    } else if content[at..].starts_with("desc:") {
+                        Some((5, UnitKind::Description))
+                    } else {
+                        None
+                    };
+                    if let Some((field_len, kind)) = field {
+                        if matches!(bytes.get(at.wrapping_sub(1)), Some(b'{' | b',')) {
+                            let mut value_at = at + field_len;
+                            while bytes.get(value_at).is_some_and(u8::is_ascii_whitespace) {
+                                value_at += 1;
+                            }
+                            if matches!(bytes.get(value_at), Some(b'\'' | b'"' | b'`')) {
+                                let literal = parse_js_literal(content, value_at)?;
+                                if literal.after > end {
+                                    return Err(anyhow!("Lucky Live item literal extends past catalog"));
+                                }
+                                at = literal.after;
+                                literals.push((literal, kind, context));
+                                continue;
+                            }
+                        }
+                    }
+                    at += utf8_len(content, at);
+                }
+            }
+        }
+    }
+    Ok(literals)
+}
+
+fn js_object_end(content: &str, open: usize) -> Result<usize> {
     let bytes = content.as_bytes();
     let mut depth = 0usize;
     let mut at = open;
@@ -558,16 +631,16 @@ fn ui_dictionary_bounds(content: &str) -> Result<(usize, usize)> {
             b'}' => {
                 depth = depth
                     .checked_sub(1)
-                    .ok_or_else(|| anyhow!("unexpected UI dictionary }}"))?;
+                    .ok_or_else(|| anyhow!("unexpected Lucky Live object }}"))?;
                 if depth == 0 {
-                    return Ok((open, at));
+                    return Ok(at);
                 }
                 at += 1;
             }
             _ => at += utf8_len(content, at),
         }
     }
-    Err(anyhow!("unterminated Lucky Live UI dictionary"))
+    Err(anyhow!("unterminated Lucky Live object"))
 }
 
 fn parse_js_literal(content: &str, start: usize) -> Result<JsLiteral> {
