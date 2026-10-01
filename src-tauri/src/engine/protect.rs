@@ -914,6 +914,9 @@ pub fn mask_renpy(input: &str) -> Masked {
                 Some(1 + input[i + 1..].chars().next().unwrap().len_utf8())
             }
             b'[' => renpy_bracket_len(&input[i..], b'[', b']'),
+            // Python display templates use an empty format slot; it must survive
+            // AI translation just like Ren'Py interpolation and text tags.
+            b'{' if input[i..].starts_with("{}") => Some(2),
             b'{' => renpy_bracket_len(&input[i..], b'{', b'}'),
             _ => None,
         };
@@ -1181,6 +1184,18 @@ mod tests {
             let back = restore(&m.text, &m.tokens).expect("restore ok");
             assert_eq!(back, s, "round-trip failed for {s:?}");
         }
+    }
+
+    #[test]
+    fn renpy_format_slot_is_required_during_translation() {
+        let masked = mask_renpy("Visit {} in the morning.");
+        assert_eq!(masked.tokens, vec!["{}"]);
+        assert_eq!(
+            restore("ไปพบ⟦0⟧ในตอนเช้า", &masked.tokens).unwrap(),
+            "ไปพบ{}ในตอนเช้า"
+        );
+        assert!(restore("ไปพบในตอนเช้า", &masked.tokens).is_err());
+        assert!(mask_renpy("Literal {{}} and []").is_plain());
     }
 
     #[test]

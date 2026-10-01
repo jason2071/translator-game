@@ -172,7 +172,7 @@ impl GameEngine for RenpyEngine {
         let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
 
         // Group applied units by file. Synthetic pointers (`name#`, `str#`,
-        // `pylist#`, `screenarg#`) are display-matched at runtime rather than
+        // `pylist#`, `screenarg#`, `join#`) are display-matched at runtime rather than
         // spliceable spans, so only parsed byte-span pointers belong here.
         let mut by_file: BTreeMap<&str, Vec<&TransUnit>> = BTreeMap::new();
         for u in units {
@@ -1301,11 +1301,112 @@ fn string_list_define(trimmed: &str) -> Option<(String, Vec<String>)> {
     Some((var.to_string(), items))
 }
 
+/// Recognize a literal + comma-joined identifier + literal on a Python line.
+/// The returned span anchors a display-only template; it is never injected.
+fn joined_display_template(raw: &str) -> Option<(usize, usize, String, String)> {
+    if raw.trim_start().starts_with('#') || is_log_call(raw) {
+        return None;
+    }
+    let spans = python_string_spans(raw);
+    for trio in spans.windows(3) {
+        let [(a, al), (sep, sl), (b, bl)] = trio else {
+            continue;
+        };
+        if &raw[*sep..sep + sl] != ", " || raw[a + al + 1..sep - 1].trim() != "+" {
+            continue;
+        }
+        let rest = raw[sep + sl + 1..b - 1].trim();
+        let Some(rest) = rest.strip_prefix(".join(") else {
+            continue;
+        };
+        let Some((var, tail)) = rest.split_once(')') else {
+            continue;
+        };
+        let var = var.trim();
+        if var.is_empty()
+            || !var
+                .bytes()
+                .enumerate()
+                .all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+            || tail.trim() != "+"
+        {
+            continue;
+        }
+        let source = format!("{}{{}}{}", &raw[*a..a + al], &raw[*b..b + bl]);
+        if source.matches("{}").count() == 1 && python_display_ok(&source, false) {
+            return Some((*a, b + bl - a, source, var.to_string()));
+        }
+    }
+    None
+}
+
+/// Names appended to the joined list in the same function are display values,
+/// including one-word ASCII names that the ordinary Python filter excludes.
+fn harvest_joined_names(
+    file: &str,
+    content: &str,
+    py_seen: &mut HashSet<String>,
+    out: &mut Vec<TransUnit>,
+) {
+    let mut offset = 0;
+    let lines: Vec<_> = content
+        .split_inclusive('\n')
+        .map(|line| {
+            let start = offset;
+            offset += line.len();
+            (start, line.trim_end_matches(['\r', '\n']))
+        })
+        .collect();
+    for (i, (_, line)) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("def ") {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        let body: Vec<_> = lines[i + 1..]
+            .iter()
+            .take_while(|(_, raw)| {
+                raw.trim().is_empty()
+                    || raw.trim_start().starts_with('#')
+                    || raw.len() - raw.trim_start().len() > indent
+            })
+            .collect();
+        let vars: HashSet<_> = body
+            .iter()
+            .filter_map(|(_, raw)| joined_display_template(raw).map(|(_, _, _, var)| var))
+            .collect();
+        for (start, raw) in body {
+            let trimmed = raw.trim_start();
+            for var in &vars {
+                let Some(arg) = trimmed.strip_prefix(&format!("{var}.append(")) else {
+                    continue;
+                };
+                let Some((rel, len, after)) = first_string(arg) else {
+                    continue;
+                };
+                if !arg[..rel - 1].trim().is_empty()
+                    || arg[after..].trim() != ")"
+                    || !python_display_ok(&arg[rel..rel + len], true)
+                {
+                    continue;
+                }
+                let source = &arg[rel..rel + len];
+                if py_seen.insert(source.to_string()) {
+                    let abs = start + raw.len() - arg.len() + rel;
+                    out.push(
+                        TransUnit::new(file, format!("str#{abs}:{len}"), UnitKind::Term, source)
+                            .with_context(Some(format!("Name in joined display list {var}"))),
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Harvest display strings from one python-ish line (a `$`/`define`/`default`
 /// statement, a `python` block body line, or a multi-line expression
-/// continuation). Emitted with a `str#` pointer: matched into the translation by
-/// *display string*, never spliced in place (splicing the constructor arg would
-/// desync python-side lookups keyed by the English text).
+/// continuation). Synthetic pointers are display-matched, never spliced into
+/// constructors or assignments that may also serve as game-state keys.
 fn harvest_python_line(
     file: &str,
     raw: &str,
@@ -1324,6 +1425,21 @@ fn harvest_python_line(
     // *callee* keeps a real line that merely mentions the word ("Log Book") safe.
     if is_log_call(raw) {
         return;
+    }
+    if let Some((rel, len, source, var)) = joined_display_template(raw) {
+        if py_seen.insert(source.clone()) {
+            out.push(
+                TransUnit::new(
+                    file,
+                    format!("join#{}:{len}", line_start + rel),
+                    UnitKind::Term,
+                    source,
+                )
+                .with_context(Some(format!(
+                    "{{}} is the comma-separated display list {var}"
+                ))),
+            );
+        }
     }
     // A notify message or a tooltip is often one word ("Map", "2nd Floor") — still
     // display text. The identifier rule below keeps the `SetVariable("tooltip_text",
@@ -1894,6 +2010,7 @@ fn extract_from_tl(
 }
 
 fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>, py_seen: &mut HashSet<String>) {
+    harvest_joined_names(file, content, py_seen, out);
     let mut skip_indent: Option<(usize, SkipKind)> = None;
     let mut skip_expr_depth: i32 = 0; // open brackets of a multi-line define/default/$
                                       // Open brackets inside the *current* skipped block. A python block's dict or list
@@ -2834,6 +2951,7 @@ pub fn export_tl_with_font_scale(
     // `PicklingError: … not the same object as store.<fn>` when the player saves.)
     let mut extra_seen: HashSet<&str> = HashSet::new();
     let mut extra: Vec<(String, String)> = Vec::new();
+    let mut runtime_strings: Vec<(String, String)> = Vec::new();
     // `pylist#<var>#<index>` units are carried into the runtime strings table like
     // other display text. Keeping the game's source values intact is critical: lists
     // such as `time_cycle` are also used as program-state keys (`index(current_time)`).
@@ -2861,13 +2979,20 @@ pub fn export_tl_with_font_scale(
                     }
                 }
             }
-            if used.contains(u.source.as_str())
-                || skeleton_olds.contains(&unescape_rpy(&u.source))
-                || !extra_seen.insert(u.source.as_str())
-            {
+            if !extra_seen.insert(u.source.as_str()) {
                 continue;
             }
-            extra.push((u.source.clone(), t.clone()));
+            let pair = (u.source.clone(), t.clone());
+            if used.contains(u.source.as_str())
+                || skeleton_olds.contains(&unescape_rpy(&u.source))
+            {
+                // A string consumed as dialogue (or a native strings entry) may
+                // also be a value in a composed quest. Keep it available to the
+                // hook without declaring a second native `old` key.
+                runtime_strings.push(pair);
+            } else {
+                extra.push(pair);
+            }
         }
     }
 
@@ -2882,23 +3007,24 @@ pub fn export_tl_with_font_scale(
         if term.is_empty() || tr.is_empty() || term == tr {
             continue;
         }
-        // A term the skeleton already declares must not be repeated: a second
-        // `old` for the same string is a hard Ren'Py error at startup.
-        if skeleton_olds.contains(term) || used.borrow().contains(term) {
-            continue;
-        }
         if extra_seen.insert(term) {
-            extra.push((term.to_string(), tr.to_string()));
+            let pair = (term.to_string(), tr.to_string());
+            if skeleton_olds.contains(term) || used.borrow().contains(term) {
+                runtime_strings.push(pair);
+            } else {
+                extra.push(pair);
+            }
         }
     }
 
     // Make the language selectable (default to it) and remap the game's fonts to a
     // glyph-capable one so the translation isn't rendered as "NO GLYPH" boxes.
-    setup_language_with_font_scale(
+    setup_language_with_runtime_strings(
         data_dir,
         &lang,
         &language_label(target_lang, &lang),
         &extra,
+        &runtime_strings,
         &lists,
         thai_font_scale,
     )?;
@@ -3486,6 +3612,7 @@ fn setup_language(
     )
 }
 
+#[cfg(test)]
 fn setup_language_with_font_scale(
     data_dir: &Path,
     lang: &str,
@@ -3648,7 +3775,19 @@ fn setup_language_with_runtime_strings(
         // formatted in python *before* any translation runs, so the finished text
         // ("牛柄ビキニを手に入れた！") matches no key. Keep the single-placeholder ones
         // so the hook can match around the value.
-        s.push_str("    _tl_fmts = [(_k.split(\"{}\"), _v) for _k, _v in _tl_frags if _k.count(\"{}\") == 1 and _v.count(\"{}\") == 1]\n");
+        s.push_str("    _tl_fmts = [(_k.split(\"{}\"), _v) for _k, _v in sorted(_tl_text.items(), key=lambda kv: -len(kv[0])) if _k.count(\"{}\") == 1 and _v.count(\"{}\") == 1]\n");
+        // A joined display list has no entry for the whole value. Translate its
+        // individual, exact names only; unknown names and separators stay intact.
+        s.push_str("    def _tl_template_name(_name):\n");
+        s.push_str("        _exact = _tl_text.get(_name)\n");
+        s.push_str("        if _exact is not None:\n            return _exact\n");
+        // A name already consumed by the native skeleton has no hook-table
+        // entry: consult Ren'Py's existing translation without duplicating `old`.
+        s.push_str("        return renpy.translation.translate_string(_name)\n");
+        s.push_str("    def _tl_template_value(_value):\n");
+        s.push_str("        _exact = _tl_template_name(_value)\n");
+        s.push_str("        if _exact != _value:\n            return _exact\n");
+        s.push_str("        return \", \".join([_tl_template_name(_name) for _name in _value.split(\", \")])\n");
         // Does the text still hold untranslated source-language script? Cheap guard
         // so a fully-translated line skips the scan, and the all-or-nothing test for
         // the substring pass below. Kana/kanji left in the output means the rewrite
@@ -3682,7 +3821,7 @@ fn setup_language_with_runtime_strings(
         s.push_str(
             "                _mid = _t[len(_a):len(_t) - len(_b)] if _b else _t[len(_a):]\n",
         );
-        s.push_str("                _out = _v.replace(\"{}\", _tl_text.get(_mid, _mid))\n");
+        s.push_str("                _out = _v.replace(\"{}\", _tl_template_value(_mid))\n");
         s.push_str("                if _out != _t:\n");
         s.push_str("                    return _out\n");
         // Last resort — replace known source strings *inside* the text, longest
@@ -5605,7 +5744,7 @@ define twi = Character(_(\"Both\"))
         // translation runs (`"{}を手に入れた！".format(item)`).
         assert!(zzz.contains("_tl_fmts = ["), "format templates: {zzz}");
         assert!(
-            zzz.contains("_out = _v.replace(\"{}\", _tl_text.get(_mid, _mid))"),
+            zzz.contains("_out = _v.replace(\"{}\", _tl_template_value(_mid))"),
             "format templates: {zzz}"
         );
         assert!(
@@ -5616,6 +5755,151 @@ define twi = Character(_(\"Both\"))
         assert!(
             zzz.contains("    old \"%m/%d/%Y\"\n    new \"%d/%m/%Y\""),
             "strftime format kept single-`%`: {zzz}"
+        );
+    }
+
+    #[test]
+    fn composed_quest_rescan_preserves_existing_translations() {
+        use crate::project::db;
+        let source = include_str!("../../tests/fixtures/renpy-composed/game/script.rpy");
+        let mut units = Vec::new();
+        extract_rpy("script.rpy", source, &mut units, &mut HashSet::new());
+        let template = units
+            .iter()
+            .find(|u| u.pointer.starts_with("join#"))
+            .unwrap();
+        assert_eq!(template.source, "Visit {} in the morning.");
+        assert!(template
+            .context
+            .as_deref()
+            .unwrap()
+            .contains("comma-separated"));
+        for name in ["Miho", "Noah", "Yuno"] {
+            assert!(units
+                .iter()
+                .any(|u| u.source == name && u.pointer.starts_with("str#")));
+        }
+        assert!(!units.iter().any(|u| u.source == "InternalFlag"));
+        assert!(parse_pointer(&template.pointer).is_none());
+
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::init_schema(&conn).unwrap();
+        let mut old: Vec<_> = units
+            .iter()
+            .filter(|u| !u.pointer.starts_with("join#"))
+            .cloned()
+            .collect();
+        let suffix = old
+            .iter_mut()
+            .find(|u| u.source == " in the morning.")
+            .unwrap();
+        suffix.translation = Some(" ในตอนเช้า".to_string());
+        suffix.status = crate::model::Status::Translated;
+        db::insert_units(&mut conn, &old).unwrap();
+        assert_eq!(db::merge_units(&mut conn, &units).unwrap().0, 1);
+        assert_eq!(db::merge_units(&mut conn, &units).unwrap().0, 0);
+        let saved = db::all_units(&conn).unwrap();
+        assert_eq!(
+            saved
+                .iter()
+                .find(|u| u.source == " in the morning.")
+                .unwrap()
+                .translation
+                .as_deref(),
+            Some(" ในตอนเช้า")
+        );
+    }
+
+    #[test]
+    fn joined_templates_reject_other_expressions() {
+        for raw in [
+            "# \"Visit \" + \", \".join(names) + \" tomorrow.\"",
+            "renpy.log(\"Visit \" + \", \".join(names) + \" tomorrow.\")",
+            "\"Visit \" + \", \".join(get_names()) + \" tomorrow.\"",
+            "\"Visit \" + \", \".join(names) or \" tomorrow.\"",
+            "\"images/\" + \", \".join(names) + \".png\"",
+        ] {
+            assert!(joined_display_template(raw).is_none(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn composed_quest_runtime_translates_name_combinations() {
+        let d = tempfile::tempdir().unwrap();
+        let strings = vec![
+            (
+                "Visit {} in the morning.".to_string(),
+                "ไปพบ{}ในตอนเช้า".to_string(),
+            ),
+            ("Noah".to_string(), "โนอาห์".to_string()),
+            ("Yuno".to_string(), "ยูโนะ".to_string()),
+            (
+                r"\n\nOnly one character story can be progressed at a time.".to_string(),
+                r"\n\nสามารถดำเนินเนื้อเรื่องตัวละครได้ทีละคนเท่านั้น".to_string(),
+            ),
+            ("{}を手に入れた！".to_string(), "ได้รับ{}!".to_string()),
+            ("Hi {}.".to_string(), "สวัสดี{}".to_string()),
+        ];
+        // Miho was consumed as dialogue by the skeleton, so export carries it
+        // only in the runtime table. A second `old` declaration is unnecessary.
+        let runtime_strings = vec![("Miho".to_string(), "มิโฮะ".to_string())];
+        setup_language_with_runtime_strings(d.path(), "thai", "ไทย", &strings, &runtime_strings, &BTreeMap::new(), DEFAULT_THAI_FONT_SCALE).unwrap();
+        let zzz = std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap();
+        assert!(!zzz.contains("    old \"Miho\""));
+        setup_language_with_runtime_strings(d.path(), "thai", "ไทย", &strings, &runtime_strings, &BTreeMap::new(), DEFAULT_THAI_FONT_SCALE).unwrap();
+        assert_eq!(zzz, std::fs::read_to_string(d.path().join(GENERATED_RPY)).unwrap());
+        // Execute the generated code when a Python interpreter is available.
+        // The game runtime is Python 2/3; the hook uses syntax supported by both.
+        let python = ["python", "python3"].into_iter().find(|p| {
+            Command::new(p)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success())
+        });
+        let Some(python) = python else {
+            eprintln!("Python unavailable: generated-hook execution skipped");
+            assert!(zzz.contains("_tl_template_value(_mid)"));
+            return;
+        };
+        let runner = d.path().join("check.py");
+        std::fs::write(&runner, r#"
+import itertools, pathlib, textwrap, types, re, sys
+s = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')
+block = s.rsplit('init 1001 python:\n', 1)[1].split('\ninit python:', 1)[0]
+config = types.SimpleNamespace(language='thai', replace_text=None)
+renpy = types.SimpleNamespace(translation=types.SimpleNamespace(translate_string=lambda s: {'SkeletonName': 'ชื่อจากตารางเกม'}.get(s, s)))
+exec(compile(textwrap.dedent(block), 'generated-hook', 'exec'), {'config': config, 'renpy': renpy})
+hook = config.replace_text
+names = [('Miho', 'มิโฮะ'), ('Noah', 'โนอาห์'), ('Yuno', 'ยูโนะ')]
+for count in range(1, 4):
+    for group in itertools.combinations(names, count):
+        source = 'Visit ' + ', '.join(n[0] for n in group) + ' in the morning.'
+        expected = 'ไปพบ' + ', '.join(n[1] for n in group) + 'ในตอนเช้า'
+        assert hook(source) == expected
+        # Ren'Py calls replace_text separately on TEXT tokens after tokenization.
+        text = '{color=#FFD700}' + source + '{/color}\n\nOnly one character story can be progressed at a time.'
+        tokens = re.split(r'(\{[^}]*\}|\n)', text)
+        rendered = ''.join(t if t.startswith('{') or t == '\n' else hook(t) for t in tokens)
+        assert rendered == '{color=#FFD700}' + expected + '{/color}\n\nสามารถดำเนินเนื้อเรื่องตัวละครได้ทีละคนเท่านั้น'
+        config.language = None
+        assert hook(source) == source
+        config.language = 'thai'
+assert hook('Visit Cindy, Miho in the morning.') == 'ไปพบCindy, มิโฮะในตอนเช้า'
+assert hook('Do not Visit Miho in the morning.') == 'Do not Visit Miho in the morning.'
+assert hook('Cindy') == 'Cindy'
+assert hook('Mihoを手に入れた！') == 'ได้รับมิโฮะ!'
+assert hook('Hi Noah.') == 'สวัสดีโนอาห์'
+assert hook('Visit SkeletonName, Noah in the morning.') == 'ไปพบชื่อจากตารางเกม, โนอาห์ในตอนเช้า'
+"#).unwrap();
+        let result = Command::new(python)
+            .arg(&runner)
+            .arg(d.path().join(GENERATED_RPY))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
         );
     }
 

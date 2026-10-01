@@ -9,9 +9,9 @@
 // markers en(cond)/if(cond) that trail a choice label (\b so "garden(x)" is prose).
 // Mirrors mask_mvmz / vmz_angle_len / mpp_cond_len.
 const RPGMAKER_RE = /<\/?[A-Za-z][^>\n]*>|\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|%\d+|\b(?:en|if)\([^)\n]*\)/g;
-// Ren'Py: [interpolation], {text tags}, and backslash escapes (\", \n). Escaped
+// Ren'Py: [interpolation], {text tags}, {} format slots, and backslash escapes (\", \n). Escaped
 // [[ / {{ are literal text, so a bare doubled bracket contributes no code.
-const RENPY_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}/g;
+const RENPY_RE = /\\.|\[[^[\]]+\]|(?<!\{)\{[^{}]*\}/g;
 // TyranoScript / KiriKiri KAG: [tags] (inline and block) and backslash escapes.
 const TYRANO_RE = /\\.|\[[^\]]*\]/g;
 // Godot: BBCode [tag], String.format braces {0}/{name}, printf %s/%d/%.2f/%1$s,

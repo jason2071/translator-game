@@ -16,7 +16,7 @@
 // Mirrors mask_mvmz.
 const CODE_RE = /<\/?[A-Za-z][^>\n]*>|\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]|%\d+|\b(?:en|if)\([^)\n]*\)|⟦\d+⟧/g;
 // Ren'Py: [interpolation], {text tags}, backslash escapes.
-const RENPY_CODE_RE = /\\.|\[[^[\]]+\]|\{[^{}]+\}|⟦\d+⟧/g;
+const RENPY_CODE_RE = /\\.|\[[^[\]]+\]|(?<!\{)\{[^{}]*\}|⟦\d+⟧/g;
 // TyranoScript / KiriKiri KAG: [tags], backslash escapes.
 const TYRANO_CODE_RE = /\\.|\[[^\]]*\]|⟦\d+⟧/g;
 // Godot: BBCode [tag], format braces, printf conversions, backslash escapes.

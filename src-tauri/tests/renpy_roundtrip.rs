@@ -11,6 +11,34 @@ fn fixture() -> PathBuf {
 }
 
 #[test]
+fn composed_quest_roundtrip_identity() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/renpy-composed/game/script.rpy");
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("game")).unwrap();
+    std::fs::copy(&fixture, root.path().join("game/script.rpy")).unwrap();
+    let engine = engine::detect(root.path()).unwrap();
+    let mut units = engine
+        .extract(root.path(), &ExtractOpts::default())
+        .unwrap();
+    assert!(units.iter().any(|u| u.source == "Visit {} in the morning."));
+    for unit in &mut units {
+        unit.translation = Some(unit.source.clone());
+        unit.status = Status::Translated;
+    }
+    let out = tempfile::tempdir().unwrap();
+    engine.inject(root.path(), &units, out.path()).unwrap();
+    assert_eq!(
+        std::fs::read(&fixture).unwrap(),
+        std::fs::read(out.path().join("script.rpy")).unwrap()
+    );
+    assert_eq!(
+        std::fs::read(&fixture).unwrap(),
+        std::fs::read(root.path().join("game/script.rpy")).unwrap()
+    );
+}
+
+#[test]
 fn detects_renpy() {
     let eng = engine::detect(&fixture()).expect("should detect Ren'Py");
     assert_eq!(eng.id(), "renpy");

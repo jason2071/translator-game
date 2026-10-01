@@ -116,6 +116,11 @@ src/         React UI; ipc.ts mirrors the command surface; Zustand stores split 
 
 ## Conventions
 
+- **Fix the app, not individual games.** For translation or export defects,
+  fix the responsible app code so future exports work without repeated manual
+  repairs. Do not patch game files directly unless necessary (for example, to
+  recover a game broken by our pipeline); explain why a direct repair is needed.
+  A necessary game repair does not replace a durable app fix.
 - **Plan and approval before code changes.** Before editing any code, present a
   concrete implementation plan and wait for the user's explicit approval. Do not
   modify code until that approval is received.
