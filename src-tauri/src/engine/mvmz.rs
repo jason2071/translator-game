@@ -123,6 +123,7 @@ impl GameEngine for MvMzEngine {
             extract_inn_scenario_plugins(&dir, &mut units)?;
         }
         extract_galv_quest_log(&dir, &mut units)?;
+        super::mvmz_ui::extract(base, &mut units)?;
         Ok(units)
     }
 
@@ -194,11 +195,24 @@ impl GameEngine for MvMzEngine {
                 continue;
             }
             if is_galv_quest_plugin_config(file) {
-                let out = inject_galv_quest_plugin_config(file, &text, &file_units)?;
+                let (ui, galv): (Vec<_>, Vec<_>) = file_units
+                    .into_iter()
+                    .partition(|unit| unit.pointer.starts_with("ui:"));
+                let out = super::mvmz_ui::inject(file, &text, &ui)?;
+                let out = inject_galv_quest_plugin_config(file, &out, &galv)?;
                 if let Some(parent) = dst.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                std::fs::write(dst, out).with_context(|| format!("writing {file}"))?;
+                super::write_atomic(&dst, out.as_bytes())
+                    .with_context(|| format!("writing {file}"))?;
+                continue;
+            }
+            if super::mvmz_ui::is_script_file(file) {
+                let out = super::mvmz_ui::inject(file, &text, &file_units)?;
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                super::write_atomic(&dst, out.as_bytes())?;
                 continue;
             }
             let mut val: Value =
@@ -654,6 +668,13 @@ pub fn is_game_root_relative_file(file: &str) -> bool {
         || is_galv_quest_plugin_config(file)
         || is_rcsv_localization_file(file)
         || is_rcsv_localization_plugin(file)
+        || super::mvmz_ui::is_script_file(file)
+}
+
+/// Live UI plugin files needed when an older project's rescan mirror contains
+/// only data snapshots. Include disabled files too; extraction checks status.
+pub fn ui_root_files(data_dir: &Path) -> Vec<String> {
+    super::mvmz_ui::root_files(data_dir.parent().unwrap_or(data_dir))
 }
 
 /// A small family of MV games stores every localized line in `csvs/*.rcsv`.
@@ -965,6 +986,9 @@ fn parse_galv_plugin_pointer(pointer: &str) -> Option<(&str, Option<usize>)> {
 }
 
 fn inject_galv_quest_plugin_config(file: &str, text: &str, units: &[&TransUnit]) -> Result<String> {
+    if units.is_empty() {
+        return Ok(text.to_string());
+    }
     let start = text.find('[').context("js/plugins.js: no $plugins array")?;
     let end = text
         .rfind(']')

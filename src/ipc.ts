@@ -100,6 +100,12 @@ export interface RestoreResult {
   note: string;
 }
 
+export interface ModExportResult {
+  zipPath: string;
+  filesWritten: number;
+  unitsApplied: number;
+}
+
 export interface UnitFilter {
   file?: string;
   status?: Status;
@@ -270,6 +276,8 @@ export const api = {
 
   exportProject: (backup = true, embedFont = false, thaiFontScale?: number) =>
     invoke<ExportResult>("export_project", { backup, embedFont, thaiFontScale }),
+  exportMod: (destination: string, embedFont = false) =>
+    invoke<ModExportResult>("export_mod", { destination, embedFont }),
 
   /** Undo an in-place export: restore the game's original files from .rpgtl/source/. */
   restoreProject: () => invoke<RestoreResult>("restore_original"),

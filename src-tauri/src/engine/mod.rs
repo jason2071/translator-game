@@ -22,6 +22,7 @@ pub mod hendrix;
 pub mod kirikiri;
 pub mod luckylive;
 pub mod mvmz;
+mod mvmz_ui;
 pub mod protect;
 pub mod rebirth;
 pub mod renpy;

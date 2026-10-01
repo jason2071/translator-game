@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "game-translator"
-version = "0.19.10"
+version = "0.19.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1243,6 +1243,7 @@ dependencies = [
  "tokio",
  "walkdir",
  "winreg",
+ "zip",
 ]
 
 [[package]]

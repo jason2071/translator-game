@@ -26,6 +26,12 @@ Project-based workflow — the original game is never touched until you export:
    fills them in, so the original scripts are never modified, nothing recompiles,
    and the translation becomes a selectable in-game language (with the same font
    drop-in so it renders).
+
+For **RPGMaker MV/MZ**, **Tools → Export Mod (ZIP)** saves translated files to a
+ZIP you choose, without modifying the game. The font checkbox also applies to
+this ZIP. Existing projects can use **Tools → Rescan** to add newly supported
+plugin UI text before translating it.
+
 Features: a **windowed** grid that stays light on huge projects (holds only the
 visible slice — scales to ~1M strings), translation memory (auto-fills
 duplicate/identical strings), glossary + consistency lint, engine-aware code

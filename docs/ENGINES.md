@@ -46,6 +46,14 @@ and are much riskier.
 ### Supported today
 - **RPGMaker MV/MZ** — JSON data files; pointer = RFC-6901 JSON Pointer;
   re-serialized compact for round-trip. `src-tauri/src/engine/mvmz.rs`.
+  Explicit UI adapters also extract labels from `js/plugins.js`, including
+  nested MessageCore/voice structs, plus selected displayed literals in known
+  plugins (`mvmz_ui.rs`). This covers Haha Urara's title, options and date/money
+  HUD text in Japanese language mode; its Chinese language overlays remain
+  unchanged. UI spans retain byte-exact identity and preserve unrelated code,
+  escapes, asset names and configuration. Image lettering is not extracted.
+  **Tools → Rescan** adds these units to existing projects; **Export Mod (ZIP)**
+  builds a temporary mirror and saves a ZIP without changing live game files.
 - **Ren'Py** — `.rpy` scripts; pointer = byte span; splice-in-place inject; skips
   `game/tl/<lang>/`; protects `[interpolation]` / `{tags}`.
   `src-tauri/src/engine/renpy.rs`. Compiled-only games (`.rpyc`/`.rpa`, no source

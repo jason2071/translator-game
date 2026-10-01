@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, save } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api, type Status } from "../ipc";
 import { useStore } from "../store";
@@ -89,6 +89,25 @@ export function Sidebar({
       await refreshMeta();
     } catch (e) {
       onNotice({ tone: "error", text: String(e) });
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function doExportMod() {
+    setExporting(true);
+    try {
+      const destination = await save({
+        title: "Export Mod — save translated files as ZIP",
+        defaultPath: "translation-mod.zip",
+        filters: [{ name: "ZIP archive", extensions: ["zip"] }],
+      });
+      if (!destination) return;
+      onNotice({ tone: "neutral", text: "Building mod ZIP" });
+      const result = await api.exportMod(destination, embedFont);
+      onNotice({ tone: "success", text: `Saved ${result.unitsApplied} units → ${result.filesWritten} files in ${result.zipPath}` });
+    } catch (error) {
+      onNotice({ tone: "error", text: String(error) });
     } finally {
       setExporting(false);
     }
@@ -273,6 +292,12 @@ export function Sidebar({
         <details className="sb-tools">
           <summary><Icon name="more" size={16} /><span className="lbl">Tools</span></summary>
           <div className="sb-tools-list">
+            {project.engineId === "rpgmaker-mvmz" && (
+              <button className="ghost" onClick={() => void doExportMod()} disabled={toolsBusy}
+                title="Save translated files as ZIP without changing the game">
+                <Icon name="export" /> Export Mod (ZIP)
+              </button>
+            )}
             <button className="ghost" onClick={() => void doRescan()} disabled={toolsBusy}>
               <Icon name="retry" /> Rescan
             </button>

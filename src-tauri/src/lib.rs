@@ -862,6 +862,21 @@ fn list_files(state: tauri::State<AppState>) -> Result<Vec<FileCount>, String> {
 // --- export ---------------------------------------------------------------
 
 #[tauri::command]
+fn export_mod(
+    destination: String,
+    embed_font: Option<bool>,
+    state: tauri::State<AppState>,
+) -> Result<project::ModExportResult, String> {
+    with_project(&state, |p| {
+        project::export_mod(
+            p,
+            std::path::Path::new(&destination),
+            embed_font.unwrap_or(false),
+        )
+    })
+}
+
+#[tauri::command]
 fn export_project(
     backup: Option<bool>,
     embed_font: Option<bool>,
@@ -1922,6 +1937,7 @@ pub fn run() {
             get_stats,
             list_files,
             export_project,
+            export_mod,
             restore_original,
             apply_tm,
             glossary_list,

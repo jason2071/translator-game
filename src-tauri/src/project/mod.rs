@@ -2,6 +2,8 @@
 //! the game on first open, and export (backup + inject) applied translations.
 
 pub mod db;
+mod mod_export;
+pub use mod_export::{export_mod, ModExportResult};
 
 use crate::engine::{self, ExtractOpts};
 use anyhow::{anyhow, Context, Result};
@@ -797,6 +799,7 @@ fn mvmz_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
     files.extend(crate::engine::mvmz::rcsv_localization_root_files(
         &project.data_dir,
     ));
+    files.extend(crate::engine::mvmz::ui_root_files(&project.data_dir));
     for dir in std::iter::once(source_dir).chain(backup_dirs) {
         if !dir.is_dir() {
             continue;
