@@ -90,3 +90,65 @@ fn open_edit_export_reopen() {
     assert!(!fresh2, "second open should reuse the DB");
     assert_eq!(project::db::stats(&proj2.conn).unwrap().translated, 1);
 }
+
+/// Export must not discover new work; rescan keeps SDK UI and its translations.
+#[test]
+fn renpy_export_does_not_add_todo_and_rescan_keeps_common_ui() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let game = root.join("game");
+    let source_tl = game.join("tl/english");
+    let common = root.join("renpy/common");
+    std::fs::create_dir_all(&source_tl).unwrap();
+    std::fs::create_dir_all(&common).unwrap();
+    std::fs::write(game.join("script.rpy"), "label start:\n    pass\n").unwrap();
+    std::fs::write(source_tl.join("script.rpy"),
+        "translate english scene_id:\n    \"Hello\"\n\ntranslate english strings:\n    old \"Continue\"\n    new \"Continue\"\n").unwrap();
+    std::fs::write(
+        common.join("00library.rpy"),
+        "init python:\n    quit = _(\"Quit?\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        common.join("00director.rpy"),
+        "init python:\n    tag = _(\"(transform)\")\n",
+    )
+    .unwrap();
+    let (mut proj, _) = project::open_or_create(root, "auto", "Thai").unwrap();
+    let initial = project::db::all_units(&proj.conn).unwrap();
+    let ui = initial
+        .iter()
+        .find(|u| u.source == "Quit?")
+        .expect("SDK UI available before export");
+    assert!(!initial.iter().any(|u| u.source == "(transform)"));
+    for unit in &initial {
+        project::db::update_unit(
+            &proj.conn,
+            unit.id,
+            Some("แปลแล้ว"),
+            Status::Translated.as_str(),
+        )
+        .unwrap();
+    }
+    // A newly generated strings block must not be imported by Export. The old
+    // post-export harvest inserted this as Todo, even with every unit translated.
+    std::fs::write(source_tl.join("common.rpy"),
+        "translate english strings:\n    old \"Unexpected SDK string\"\n    new \"Unexpected SDK string\"\n").unwrap();
+    let before = project::db::stats(&proj.conn).unwrap();
+    assert_eq!(before.untranslated, 0);
+    for _ in 0..2 {
+        let exported = project::export(&mut proj, false, false).unwrap();
+        assert!(!exported.note.unwrap().contains("Run again"));
+        let after = project::db::stats(&proj.conn).unwrap();
+        assert_eq!(after.total, before.total);
+        assert_eq!(after.untranslated, 0);
+    }
+    // Remove the test-only extra source block before checking extraction parity.
+    std::fs::remove_file(source_tl.join("common.rpy")).unwrap();
+    let (added, _, removed) = project::rescan(&mut proj).unwrap();
+    assert_eq!((added, removed), (0, 0));
+    let after = project::db::all_units(&proj.conn).unwrap();
+    let retained = after.iter().find(|u| u.id == ui.id).unwrap();
+    assert_eq!(retained.translation.as_deref(), Some("แปลแล้ว"));
+    assert_eq!(project::db::stats(&proj.conn).unwrap().untranslated, 0);
+}

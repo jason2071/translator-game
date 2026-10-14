@@ -245,7 +245,7 @@ fn translate_names_on(conn: &Connection) -> Result<bool> {
 /// already translated it. A Run skips those units at selection time
 /// (`lib.rs::translate_units`); this is the export-side half of the same rule.
 /// Ren'Py doesn't use this — `renpy::export_tl` applies the filter itself and its
-/// caller needs the unfiltered list to dedupe `harvest_tl_untranslated`.
+/// caller passes the full list so its own name filter remains authoritative.
 fn drop_names_when_off(
     conn: &Connection,
     units: Vec<crate::model::TransUnit>,
@@ -314,28 +314,12 @@ pub fn export_with_renpy_font_scale(
             &glossary,
             thai_font_scale,
         )? {
-            // The generated skeleton also lists Ren'Py's built-in UI strings (quit /
-            // main-menu confirmations, save-load prompts) — from `renpy/common`, which
-            // extraction skips, so they had no unit and stayed English. Harvest the
-            // still-untranslated ones into the DB now; a subsequent Run translates them
-            // and the next export fills them.
-            let harvested = engine::renpy::harvest_tl_untranslated(&tl.dir, &all_units);
-            let added = if harvested.is_empty() {
-                0
-            } else {
-                db::merge_units(&mut project.conn, &harvested)?.0
-            };
             // No backup: the source `.rpy` are never touched (translations live in
             // the generated `tl/<lang>/` tree). `files_written` is the tl count.
-            let mut note = format!(
+            let note = format!(
                 "Wrote {} Ren'Py translation file(s) to tl/{lang}/ (source untouched). Pick “{lang}” as the language in-game to see it.",
                 tl.files
             );
-            if added > 0 {
-                note.push_str(&format!(
-                    " Found {added} untranslated in-game UI string(s) (menus/prompts) — Run again, then re-export to translate them."
-                ));
-            }
             let applied = all_units
                 .iter()
                 .filter(|u| u.status.is_applied() && (translate_names || !u.is_character_name()))

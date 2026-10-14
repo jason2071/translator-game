@@ -96,6 +96,7 @@ impl GameEngine for RenpyEngine {
         }
         // No base scripts at all: the `tl/` tree is all there is.
         if rpys.is_empty() && !tl_units.is_empty() {
+            harvest_common_ui(root, &dir, &mut tl_units)?;
             return Ok(tl_units);
         }
         // Still nothing translatable. Fail the import with an actionable message
@@ -163,8 +164,10 @@ impl GameEngine for RenpyEngine {
             if auto_source {
                 tl_units = merge_auto_tl_source(tl_units, units, &tree_olds);
             }
+            harvest_common_ui(root, &dir, &mut tl_units)?;
             return Ok(tl_units);
         }
+        harvest_common_ui(root, &dir, &mut units)?;
         Ok(units)
     }
 
@@ -172,7 +175,7 @@ impl GameEngine for RenpyEngine {
         let dir = game_dir(root).ok_or_else(|| anyhow!("not a Ren'Py project"))?;
 
         // Group applied units by file. Synthetic pointers (`name#`, `str#`,
-        // `pylist#`, `screenarg#`, `join#`) are display-matched at runtime rather than
+        // `pylist#`, `screenarg#`, `screenchars#`, `join#`) are display-matched at runtime rather than
         // spliceable spans, so only parsed byte-span pointers belong here.
         let mut by_file: BTreeMap<&str, Vec<&TransUnit>> = BTreeMap::new();
         for u in units {
@@ -1052,16 +1055,26 @@ fn bracket_delta(line: &str) -> i32 {
 /// gettext call — Ren'Py's explicit "this string is translatable" marker, which
 /// may appear anywhere including inside screen/python blocks.
 fn gettext_spans(line: &str) -> Vec<(usize, usize)> {
+    gettext_spans_with_markers(line, false)
+}
+
+fn gettext_spans_with_markers(line: &str, sdk: bool) -> Vec<(usize, usize)> {
     let b = line.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
     while i + 1 < b.len() {
-        // A gettext call is a lone `_` (not the tail of an identifier) then `(`.
+        // SDK strings also use __() and _p(); game extraction keeps its existing
+        // _() contract. Do not match the tail of an identifier.
+        let marker_len = if sdk && (b[i..].starts_with(b"__(") || b[i..].starts_with(b"_p(")) {
+            2
+        } else {
+            1
+        };
         if b[i] == b'_'
-            && b[i + 1] == b'('
+            && b.get(i + marker_len) == Some(&b'(')
             && !(i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
         {
-            let mut j = i + 2;
+            let mut j = i + marker_len + 1;
             while j < b.len() && (b[j] == b' ' || b[j] == b'\t') {
                 j += 1;
             }
@@ -1417,7 +1430,11 @@ fn harvest_python_line(
 ) {
     // Character names have their own pass (`extract_character_names`); docstrings
     // are code commentary, not UI.
-    if raw.contains("Character(") || raw.contains("\"\"\"") || raw.contains("'''") {
+    if raw.contains("Character(")
+        || raw.contains("\"\"\"")
+        || raw.contains("'''")
+        || raw.contains("renpy.get_showing_tags(")
+    {
         return;
     }
     // A logging call's argument is developer output, never shown to a player —
@@ -1450,6 +1467,14 @@ fn harvest_python_line(
             continue;
         }
         let s = &raw[rel..rel + len];
+        // The first argument of these actions names a variable, never its label.
+        let before = raw[..rel - 1].trim_end();
+        if ["SetVariable(", "SetScreenVariable(", "SetLocalVariable("]
+            .iter()
+            .any(|callee| before.ends_with(callee))
+        {
+            continue;
+        }
         if !python_display_ok(s, allow_single) {
             continue;
         }
@@ -1517,6 +1542,7 @@ fn harvest_screen_literal(
 struct ScreenDisplaySpec {
     params: Vec<String>,
     displayed: HashSet<String>,
+    indexed: HashSet<String>,
 }
 
 /// Split a comma-separated argument/parameter list without splitting inside a
@@ -1622,8 +1648,12 @@ fn record_displayed_params(trimmed: &str, spec: &mut ScreenDisplaySpec) {
         }
         return;
     }
-    let param = first_token(rest).trim_end_matches(':');
+    let expression = first_token(rest).trim_end_matches(':');
+    let param = expression.split('[').next().unwrap_or(expression);
     if spec.params.iter().any(|p| p == param) {
+        if expression.starts_with(&format!("{param}[")) {
+            spec.indexed.insert(param.to_string());
+        }
         spec.displayed.insert(param.to_string());
     }
 }
@@ -1654,6 +1684,7 @@ fn screen_display_specs(files: &[(String, String)]) -> HashMap<String, ScreenDis
                     ScreenDisplaySpec {
                         params,
                         displayed: HashSet::new(),
+                        indexed: HashSet::new(),
                     },
                 ));
             }
@@ -1667,12 +1698,14 @@ fn screen_display_specs(files: &[(String, String)]) -> HashMap<String, ScreenDis
 }
 
 /// A one-line `use foo(...)`, `call screen foo(...)`, or `show screen foo(...)`
-/// invocation: `(screen name, opening-paren byte offset)` within `trimmed`.
+/// invocation, or a screen definition (literal defaults): `(screen name,
+/// opening-paren byte offset)` within `trimmed`.
 fn screen_invocation(trimmed: &str) -> Option<(&str, usize)> {
     let rest = trimmed
         .strip_prefix("use ")
         .or_else(|| trimmed.strip_prefix("call screen "))
-        .or_else(|| trimmed.strip_prefix("show screen "))?;
+        .or_else(|| trimmed.strip_prefix("show screen "))
+        .or_else(|| trimmed.strip_prefix("screen "))?;
     let name_len = rest
         .bytes()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == b'_')
@@ -1717,7 +1750,8 @@ fn top_level_assign(arg: &str) -> Option<usize> {
 
 /// Harvest only literal arguments that flow into a parameter rendered by a
 /// screen's `text` widget. The synthetic pointer deliberately cannot be spliced;
-/// export translates the value after interpolation through `config.replace_text`.
+/// export translates whole values after interpolation, or before indexed glyph
+/// rendering for `screenchars#` units.
 fn harvest_screen_call_arguments(files: &[(String, String)], out: &mut Vec<TransUnit>) {
     let specs = screen_display_specs(files);
     if specs.is_empty() {
@@ -1728,6 +1762,7 @@ fn harvest_screen_call_arguments(files: &[(String, String)], out: &mut Vec<Trans
         .filter(|u| u.kind == UnitKind::Term)
         .map(|u| u.source.clone())
         .collect();
+    let mut indexed_seen = HashSet::new();
     for (file, content) in files {
         let mut offset = 0usize;
         for line in content.split_inclusive('\n') {
@@ -1779,14 +1814,24 @@ fn harvest_screen_call_arguments(files: &[(String, String)], out: &mut Vec<Trans
                     continue;
                 }
                 let source = &value[rel..rel + len];
-                if !display_text_ok(source) || !seen.insert(source.to_string()) {
+                let indexed = spec.indexed.contains(param);
+                let fresh = if indexed {
+                    indexed_seen.insert((name.to_string(), param.to_string(), source.to_string()))
+                } else {
+                    seen.insert(source.to_string())
+                };
+                if !display_text_ok(source) || !fresh {
                     continue;
                 }
                 let abs = line_start + indent + open + 1 + a + leading + value_offset + rel;
                 out.push(
                     TransUnit::new(
                         file,
-                        format!("screenarg#{abs}:{len}"),
+                        if indexed {
+                            format!("screenchars#{name}#{param}#{abs}:{len}")
+                        } else {
+                            format!("screenarg#{abs}:{len}")
+                        },
                         UnitKind::Term,
                         source,
                     )
@@ -2009,8 +2054,45 @@ fn extract_from_tl(
     }
 }
 
+/// Editor functions that rewrite .rpy scripts expose diagnostics, not game text.
+fn script_editor_ranges(content: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut current: Option<(usize, usize, String)> = None;
+    let mut offset = 0;
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if !trimmed.trim().is_empty()
+            && !trimmed.starts_with('#')
+            && current.as_ref().is_some_and(|(_, base, _)| indent <= *base)
+        {
+            if let Some((start, _, body)) = current.take() {
+                if body.contains(".rpy")
+                    && (body.contains(".writelines(") || body.contains(".write("))
+                {
+                    ranges.push((start, offset));
+                }
+            }
+        }
+        if current.is_none() && trimmed.starts_with("def ") {
+            current = Some((offset, indent, String::new()));
+        }
+        if let Some((_, _, body)) = current.as_mut() {
+            body.push_str(line);
+        }
+        offset += line.len();
+    }
+    if let Some((start, _, body)) = current {
+        if body.contains(".rpy") && (body.contains(".writelines(") || body.contains(".write(")) {
+            ranges.push((start, offset));
+        }
+    }
+    ranges
+}
+
 fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>, py_seen: &mut HashSet<String>) {
     harvest_joined_names(file, content, py_seen, out);
+    let editor_ranges = script_editor_ranges(content);
     let mut skip_indent: Option<(usize, SkipKind)> = None;
     let mut skip_expr_depth: i32 = 0; // open brackets of a multi-line define/default/$
                                       // Open brackets inside the *current* skipped block. A python block's dict or list
@@ -2029,6 +2111,13 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>, py_seen: &mu
         let raw = raw.strip_suffix('\r').unwrap_or(raw);
         let trimmed = raw.trim_start();
         let indent = raw.len() - trimmed.len();
+
+        if editor_ranges
+            .iter()
+            .any(|&(start, end)| line_start >= start && line_start < end)
+        {
+            continue;
+        }
 
         // Blank/comment lines carry no text and never close a skipped block.
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -2161,6 +2250,9 @@ fn extract_rpy(file: &str, content: &str, out: &mut Vec<TransUnit>, py_seen: &mu
             continue;
         }
         let source = &raw[inner_rel..inner_rel + inner_len];
+        if source.starts_with('#') {
+            continue;
+        }
 
         // A trailing `:` marks a menu choice.
         let after = raw[after_close..].trim();
@@ -2670,104 +2762,129 @@ pub struct TlExport {
     pub dir: PathBuf,
 }
 
-/// Harvest the engine/UI strings the generated skeleton exposes but the project
-/// never had a unit for. Ren'Py's `translate` scans `renpy/common/*.rpy` too, so
-/// `tl/<lang>/common.rpy` (and friends) list every built-in string — quit/main-menu
-/// confirmations, save/load prompts, page navigation — as `old "X"\n new "X"`
-/// (untranslated: `new == old`). Our extractor deliberately skips `renpy/common`
-/// (so the SDK's strings never masquerade as game text), so those lines stay
-/// English forever. Return them as fresh `Term` units keyed by their byte span in
-/// the skeleton (a `str#` pointer → display-matched, never spliced) so the caller
-/// can merge them into the DB; the next Run translates them and the following
-/// export's [`renpy_tl::fill_tl`] fills them (it matches `new` by the `old` source).
-///
-/// `have` is the set of source strings already covered by a unit — skip those, so a
-/// game string that also appears in a `strings` block isn't duplicated.
-pub fn harvest_tl_untranslated(dir: &Path, existing: &[TransUnit]) -> Vec<TransUnit> {
-    let have: HashSet<&str> = existing.iter().map(|u| u.source.as_str()).collect();
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else {
-            continue;
-        };
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-                continue;
-            }
-            if p.extension().and_then(|x| x.to_str()) != Some("rpy") {
-                continue;
-            }
-            let Ok(content) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            // File path relative to the game dir (`tl/<lang>/common.rpy`), matching
-            // how the fill loop and the rest of the engine name Ren'Py files.
-            let rel = p
-                .strip_prefix(dir.parent().and_then(|q| q.parent()).unwrap_or(&d))
-                .unwrap_or(&p)
-                .to_string_lossy()
-                .replace('\\', "/");
-            harvest_untranslated_strings(&rel, &content, &have, &mut seen, &mut out);
-        }
-    }
-    out
-}
-
-/// The `translate <lang> strings:` half of [`harvest_tl_untranslated`], for one file.
-fn harvest_untranslated_strings(
-    file: &str,
-    content: &str,
-    have: &HashSet<&str>,
-    seen: &mut HashSet<String>,
-    out: &mut Vec<TransUnit>,
-) {
-    let mut in_strings = false;
-    let mut pending_old: Option<(usize, usize, String)> = None; // (abs, len, text)
-    let mut offset = 0usize;
-    for line in content.split_inclusive('\n') {
-        let line_start = offset;
-        offset += line.len();
-        let raw = line.strip_suffix('\n').unwrap_or(line);
-        let raw = raw.strip_suffix('\r').unwrap_or(raw);
-        let trimmed = raw.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("translate ") {
-            in_strings = rest.trim_end_matches(':').ends_with("strings");
-            pending_old = None;
+/// Read player-facing SDK strings during extraction, before translation starts.
+/// Use synthetic pointers so neither injection nor tl-source selection can treat
+/// SDK files as game scripts. The SDK is read-only, and exports never add units.
+fn harvest_common_ui(root: &Path, game: &Path, units: &mut Vec<TransUnit>) -> Result<()> {
+    let bundle = if root == game {
+        root.parent().unwrap_or(root)
+    } else {
+        root
+    };
+    let common = bundle.join("renpy/common");
+    // An allowlist keeps developer tools (director, console, error handling,
+    // GUI/speech-bubble editors) out without guessing from the displayed words.
+    const PLAYER_UI: &[&str] = &[
+        "00accessibility.rpy",
+        "00action_file.rpy",
+        "00action_other.rpy",
+        "00gallery.rpy",
+        "00gamepad.rpy",
+        "00gltest.rpy",
+        "00iap.rpy",
+        "00keymap.rpy",
+        "00library.rpy",
+        "00preferences.rpy",
+        "00sync.rpy",
+        "00translation.rpy",
+        "00updater.rpy",
+    ];
+    let mut seen: HashSet<String> = units.iter().map(|u| u.source.clone()).collect();
+    for name in PLAYER_UI {
+        let path = common.join(name);
+        if !path.is_file() {
             continue;
         }
-        if !in_strings || trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.starts_with("old ") {
-            pending_old = first_string(raw).and_then(|(rel, len, _)| {
-                (len > 0).then(|| (line_start + rel, len, raw[rel..rel + len].to_string()))
-            });
-        } else if trimmed.starts_with("new ") {
-            if let Some((abs, len, old)) = pending_old.take() {
-                if let Some((r, l, _)) = first_string(raw) {
-                    let new = &raw[r..r + l];
-                    // Untranslated (Ren'Py wrote `new == old`), still worth translating
-                    // (has a letter), and not already a unit or harvested this run.
-                    if new == old
-                        && display_text_ok(&old)
-                        && !have.contains(old.as_str())
-                        && seen.insert(old.clone())
-                    {
-                        out.push(TransUnit::new(
-                            file,
-                            format!("str#{abs}:{len}"),
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let file = format!("renpy/common/{name}");
+        let mut offset = 0;
+        for line in content.split_inclusive('\n') {
+            if !line.trim_start().starts_with('#') {
+                for (rel, len) in gettext_spans_with_markers(line, true) {
+                    let source = &line[rel..rel + len];
+                    if display_text_ok(source) && seen.insert(source.to_string()) {
+                        units.push(TransUnit::new(
+                            &file,
+                            format!("str#{}:{len}", offset + rel),
                             UnitKind::Term,
-                            &old,
+                            source,
                         ));
                     }
                 }
             }
+            offset += line.len();
         }
     }
+    Ok(())
+}
+
+/// Translate indexed screen text as a whole before the screen splits it into
+/// glyphs. Scope values are restored even on errors, preserving saves and locales.
+fn append_screen_character_hook(data_dir: &Path, lang: &str, units: &[TransUnit]) -> Result<()> {
+    let mut pairs: BTreeMap<(String, String), BTreeMap<String, String>> = BTreeMap::new();
+    for unit in units {
+        let Some(rest) = unit.pointer.strip_prefix("screenchars#") else {
+            continue;
+        };
+        let parts: Vec<_> = rest.split('#').collect();
+        if parts.len() != 3
+            || !is_ident(parts[0])
+            || !is_ident(parts[1])
+            || !unit.status.is_applied()
+        {
+            continue;
+        }
+        let Some(tr) = unit.translation.as_deref().filter(|v| !v.trim().is_empty()) else {
+            continue;
+        };
+        pairs
+            .entry((parts[0].to_string(), parts[1].to_string()))
+            .or_default()
+            .insert(unescape_rpy(&unit.source), renpy_tl::decode_escapes(tr));
+    }
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    let path = data_dir.join(GENERATED_RPY);
+    let mut content = std::fs::read_to_string(&path)?;
+    content.push_str("\ninit 999 python:\n    _rpgtl_screen_chars = {\n");
+    for ((screen, param), values) in pairs {
+        content.push_str(&format!("        (\"{screen}\", \"{param}\"): {{\n"));
+        for (old, new) in values {
+            content.push_str(&format!(
+                "            \"{}\": \"{}\",\n",
+                renpy_tl::quote_unicode(&old),
+                renpy_tl::quote_unicode(&new)
+            ));
+        }
+        content.push_str("        },\n");
+    }
+    content.push_str("    }\n");
+    content.push_str(&format!("    _rpgtl_screen_chars_lang = \"{lang}\"\n"));
+    content.push_str(
+        r#"    from renpy.sl2.slast import SLScreen as _rpgtl_SLScreen
+    if not hasattr(_rpgtl_SLScreen, '_rpgtl_original_execute'):
+        _rpgtl_SLScreen._rpgtl_original_execute = _rpgtl_SLScreen.execute
+    def _rpgtl_screen_chars_execute(_screen, _context):
+        _originals = {}
+        try:
+            if _preferences.language == _rpgtl_screen_chars_lang:
+                for (_name, _param), _values in _rpgtl_screen_chars.items():
+                    if _screen.name != _name:
+                        continue
+                    _value = _context.scope.get(_param)
+                    if isinstance(_value, (str, type(u""))) and _value in _values:
+                        _originals[_param] = _value
+                        _context.scope[_param] = _values[_value]
+            return _rpgtl_SLScreen._rpgtl_original_execute(_screen, _context)
+        finally:
+            _context.scope.update(_originals)
+    _rpgtl_SLScreen.execute = _rpgtl_screen_chars_execute
+"#,
+    );
+    write_atomic(&path, content.as_bytes())?;
+    Ok(())
 }
 
 /// The default multiplier for the bundled Thai face. Sarabun sits slightly taller
@@ -3030,6 +3147,7 @@ pub fn export_tl_with_font_scale(
     )?;
 
     track_export_overlay(data_dir, &dir, root);
+    append_screen_character_hook(data_dir, &lang, units)?;
     Ok(Some(TlExport { files, dir }))
 }
 
@@ -3039,8 +3157,7 @@ pub fn export_tl_with_font_scale(
 /// Only a **spliceable** unit (a byte-span pointer) counts: those come from
 /// importing a game that ships a `tl/<en>/` source tree. Synthetic units with a
 /// `str#`/`name#`/`pylist#` pointer are display-matched, and
-/// [`harvest_tl_untranslated`] gives engine-UI units a `tl/<lang>/common.rpy` file —
-/// they must NOT flip export into tl-source mode.
+/// SDK UI units also use synthetic pointers, so they never affect this choice.
 ///
 /// A `tl/` tree also has to **outweigh the base scripts** to win. Plenty of games
 /// keep all their dialogue in base `.rpy` and still ship a stray `tl/<lang>/
@@ -3232,6 +3349,7 @@ fn export_tl_from_source_with_font_scale(
         &BTreeMap::new(),
         thai_font_scale,
     )?;
+    append_screen_character_hook(data_dir, &lang, units)?;
     let root = data_dir.parent().unwrap_or(data_dir);
     track_export_overlay(data_dir, &data_dir.join("tl").join(&lang), root);
     Ok(TlExport {
@@ -4184,6 +4302,121 @@ mod tests {
     }
 
     #[test]
+    fn indexed_screen_arguments_and_defaults_are_display_text() {
+        let src = r##"screen manga(text1="Default sound", color1="red", pos=[]):
+    for i in range(len(text1)):
+        text text1[i] color color1
+label start:
+    show screen manga(text1="Slurp!", color1="blue", pos=[10, 20])
+    call screen manga("Smack!", "green")
+screen caller():
+    use manga(text1="Slurp!", color1="cyan")
+"##;
+        let units = extract(src);
+        for text in ["Default sound", "Slurp!", "Smack!"] {
+            let u = units.iter().find(|u| u.source == text).unwrap();
+            assert!(
+                u.pointer.starts_with("screenchars#manga#text1#"),
+                "{units:?}"
+            );
+        }
+        for code in ["red", "blue", "green", "cyan"] {
+            assert!(!units.iter().any(|u| u.source == code), "{units:?}");
+        }
+        assert_eq!(units.iter().filter(|u| u.source == "Slurp!").count(), 1);
+    }
+
+    #[test]
+    fn script_editor_diagnostics_and_screen_variable_keys_are_not_text() {
+        let src = r##"define outlines = [(3, "#1a1a1aa5", 0, 0)]
+init python:
+    def edit_script():
+        path = renpy.loader.transfn("script.rpy")
+        with open(path, "w") as f:
+            f.writelines(lines)
+        renpy.notify("Source file updated!")
+    def save_game():
+        renpy.notify("Save failed!")
+screen hud():
+    timer 1 action SetScreenVariable("parametr", 0)
+    timer 1 action SetVariable("tooltip_text", "Map")
+    default tag = renpy.get_showing_tags("master", sort=True)[0]
+label start:
+    a "Hello!"
+"##;
+        let units = extract(src);
+        for text in [
+            "#1a1a1aa5",
+            "Source file updated!",
+            "parametr",
+            "tooltip_text",
+            "master",
+        ] {
+            assert!(!units.iter().any(|u| u.source == text), "{units:?}");
+        }
+        for text in ["Save failed!", "Map", "Hello!"] {
+            assert!(units.iter().any(|u| u.source == text), "{units:?}");
+        }
+    }
+
+    #[test]
+    fn indexed_screen_hook_translates_before_glyph_split_and_restores_scope() {
+        use crate::model::Status;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(GENERATED_RPY), "# Test overlay\n").unwrap();
+        let mut unit = TransUnit::new(
+            "script.rpy",
+            "screenchars#manga#text1#1:6",
+            UnitKind::Term,
+            "Slurp!",
+        );
+        unit.translation = Some("Translated sound".to_string());
+        unit.status = Status::Translated;
+        append_screen_character_hook(tmp.path(), "thai", &[unit]).unwrap();
+        let source = std::fs::read_to_string(tmp.path().join(GENERATED_RPY)).unwrap();
+        let block = source.split("init 999 python:\n").nth(1).unwrap();
+        let script = format!(
+            r#"
+import sys, types, textwrap
+class SLScreen:
+    name = 'manga'
+    def execute(self, context):
+        if context.scope.get('fail'):
+            raise ValueError('test')
+        return list(context.scope['text1'])
+slast = types.ModuleType('renpy.sl2.slast')
+slast.SLScreen = SLScreen
+sys.modules['renpy.sl2.slast'] = slast
+_preferences = types.SimpleNamespace(language='thai')
+exec(compile(textwrap.dedent({block:?}), 'overlay', 'exec'))
+context = types.SimpleNamespace(scope={{'text1': 'Slurp!', 'color1': 'red'}})
+assert ''.join(SLScreen().execute(context)) == 'Translated sound'
+assert context.scope == {{'text1': 'Slurp!', 'color1': 'red'}}
+_preferences.language = None
+assert ''.join(SLScreen().execute(context)) == 'Slurp!'
+_preferences.language = 'thai'
+context.scope['fail'] = True
+try:
+    SLScreen().execute(context)
+except ValueError:
+    pass
+else:
+    raise AssertionError('exception not preserved')
+assert context.scope['text1'] == 'Slurp!'
+"#
+        );
+        let output = Command::new("python")
+            .args(["-c", &script])
+            .output()
+            .expect("Python for generated overlay test");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn a_dict_closing_at_column_zero_does_not_end_the_python_block() {
         // Hand-formatted game code indents a dict's body but puts its closing brace
         // back at column 0. Indent alone reads that as the end of `init python:`, so
@@ -4240,39 +4473,51 @@ mod tests {
     }
 
     #[test]
-    fn harvests_untranslated_engine_strings_from_the_skeleton() {
+    fn extracts_player_ui_before_export_and_skips_developer_tools() {
         let d = tempfile::tempdir().unwrap();
-        let tl = d.path().join("tl").join("thai");
-        std::fs::create_dir_all(&tl).unwrap();
+        let game = d.path().join("game");
+        let common = d.path().join("renpy/common");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::create_dir_all(&common).unwrap();
+        std::fs::write(game.join("script.rpy"), "label start:\n    \"Hello\"\n").unwrap();
+        std::fs::write(common.join("00library.rpy"),
+            "init python:\n    quit = __(\"Are you sure you want to quit?\")\n    duplicate = _(\"Hello\")\n    again = _(\"Are you sure you want to quit?\")\n    asset = \"gui/button.png\"\n    # _(\"Comment\")\n").unwrap();
         std::fs::write(
-            tl.join("common.rpy"),
-            "translate thai strings:\n\
-             \n    old \"Are you sure you want to quit?\"\n    new \"Are you sure you want to quit?\"\n\
-             \n    old \"Start\"\n    new \"\u{e40}\u{e23}\u{e34}\u{e48}\u{e21}\"\n\
-             \n    old \"Already have unit\"\n    new \"Already have unit\"\n",
+            common.join("00director.rpy"),
+            "init python:\n    tag = _(\"(transform)\")\n",
         )
         .unwrap();
-
-        // A game already has a unit for "Already have unit" — don't duplicate it.
-        let existing = vec![TransUnit::new(
-            "script.rpy",
-            "1:1",
-            UnitKind::Term,
-            "Already have unit",
-        )];
-        let got = harvest_tl_untranslated(&tl, &existing);
-
-        let sources: Vec<&str> = got.iter().map(|u| u.source.as_str()).collect();
-        assert_eq!(sources, vec!["Are you sure you want to quit?"], "{got:?}");
-        let u = &got[0];
-        assert_eq!(u.file, "tl/thai/common.rpy");
-        assert!(
-            u.pointer.starts_with("str#"),
-            "display-matched, not spliced: {}",
-            u.pointer
+        std::fs::write(
+            common.join("_errorhandling.rpym"),
+            "init python:\n    error = _(\"Open traceback\")\n",
+        )
+        .unwrap();
+        let units = RenpyEngine
+            .extract(d.path(), &ExtractOpts::default())
+            .unwrap();
+        assert_eq!(units.len(), 2, "{units:?}");
+        let ui = units
+            .iter()
+            .find(|u| u.source == "Are you sure you want to quit?")
+            .unwrap();
+        assert_eq!(ui.file, "renpy/common/00library.rpy");
+        assert!(ui.pointer.starts_with("str#"));
+        assert_eq!(tl_source_lang(&units), None);
+        let rescanned = RenpyEngine
+            .extract(d.path(), &ExtractOpts::default())
+            .unwrap();
+        assert_eq!(
+            units
+                .iter()
+                .map(|u| (&u.file, &u.pointer, &u.source))
+                .collect::<Vec<_>>(),
+            rescanned
+                .iter()
+                .map(|u| (&u.file, &u.pointer, &u.source))
+                .collect::<Vec<_>>()
         );
-        // A harvested tl/ unit must never flip a re-export into tl-source mode.
-        assert_eq!(tl_source_lang(&got), None);
+        let from_game = RenpyEngine.extract(&game, &ExtractOpts::default()).unwrap();
+        assert_eq!(from_game.len(), units.len());
     }
 
     #[test]
