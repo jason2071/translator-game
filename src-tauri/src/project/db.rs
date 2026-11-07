@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Create tables + indexes if absent. Safe to call on every open.
 pub fn init_schema(conn: &Connection) -> Result<()> {
-    register_search_functions(conn)?;
+    register_connection_functions(conn)?;
     conn.execute_batch(
         r#"
         PRAGMA journal_mode = WAL;
@@ -79,7 +79,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 /// Install the Unicode-aware whole-word matcher used by the unit grid. SQLite's
 /// `LIKE` has no portable word-boundary operator; doing this in SQL keeps paging
 /// and counts correct without loading every translation unit into the frontend.
-fn register_search_functions(conn: &Connection) -> rusqlite::Result<()> {
+fn register_connection_functions(conn: &Connection) -> rusqlite::Result<()> {
     conn.create_scalar_function(
         "whole_word_contains",
         3,
@@ -91,6 +91,23 @@ fn register_search_functions(conn: &Connection) -> rusqlite::Result<()> {
             Ok(haystack
                 .as_deref()
                 .is_some_and(|text| whole_word_contains(text, &needle, match_case)))
+        },
+    )?;
+    conn.create_scalar_function(
+        "translation_usable",
+        5,
+        FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx: &Context<'_>| {
+            let engine: String = ctx.get(0)?;
+            let target: String = ctx.get(1)?;
+            let context: Option<String> = ctx.get(2)?;
+            let source: String = ctx.get(3)?;
+            let translation: Option<String> = ctx.get(4)?;
+            let grammar = crate::ai::validation::grammar_for_context(&engine, context.as_deref());
+            Ok(translation.as_deref().is_some_and(|text| {
+                crate::engine::protect::codes_match(grammar, &source, text)
+                    && crate::ai::validation::accepts(grammar, &target, text)
+            }))
         },
     )
 }
@@ -734,6 +751,18 @@ pub fn tm_upsert(conn: &Connection, source: &str, translation: &str) -> Result<(
     if source.is_empty() || translation.is_empty() {
         return Ok(());
     }
+    let target = get_meta(conn, "target_lang")?.unwrap_or_else(|| "Thai".into());
+    let engine = get_meta(conn, "engine_id")?.unwrap_or_default();
+    let context: Option<String> = conn.query_row(
+        "SELECT context FROM unit WHERE source = ?1 AND context LIKE 'DKTools locale %' LIMIT 1",
+        [source], |row| row.get(0),
+    ).optional()?;
+    let grammar = crate::ai::validation::grammar_for_context(&engine, context.as_deref());
+    if !crate::engine::protect::codes_match(grammar, source, translation)
+        || !crate::ai::validation::accepts(grammar, &target, translation)
+    {
+        return Ok(());
+    }
     conn.execute(
         "INSERT INTO tm(source, translation, hits) VALUES(?1, ?2, 0)
          ON CONFLICT(source) DO UPDATE SET translation = excluded.translation",
@@ -757,6 +786,8 @@ pub fn tm_lookup(conn: &Connection, source: &str) -> Result<Option<String>> {
 /// sibling unit that is already translated). Fills as `Draft`. Returns the
 /// number of units filled.
 pub fn apply_tm(conn: &mut Connection) -> Result<usize> {
+    let engine = get_meta(conn, "engine_id")?.unwrap_or_default();
+    let target = get_meta(conn, "target_lang")?.unwrap_or_else(|| "Thai".into());
     let tx = conn.transaction()?;
     // 1) From the persisted TM table.
     let n1 = tx.execute(
@@ -764,8 +795,9 @@ pub fn apply_tm(conn: &mut Connection) -> Result<usize> {
             SET translation = (SELECT translation FROM tm WHERE tm.source = unit.source),
                 status = 'Draft'
           WHERE status = 'Untranslated'
-            AND EXISTS (SELECT 1 FROM tm WHERE tm.source = unit.source)",
-        [],
+            AND EXISTS (SELECT 1 FROM tm WHERE tm.source = unit.source
+                        AND translation_usable(?1, ?2, unit.context, unit.source, tm.translation))",
+        params![engine, target],
     )?;
     // 2) From sibling units already translated in this project (duplicates).
     let n2 = tx.execute(
@@ -774,7 +806,8 @@ pub fn apply_tm(conn: &mut Connection) -> Result<usize> {
                     SELECT s.translation FROM unit s
                      WHERE s.source = unit.source
                        AND s.translation IS NOT NULL
-                       AND s.status <> 'Untranslated'
+                       AND s.status IN ('Draft', 'Translated', 'Reviewed', 'Locked')
+                       AND translation_usable(?1, ?2, unit.context, unit.source, s.translation)
                      LIMIT 1
                 ),
                 status = 'Draft'
@@ -783,9 +816,10 @@ pub fn apply_tm(conn: &mut Connection) -> Result<usize> {
                     SELECT 1 FROM unit s
                      WHERE s.source = unit.source
                        AND s.translation IS NOT NULL
-                       AND s.status <> 'Untranslated'
+                       AND s.status IN ('Draft', 'Translated', 'Reviewed', 'Locked')
+                       AND translation_usable(?1, ?2, unit.context, unit.source, s.translation)
                 )",
-        [],
+        params![engine, target],
     )?;
     tx.commit()?;
     Ok(n1 + n2)

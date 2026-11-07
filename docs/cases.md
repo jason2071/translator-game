@@ -15,6 +15,10 @@ broken game. `AGENTS.md` points here first for a reason.
 
 ## Index (newest first)
 
+- [[2026-10-01-renpy-xxxfiles-current-dest]] — bedroom **No one** choice
+  references an undefined variable already present in the shipped archive;
+  compared source and bytecode byte-for-byte, repaired two conditions with
+  user approval, and checked startup. No export defect identified.
 - [[2026-09-20-hendrix-stale-sheet-no-translation]] — a Hendrix CSV from an
   older game build accepted a Thai column, but none of its `Original` keys
   matched the live map dialogue, so selecting Thai visibly changed nothing.

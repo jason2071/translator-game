@@ -67,11 +67,11 @@ pub fn export_mod(
     std::fs::create_dir_all(&output_data)?;
     let mut files: BTreeSet<_> = units.iter().map(|unit| unit.file.clone()).collect();
     files.insert("System.json".into());
+    let base = project.data_dir.parent().unwrap_or(&project.root);
+    if base.join("js/plugins.js").is_file() {
+        files.insert("js/plugins.js".into());
+    }
     if embed_font {
-        let base = project.data_dir.parent().unwrap_or(&project.root);
-        if base.join("js/plugins.js").is_file() {
-            files.insert("js/plugins.js".into());
-        }
         if base.join("fonts/gamefont.css").is_file() {
             let target = input_data
                 .parent()
@@ -93,7 +93,7 @@ pub fn export_mod(
         }
     }
     for file in files {
-        let target = if engine::mvmz::is_game_root_relative_file(&file) {
+        let target = if engine::mvmz::is_game_root_relative_file_at(base, &file) {
             input_data
                 .parent()
                 .context("missing game base")?
@@ -126,7 +126,8 @@ pub fn export_mod(
     for file in &written {
         let bytes = std::fs::read(file)?;
         if file.extension().is_some_and(|ext| ext == "json") {
-            serde_json::from_slice::<serde_json::Value>(&bytes)
+            let text = std::str::from_utf8(&bytes)?;
+            serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
                 .with_context(|| format!("validating exported {}", file.display()))?;
         }
         let relative = file

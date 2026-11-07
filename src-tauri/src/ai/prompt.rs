@@ -34,6 +34,11 @@ pub fn build_messages(req: &BatchReq) -> (String, String) {
         tone = req.tone,
     ));
     sys.push_str("Rules:\n");
+    if super::validation::is_thai_target(&req.target_lang) {
+        sys.push_str(
+            " - Write Thai prose. Do not answer in Chinese, Japanese or Korean, or leave stray CJK characters in Thai text. Latin names, abbreviations (HP/MP), numbers and protected placeholders may stay unchanged.\n",
+        );
+    }
     // Only mention the ⟦…⟧ placeholders when the batch actually contains some —
     // otherwise a model (especially a fast, non-reasoning one) tends to invent a
     // literal ⟦n⟧ in the output just because the prompt named it.
@@ -701,6 +706,10 @@ mod tests {
         assert!(sys.contains("⟦0⟧")); // placeholder rule, shown because the item has a code
         assert!(sys.contains("HP => พลังชีวิต"));
         assert!(user.contains("Hello ⟦0⟧"));
+        assert!(sys.contains("Write Thai prose"));
+        let mut chinese = req(vec!["Max HP"]);
+        chinese.target_lang = "Chinese".into();
+        assert!(!build_messages(&chinese).0.contains("Write Thai prose"));
     }
 
     #[test]

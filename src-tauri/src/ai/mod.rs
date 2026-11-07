@@ -12,6 +12,7 @@ pub mod gemini;
 pub mod openai;
 pub mod prompt;
 pub mod retry;
+pub mod validation;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -148,6 +149,9 @@ pub async fn translate_batch_or_split(
             .into_iter()
             .enumerate()
             .map(|(i, t)| {
+                if !validation::accepts_masked(&req.target_lang, &t) {
+                    return None;
+                }
                 Some(align_outer_whitespace(
                     req.items.get(i).map(|it| it.text.as_str()).unwrap_or(""),
                     &t,
@@ -163,7 +167,11 @@ pub async fn translate_batch_or_split(
                     ..req.clone()
                 };
                 match provider.translate_batch(client, key, &single).await {
-                    Ok(mut v) => out.push(v.pop().map(|t| align_outer_whitespace(&it.text, &t))),
+                    Ok(mut v) => out.push(
+                        v.pop()
+                            .filter(|t| validation::accepts_masked(&req.target_lang, t))
+                            .map(|t| align_outer_whitespace(&it.text, &t)),
+                    ),
                     Err(_) => out.push(None),
                 }
             }

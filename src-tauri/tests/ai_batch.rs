@@ -124,6 +124,83 @@ async fn happy_multi_passes_through() {
     assert_eq!(out, vec![Some("T[a]".into()), Some("T[b]".into())]);
 }
 
+struct WrongLanguageProvider {
+    split: bool,
+    calls: AtomicU32,
+}
+
+#[async_trait]
+impl TranslationProvider for WrongLanguageProvider {
+    async fn translate_batch(
+        &self,
+        _: &reqwest::Client,
+        _: Option<&str>,
+        req: &BatchReq,
+    ) -> Result<Vec<String>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.split && req.items.len() > 1 {
+            return Err(anyhow!("force single-item fallback"));
+        }
+        Ok(req
+            .items
+            .iter()
+            .map(|item| match item.text.as_str() {
+                "Strongest equipment" => "最强装备".into(),
+                "Mixed" => "คำแปล蜕ปน".into(),
+                _ => "พลังชีวิต".into(),
+            })
+            .collect())
+    }
+
+    async fn complete(
+        &self,
+        _: &reqwest::Client,
+        _: Option<&str>,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: u32,
+    ) -> Result<String> {
+        unreachable!("batch test")
+    }
+}
+
+#[tokio::test]
+async fn rejects_wrong_language_per_item_in_batch_and_split_without_rebilling_good_items() {
+    for split in [false, true] {
+        let provider = WrongLanguageProvider {
+            split,
+            calls: AtomicU32::new(0),
+        };
+        let output = translate_batch_or_split(
+            &provider,
+            &reqwest::Client::new(),
+            None,
+            &req(&["HP", "Strongest equipment", "Mixed"]),
+        )
+        .await;
+        assert_eq!(output, vec![Some("พลังชีวิต".into()), None, None]);
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            if split { 4 } else { 1 }
+        );
+    }
+}
+
+#[tokio::test]
+async fn cjk_target_output_is_not_rejected_by_the_thai_guard() {
+    let provider = WrongLanguageProvider {
+        split: false,
+        calls: AtomicU32::new(0),
+    };
+    let mut request = req(&["Strongest equipment"]);
+    request.target_lang = "Chinese".into();
+    assert_eq!(
+        translate_batch_or_split(&provider, &reqwest::Client::new(), None, &request).await,
+        vec![Some("最强装备".into())]
+    );
+}
+
 // ---- retry/backoff ----
 
 #[tokio::test]

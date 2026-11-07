@@ -39,18 +39,18 @@ struct ConfigPointer {
     comma: Option<usize>,
 }
 
-struct Leaf {
-    pointer: String,
-    start: usize,
-    len: usize,
-    value: String,
+pub(super) struct Leaf {
+    pub(super) pointer: String,
+    pub(super) start: usize,
+    pub(super) len: usize,
+    pub(super) value: String,
 }
 
 fn escape_pointer(key: &str) -> String {
     key.replace('~', "~0").replace('/', "~1")
 }
 
-fn leaves(text: &str) -> Result<Vec<Leaf>> {
+pub(super) fn leaves(text: &str) -> Result<Vec<Leaf>> {
     fn walk(raw: &RawValue, root: &str, pointer: String, out: &mut Vec<Leaf>) -> Result<()> {
         let text = raw.get();
         match text.as_bytes().first() {
@@ -88,7 +88,7 @@ fn leaves(text: &str) -> Result<Vec<Leaf>> {
     Ok(out)
 }
 
-fn config_array(text: &str) -> Result<(usize, usize)> {
+pub(super) fn config_array(text: &str) -> Result<(usize, usize)> {
     let assignment = text
         .find("$plugins")
         .context("missing $plugins assignment")?;
@@ -275,7 +275,7 @@ fn script_spans(file: &str, js: &str) -> Vec<(usize, usize, u8)> {
 
 // Map decoded UTF-8 boundaries back to the original JSON literal. Re-escape
 // only the changed run so unrelated escapes, whitespace and formatting survive.
-fn patch_string(raw: &str, previous: &str, next: &str) -> Result<String> {
+pub(super) fn patch_string(raw: &str, previous: &str, next: &str) -> Result<String> {
     if previous == next {
         return Ok(raw.to_string());
     }

@@ -93,8 +93,8 @@ async fn list_steam_games(app: tauri::AppHandle) -> Result<Vec<steam::SteamGame>
             let _ = app.emit("steam://scan-progress", progress);
         })
     })
-        .await
-        .map_err(|e| e.to_string())
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Open (or create + extract) the project at `path` and make it the active one.
@@ -890,6 +890,7 @@ fn export_project(
             embed_font.unwrap_or(false),
             thai_font_scale.unwrap_or(engine::renpy::DEFAULT_THAI_FONT_SCALE),
         )
+        .map_err(|e| anyhow::anyhow!("{e:#}"))
     })
 }
 
@@ -970,6 +971,7 @@ struct FailedUnit {
 /// group once and applying to all ids avoids re-translating duplicate lines.
 struct Group {
     source: String,
+    code_engine: String,
     context: Option<String>,
     /// The whole message box this line belongs to (all its lines joined), when
     /// the box has more than one line — sent to the model as context so a line
@@ -1051,7 +1053,6 @@ async fn translate_units(
         glossary,
         source_lang,
         target_lang,
-        engine_id,
         game_context,
         era,
         characters,
@@ -1062,6 +1063,10 @@ async fn translate_units(
         let proj = guard.as_ref().ok_or("no project is open")?;
         let overwrite = scope.overwrite.unwrap_or(false);
         let engine_id = proj.engine_id.clone();
+        let target_lang = project::db::get_meta(&proj.conn, "target_lang")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "Thai".into());
         // When name translation is off, Name units are left for the game's original.
         // Default OFF: a transliterated character name reads worse than the original
         // in most games, and it desyncs a name from its voice/UI art.
@@ -1112,7 +1117,7 @@ async fn translate_units(
 
         // Group by source; keep the first context seen for each.
         let mut order: Vec<Group> = Vec::new();
-        let mut index: HashMap<String, usize> = HashMap::new();
+        let mut index: HashMap<(String, String), usize> = HashMap::new();
         let mut total_units = 0usize;
         for u in candidates {
             // Untranslated and previously-Failed units are both eligible; a
@@ -1127,7 +1132,8 @@ async fn translate_units(
                 continue;
             }
             total_units += 1;
-            match index.get(&u.source) {
+            let code_engine = ai::validation::unit_grammar(&engine_id, &u).to_string();
+            match index.get(&(u.source.clone(), code_engine.clone())) {
                 Some(&i) => order[i].ids.push(u.id),
                 None => {
                     // The full box, only when it holds more than this one line.
@@ -1137,9 +1143,10 @@ async fn translate_units(
                             .filter(|lines| lines.len() > 1)
                             .map(|lines| lines.join("\n"))
                     });
-                    index.insert(u.source.clone(), order.len());
+                    index.insert((u.source.clone(), code_engine.clone()), order.len());
                     order.push(Group {
                         source: u.source,
+                        code_engine,
                         context: u.context,
                         neighbors,
                         ids: vec![u.id],
@@ -1173,7 +1180,8 @@ async fn translate_units(
                     // must not be re-applied — it would crash Ren'Py or print junk.
                     // Drop it so the unit goes to the AI instead.
                     .filter(|tm| {
-                        protect::codes_match(&engine_id, &g.source, tm)
+                        protect::codes_match(&g.code_engine, &g.source, tm)
+                            && ai::validation::accepts(&g.code_engine, &target_lang, tm)
                             // Same rule as the AI path: a path in the translation is
                             // only suspect when the source has none.
                             && !(looks_like_asset_path(tm) && !looks_like_asset_path(&g.source))
@@ -1216,10 +1224,6 @@ async fn translate_units(
             .ok()
             .flatten()
             .unwrap_or_else(|| "auto".into());
-        let target_lang = project::db::get_meta(&proj.conn, "target_lang")
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "Thai".into());
         // Per-project lore/setting notes, fed to the model on top of the global
         // Extra prompt (config.system_prompt).
         let game_context = project::db::get_meta(&proj.conn, "game_context")
@@ -1256,7 +1260,6 @@ async fn translate_units(
             glossary,
             source_lang,
             target_lang,
-            engine_id,
             game_context,
             era,
             characters,
@@ -1293,7 +1296,7 @@ async fn translate_units(
     // code grammar so RPGMaker escapes or Ren'Py tags/interpolation survive.
     let masks: Vec<protect::Masked> = to_ai
         .iter()
-        .map(|g| protect::mask_for(&engine_id, &g.source))
+        .map(|g| protect::mask_for(&g.code_engine, &g.source))
         .collect();
 
     let provider = ai::make_provider(&config).map_err(|e| e.to_string())?;
@@ -1492,6 +1495,9 @@ async fn translate_units(
         for (j, (g, res)) in chunk.iter().zip(results.into_iter()).enumerate() {
             let reason = match res {
                 Some(m) => match protect::restore(&m, &masks[base + j].tokens) {
+                    Ok(t) if !ai::validation::accepts(&g.code_engine, &target_lang, &t) => {
+                        ai::validation::WRONG_LANGUAGE.to_string()
+                    }
                     // Restore succeeded, but a weak model can still *add* codes it
                     // doesn't own — bleeding a neighbor line's `\c[…]` (shown as
                     // context) into this output. Reject when the translation's code
@@ -1506,7 +1512,15 @@ async fn translate_units(
                     Ok(t) if looks_like_asset_path(&t) && !looks_like_asset_path(&g.source) => {
                         "The model returned an asset path, not a translation".to_string()
                     }
-                    Ok(t) if protect::codes_match(&engine_id, &g.source, &t) => {
+                    Ok(t) if protect::codes_match(&g.code_engine, &g.source, &t) => {
+                        // Lookup keys stay opaque during post-processing too:
+                        // typography and Thai-particle cleanup must not edit them.
+                        let lookup_mask = (g.code_engine == "rpgmaker-dktools")
+                            .then(|| protect::mask_for(&g.code_engine, &t));
+                        let t = lookup_mask
+                            .as_ref()
+                            .map(|mask| mask.text.clone())
+                            .unwrap_or(t);
                         // Into a non-CJK script, swap CJK brackets (「」『』…) the bundled
                         // Thai font can't render for ASCII parens, so they don't ship as
                         // tofu boxes. A CJK target keeps them (its font renders them).
@@ -1530,8 +1544,15 @@ async fn translate_units(
                                 t
                             }
                         };
-                        writes.push((g.ids.clone(), g.source.clone(), t));
-                        continue;
+                        let restored = match lookup_mask {
+                            Some(mask) => protect::restore(&t, &mask.tokens),
+                            None => Ok(t),
+                        };
+                        if let Ok(t) = restored {
+                            writes.push((g.ids.clone(), g.source.clone(), t));
+                            continue;
+                        }
+                        "Inline codes changed during text normalization".to_string()
                     }
                     Ok(_) => {
                         "Inline codes changed — the translation's codes don't match the source"
@@ -1539,7 +1560,9 @@ async fn translate_units(
                     }
                     // The model returned text but a masked ⟦…⟧ placeholder came back
                     // altered, so we can't safely reinsert the game's codes.
-                    Err(_) => "Inline codes changed — a protected placeholder was altered".to_string(),
+                    Err(_) => {
+                        "Inline codes changed — a protected placeholder was altered".to_string()
+                    }
                 },
                 None => batch_error
                     .clone()
@@ -1758,6 +1781,18 @@ async fn translate_texts(
                 None
             }
         };
+        let restored = restored.filter(|text| {
+            if ai::validation::accepts(&engine_id, &target_lang, text) {
+                true
+            } else {
+                if last_error.is_none() {
+                    let message = ai::validation::WRONG_LANGUAGE.to_string();
+                    let _ = app.emit("translate://error", &message);
+                    last_error = Some(message);
+                }
+                false
+            }
+        });
         if restored.is_some() {
             translated += 1;
         } else {
@@ -1803,9 +1838,15 @@ fn remember_texts(
 ) -> Result<usize, String> {
     let guard = state.project.lock().unwrap();
     let proj = guard.as_ref().ok_or("no project is open")?;
+    let target = project::db::get_meta(&proj.conn, "target_lang")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "Thai".into());
     let mut n = 0;
     for (source, translation) in &items {
-        if source.is_empty() || translation.is_empty() {
+        if source.is_empty()
+            || translation.is_empty()
+            || !ai::validation::accepts(&proj.engine_id, &target, translation)
+        {
             continue;
         }
         if project::db::tm_upsert(&proj.conn, source, translation).is_ok() {

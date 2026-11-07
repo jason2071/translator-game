@@ -61,8 +61,7 @@ fn rpgtl_dir(root: &Path) -> PathBuf {
 /// well as in that engine so backup, re-export and restore all address the same
 /// real file.
 fn project_file_path(project: &Project, file: &str) -> PathBuf {
-    if project.engine_id == "rpgmaker-mvmz" && crate::engine::mvmz::is_game_root_relative_file(file)
-    {
+    if file_is_game_root_relative(project, file) {
         project
             .data_dir
             .parent()
@@ -74,7 +73,11 @@ fn project_file_path(project: &Project, file: &str) -> PathBuf {
 }
 
 fn file_is_game_root_relative(project: &Project, file: &str) -> bool {
-    project.engine_id == "rpgmaker-mvmz" && crate::engine::mvmz::is_game_root_relative_file(file)
+    project.engine_id == "rpgmaker-mvmz"
+        && crate::engine::mvmz::is_game_root_relative_file_at(
+            project.data_dir.parent().unwrap_or(&project.root),
+            file,
+        )
 }
 
 /// Backup directories under `.rpgtl/backups/`, oldest-first by their numeric
@@ -338,9 +341,8 @@ pub fn export_with_renpy_font_scale(
     // in-place fallback above), so apply the name toggle here.
     let mut units = drop_names_when_off(&project.conn, all_units)?;
     if eng.id() == "luckylive" {
-        units.retain(|unit| {
-            engine::luckylive::is_luckylive_content_file(&project.root, &unit.file)
-        });
+        units
+            .retain(|unit| engine::luckylive::is_luckylive_content_file(&project.root, &unit.file));
     }
     let applied: Vec<_> = units.iter().filter(|u| u.status.is_applied()).collect();
 
@@ -784,6 +786,7 @@ fn mvmz_pristine_rescan_root(project: &Project) -> Result<Option<PathBuf>> {
         &project.data_dir,
     ));
     files.extend(crate::engine::mvmz::ui_root_files(&project.data_dir));
+    files.extend(crate::engine::mvmz::dktools_root_files(&project.data_dir)?);
     for dir in std::iter::once(source_dir).chain(backup_dirs) {
         if !dir.is_dir() {
             continue;
@@ -978,7 +981,14 @@ fn pristine_read_root(project: &Project, files: &[String]) -> Result<PathBuf> {
         .unwrap_or(Path::new(""));
     let source_dir = rpgtl_dir(&project.root).join("source");
     let earliest_backups = earliest_backup_dirs(&rpgtl_dir(&project.root).join("backups"));
-    for file in files {
+    // Locale-only injection still needs the plugin configuration to resolve
+    // the configured DKTools folder in this pristine mirror.
+    let mut files: BTreeSet<String> = files.iter().cloned().collect();
+    if project.engine_id == "rpgmaker-mvmz" && project_file_path(project, "js/plugins.js").is_file()
+    {
+        files.insert("js/plugins.js".into());
+    }
+    for file in &files {
         let snap = source_dir.join(file);
         let live = project_file_path(project, file);
         let backup = earliest_backups
@@ -996,7 +1006,10 @@ fn pristine_read_root(project: &Project, files: &[String]) -> Result<PathBuf> {
             continue;
         }
         let dst = if file_is_game_root_relative(project, file) {
-            root.join(file)
+            root.join(data_rel)
+                .parent()
+                .unwrap_or(&root)
+                .join(file)
         } else {
             root.join(data_rel).join(file)
         };

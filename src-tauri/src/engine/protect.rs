@@ -26,7 +26,7 @@ impl Masked {
 
 /// Replace every RPGMaker control code with a `⟦k⟧` sentinel.
 pub fn mask(input: &str) -> Masked {
-    mask_inner(input, false)
+    mask_inner(input, false, false)
 }
 
 /// RPGMaker **MV/MZ** masking: the default [`mask`] grammar (`\Word[n]` escapes and
@@ -36,7 +36,7 @@ pub fn mask(input: &str) -> Masked {
 /// The stock `mask` leaves `<…>` as prose, so a model would translate the words
 /// inside a tag; masking them keeps plugin markup byte-identical across the round-trip.
 pub fn mask_mvmz(input: &str) -> Masked {
-    mask_inner(input, true)
+    mask_inner(input, true, false)
 }
 
 /// Push one masked token: record the original span and emit its `⟦idx⟧` sentinel.
@@ -50,12 +50,24 @@ fn push_token(text: &mut String, tokens: &mut Vec<String>, token: &str) {
 
 /// Shared masking scan. `mask_angle` additionally masks VisuMZ `<…>` text codes
 /// (see [`vmz_angle_len`]) — used by [`mask_mvmz`] and off for the default [`mask`].
-fn mask_inner(input: &str, mask_angle: bool) -> Masked {
+fn mask_inner(input: &str, mask_angle: bool, lookup_tags: bool) -> Masked {
     let mut text = String::with_capacity(input.len());
     let mut tokens: Vec<String> = Vec::new();
     let bytes = input.as_bytes();
     let mut i = 0;
     while i < input.len() {
+        // Dictionary values may reference another DKTools key. Unlike the
+        // legacy data-file prose inside braces, these references are immutable.
+        if lookup_tags && bytes[i] == b'{' {
+            if let Some(end) = input[i..].find('}') {
+                let tag = &input[i..i + end + 1];
+                if !tag.contains(['\n', '\r']) {
+                    push_token(&mut text, &mut tokens, tag);
+                    i += tag.len();
+                    continue;
+                }
+            }
+        }
         if bytes[i] == b'\\' {
             if let Some(len) = code_len(&input[i..]) {
                 push_token(&mut text, &mut tokens, &input[i..i + len]);
@@ -130,6 +142,7 @@ fn mask_inner(input: &str, mask_angle: bool) -> Masked {
 /// Mask using the code grammar of the given engine, sharing [`restore`].
 pub fn mask_for(engine_id: &str, input: &str) -> Masked {
     match engine_id {
+        "rpgmaker-dktools" => mask_inner(input, true, true),
         "renpy" => mask_renpy(input),
         // KiriKiri shares TyranoScript's KAG tag syntax, so it masks the same way.
         "tyrano" | "kirikiri" => mask_tyrano(input),
@@ -1341,7 +1354,10 @@ mod tests {
         // An unterminated `[` must not eat the rest of the line: it stays
         // literal prose while the following tag still masks.
         let open = mask_rebirth("[Squelch- without a close <interval=1> stays");
-        assert!(open.text.contains("[Squelch- without a close"), "left as prose");
+        assert!(
+            open.text.contains("[Squelch- without a close"),
+            "left as prose"
+        );
         assert_eq!(open.tokens, vec!["<interval=1>"]);
     }
 
@@ -1514,7 +1530,10 @@ mod tests {
         // เขา (him / they) — same shape via the ขา particle.
         assert_eq!(strip_thai_particles("ถ้าไม่มีเขา"), "ถ้าไม่มีเขา");
         assert_eq!(strip_thai_particles("ของพวกเขา"), "ของพวกเขา");
-        assert_eq!(strip_thai_particles("อีกไม่นานเธอจะได้เห็นเขา"), "อีกไม่นานเธอจะได้เห็นเขา");
+        assert_eq!(
+            strip_thai_particles("อีกไม่นานเธอจะได้เห็นเขา"),
+            "อีกไม่นานเธอจะได้เห็นเขา"
+        );
         // ข้าพเจ้า (formal I).
         assert_eq!(strip_thai_particles("ข้าพเจ้าทำเอง"), "ข้าพเจ้าทำเอง");
 

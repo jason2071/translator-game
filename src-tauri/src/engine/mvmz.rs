@@ -50,6 +50,13 @@ impl GameEngine for MvMzEngine {
                  in-game to see the translation."
                     .to_string(),
             );
+        } else if super::mvmz_dktools::supported(base) {
+            warnings.push(
+                "This game uses DKTools Localization. The selected source-language locale \
+                 is extracted alongside game data, including quest text. Export replaces \
+                 that locale's values; select the source language in-game to see the translation."
+                    .to_string(),
+            );
         } else if let Some(sys) = detect_language_system(base) {
             warnings.push(format!(
                 "This game uses a built-in language system ({sys}). Its dialogue is \
@@ -124,6 +131,7 @@ impl GameEngine for MvMzEngine {
         }
         extract_galv_quest_log(&dir, &mut units)?;
         super::mvmz_ui::extract(base, &mut units)?;
+        super::mvmz_dktools::extract(base, opts, &mut units)?;
         Ok(units)
     }
 
@@ -146,7 +154,7 @@ impl GameEngine for MvMzEngine {
         for (file, file_units) in by_file {
             let base_in = dir.parent().unwrap_or(&dir);
             let base_out = out_dir.parent().unwrap_or(out_dir);
-            let (src, dst) = if is_game_root_relative_file(file) {
+            let (src, dst) = if is_game_root_relative_file_at(base_in, file) {
                 (base_in.join(file), base_out.join(file))
             } else {
                 (dir.join(file), out_dir.join(file))
@@ -173,6 +181,14 @@ impl GameEngine for MvMzEngine {
                 continue;
             }
             let text = std::fs::read_to_string(&src).with_context(|| format!("reading {file}"))?;
+            if super::mvmz_dktools::owns_file(base_in, file) {
+                let out = super::mvmz_dktools::inject(base_in, file, &text, &file_units)?;
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                super::write_atomic(&dst, out.as_bytes())?;
+                continue;
+            }
             if is_inn_scenario_csv(file) {
                 let out = inject_inn_scenario_csv(file, &text, &file_units)?;
                 std::fs::write(dst, out).with_context(|| format!("writing {file}"))?;
@@ -669,6 +685,16 @@ pub fn is_game_root_relative_file(file: &str) -> bool {
         || is_rcsv_localization_file(file)
         || is_rcsv_localization_plugin(file)
         || super::mvmz_ui::is_script_file(file)
+}
+
+/// DKTools can configure its locale folder; resolve only files owned by an
+/// enabled plugin rather than treating arbitrary nested JSON as game text.
+pub fn is_game_root_relative_file_at(base: &Path, file: &str) -> bool {
+    is_game_root_relative_file(file) || super::mvmz_dktools::owns_file(base, file)
+}
+
+pub fn dktools_root_files(data_dir: &Path) -> Result<Vec<String>> {
+    super::mvmz_dktools::root_files(data_dir.parent().unwrap_or(data_dir))
 }
 
 /// Live UI plugin files needed when an older project's rescan mirror contains
