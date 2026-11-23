@@ -188,6 +188,9 @@ impl TranslationProvider for OpenAiCompat {
         if self.is_local {
             if let Some(think) = req.thinking {
                 body["think"] = json!(think);
+                if !think {
+                    body["reasoning_effort"] = json!("none");
+                }
             }
         }
         // OpenRouter: turn reasoning off when thinking is disabled — a real speed
@@ -290,6 +293,7 @@ impl TranslationProvider for OpenAiCompat {
         });
         if self.is_local {
             body["think"] = json!(false);
+            body["reasoning_effort"] = json!("none");
         }
         if self.is_openrouter {
             body["reasoning"] = json!({ "enabled": false });
